@@ -11,10 +11,11 @@ A chat of another organisation doesn't exist for you (a 404 on every endpoint), 
 unique within the organisation (a 409), like channels, so two organisations can each have
 "general". The **Chats** page lists every chat of the organisation, those you haven't joined
 marked "Not joined", most recently active first, with a search
-box over their names and descriptions and filter buttons (All, Joined, Not joined, Unread),
-kept in the URL as on the Agents list, and as the list refreshes (it has no sort
-menu). It opens one to its header (name, description, chat member count, Edit, Delete, Join or
-Leave, and which member created it: `created_by`, `updated_by`, as `aios.api.provenance`
+box over their names and descriptions and filter buttons (All, Joined, Not joined, Unread,
+Archived), kept in the URL as on the Agents list, and as the list refreshes (it has no sort
+menu). Archived chats are only under **Archived** (`GET /api/o/{org}/chats?archived=true`). It
+opens one to its header (name, description, chat member count, the actions you may take: Edit,
+Archive or Unarchive, Join or Leave; and which member created it: `created_by`, `updated_by`, as `aios.api.provenance`
 reports them) above two tabs, as on the agent page: **Chat**, the messages and composer (the
 default), and **Members** (`/chats/5/members`, with the count). The room isn't kept while
 Members is open, so nothing is marked read there and coming back reloads the messages, scrolled
@@ -23,23 +24,40 @@ chat's Edit page, another section or a reload (kept in the tab's session storage
 chat).
 
 Chat members are grouped by kind: users, **agents and workflows**, with the icons the
-navigation uses. Any chat member adds any member of the organisation, and any of its agents and
-workflows, whoever made them (`POST /api/o/{org}/chats/{id}/members` with `{kind, id}`; a user from
-outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow;
-an archived agent or workflow still is, shown as archived, but isn't offered to mention, and a
-mention of it fails at once: see
-[Agents and skills](agents-and-skills.md#archiving-an-agent)).
+navigation uses. Any chat member adds any of the organisation's agents and workflows, whoever
+made them (`POST /api/o/{org}/chats/{id}/members` with `{kind, id}`; one row per chat and agent or
+workflow; an archived agent or workflow still is, shown as archived, but isn't offered to
+mention, and a mention of it fails at once: see
+[Agents and skills](agents-and-skills.md#archiving-an-agent)), and removes them
+(`DELETE /api/o/{org}/chats/{id}/members/{member_id}`). People join themselves: nobody adds a
+person to a chat or removes one, admins included (a 403).
 
-Every chat is **open**: there's no visibility and no owner. Anyone in the organisation reads any
-chat (its messages, chat members and run cards) without joining it, **joins** it in one click
-(`POST /api/o/{org}/chats/{id}/join`), or posts in it, which joins them in the same transaction.
-Whoever creates a chat is its first chat member. Its chat members (anyone who has joined)
-rename or describe it, add or remove chat members and delete it (a 403, saying to join first,
-for anyone who hasn't). Anyone can **leave** (`POST /api/o/{org}/chats/{id}/leave`), the last
-person too: the chat stays, to read and join again. Leaving or being removed deletes nothing:
-whoever joins or is added later reads the history from the start. Leaving the organisation
-takes a person out of its chats and hands nothing over (see
-[Accounts and organisations](accounts-and-organisations.md#leaving)).
+Every chat is **open**: there's no visibility and no owner, and every chat member is equal.
+Anyone in the organisation reads any chat (its messages, chat members and run cards) without
+joining it, **joins** it in one click (`POST /api/o/{org}/chats/{id}/join`), or posts in it, which
+joins them in the same transaction. Whoever creates a chat is its first chat member. Its chat
+members (anyone who has joined) rename or describe it and add or remove its agents and
+workflows (a 403, saying to join first, for anyone who hasn't). Anyone can **leave**
+(`POST /api/o/{org}/chats/{id}/leave`), the last person too: the chat stays, to read and join
+again. Leaving deletes nothing: whoever joins later reads the history from the start. Leaving the
+organisation takes a person out of its chats and hands nothing over (see
+[Accounts and organisations](accounts-and-organisations.md#leaving)). Nobody deletes a chat.
+
+These are **the chat rules** (`aios.api.chats.rules`), one check the API enforces and the
+screens follow: each chat says which actions you may take on it (`actions`: `post`, `join`,
+`leave`, `edit`, `include`, `archive`, `unarchive`), and the page shows those and hides the rest.
+
+## Archiving
+
+**Admins** archive and unarchive chats (`POST /api/o/{org}/chats/{id}/archive`, `.../unarchive`;
+a 403 for editors and participants): their only extra power over chats. An archived chat says
+when and by whom (`archived_at`, `archived_by`) and is **read-only**, with a banner saying so and
+no composer: posts (and so mentions), joins, edits, and adding or removing its agents and
+workflows are a 409 ("This chat is archived, so it's read-only"), checked before anything else a
+post does, Jev's check included. It's still read, its chat members still leave it, and its
+messages are still found by search. Runs already under way in it when it's archived finish and
+post their results there. Renames (`chat.renamed`), archiving (`chat.archived`) and unarchiving
+(`chat.unarchived`) are in the [audit log](stores.md#the-audit-log).
 
 Each new chat has the organisation's documents assistant as its first agent (see
 [Agents and skills](agents-and-skills.md#the-documents-assistant)).
@@ -51,8 +69,7 @@ last one you saw, tracked per chat and chat member by message id
 (`chat_members.last_read_message_id`). Reading the open chat to the bottom, with its tab
 visible, reports the newest message (`POST /api/o/{org}/chats/{id}/read` with `{message_id}`; it only
 moves forward) and clears the count; the list asks again every 5 seconds (30 while hidden).
-Joining (or posting, which joins) counts what was already there as read; a chat member added by
-another has the history to read. Nothing is sent off-app.
+Joining (or posting, which joins) counts what was already there as read. Nothing is sent off-app.
 
 ## Messages
 

@@ -3,7 +3,7 @@ the user is in counts the messages they haven't seen."""
 
 import pytest
 from conftest import delete_user, join_organisation
-from test_chats import add_user, make_chat, messages, post, signed_in_as
+from test_chats import make_chat, messages, post, signed_in_as
 
 
 @pytest.fixture
@@ -131,20 +131,18 @@ def test_the_unread_count_rises_with_others_messages_and_clears_on_reading(api, 
     assert unread(api, "Design") == 0
 
 
-def test_a_member_added_later_has_the_history_to_read(api, user, other):
+def test_one_who_joins_later_reads_the_history_and_has_seen_it(api, user, other):
+    """Nobody adds a person: they join, and what was there to read before counts as seen."""
     chat = make_chat(api, "Design")
     post(api, chat, "one")
     post(api, chat, "two")
-    add_user(api, chat, other)
     with signed_in_as(other):
+        join(api, chat)
         assert [m["body"] for m in messages(api, chat)["messages"]] == ["one", "two"]
-        assert unread(api, "Design") == 2
-    # Whereas one who joins has seen what was there to read before they did.
-    public = make_chat(api, "Open")
-    post(api, public, "hello")
+        assert unread(api, "Design") == 0
+    post(api, chat, "three")
     with signed_in_as(other):
-        join(api, public)
-        assert unread(api, "Open") == 0
+        assert unread(api, "Design") == 1
 
 
 def test_only_a_member_marks_a_chat_read(api, other):

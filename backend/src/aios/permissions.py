@@ -7,9 +7,9 @@ dependency, so it runs before anything else the route does), and it answers 403 
 action for a role that may not (`refusal`). A route under the organisation prefix that doesn't
 declare exactly one stops the app starting (`aios.api.scoping`), so none is left unguarded.
 
-What a route does beyond its action is checked in it: a chat's owner, a mention's guards
-(`aios.guards`), and an organisation keeping an admin (`aios.organisations.change_role`,
-`leave_refusal`).
+What a route does beyond its action is checked in it: the chat rules (`aios.api.chats.rules`),
+a mention's guards (`aios.guards`), and an organisation keeping an admin
+(`aios.organisations.change_role`, `leave_refusal`).
 """
 
 import enum
@@ -39,6 +39,7 @@ class Action(enum.StrEnum):
     audit = "read the audit log"
     usage = "read usage totals"
     release = "see flagged content or release it"
+    archive_chats = "archive or unarchive chats"
 
 
 EVERYONE = frozenset(Role)
@@ -62,6 +63,8 @@ TABLE: dict[Action, frozenset[Role]] = {
     Action.audit: ADMINS,
     Action.usage: ADMINS,
     Action.release: ADMINS,
+    # Their only power over chats beyond anyone's (`aios.api.chats.rules`).
+    Action.archive_chats: ADMINS,
 }
 
 _A = {Role.admin: "an admin", Role.editor: "an editor", Role.participant: "a participant"}

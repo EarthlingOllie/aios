@@ -103,10 +103,12 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * stays in the composer, with why: Jev flagged it, Jev couldn't check it (try again), or it
  * mentions an agent or workflow the chat doesn't include, with **Add it to this chat**
  * (`onInclude`), which adds it and sends the message. While Jev is down the composer says so.
+ * An archived chat is read-only (`readOnly`): no composer, and the reason in its place.
  */
 export function ChatRoom({
   chatId,
   joined,
+  readOnly,
   mentionable,
   offered,
   onPosted,
@@ -118,6 +120,8 @@ export function ChatRoom({
   chatId: number;
   /** Whether the reader has joined the chat; posting joins them if not. */
   joined: boolean;
+  /** Why nobody can post in it (an archived chat), shown in place of the composer. */
+  readOnly?: string | null;
   /** Who can be mentioned: the chat's members, as `GET /api/chats/{id}/mentionable` lists them. */
   mentionable?: ChatMentionables;
   /** Who `@` offers: the members, and the organisation's agents and workflows not in the chat
@@ -349,22 +353,30 @@ export function ChatRoom({
           {jevDown}
         </p>
       )}
-      {!joined && (
-        <p className="text-muted-foreground text-sm">
-          Everyone in the organisation can read this chat. Posting in it joins it.
+      {readOnly ? (
+        <p role="status" aria-label="Read-only" className="text-muted-foreground text-sm">
+          {readOnly}
         </p>
+      ) : (
+        <>
+          {!joined && (
+            <p className="text-muted-foreground text-sm">
+              Everyone in the organisation can read this chat. Posting in it joins it.
+            </p>
+          )}
+          <ChatComposer
+            id={`chat-${chatId}-composer`}
+            placeholder="Write a message"
+            value={draft}
+            onChange={onDraftChange}
+            busy={false}
+            disabled={posting}
+            onStop={() => undefined}
+            onSubmit={onSubmit}
+            mentionable={offered ?? mentionable}
+          />
+        </>
       )}
-      <ChatComposer
-        id={`chat-${chatId}-composer`}
-        placeholder="Write a message"
-        value={draft}
-        onChange={onDraftChange}
-        busy={false}
-        disabled={posting}
-        onStop={() => undefined}
-        onSubmit={onSubmit}
-        mentionable={offered ?? mentionable}
-      />
     </div>
   );
 }

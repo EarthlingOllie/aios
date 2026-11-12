@@ -796,6 +796,15 @@ class Chat(StoreBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    # When an admin archived it, and which member: read-only, still read and searched. Both null
+    # while it isn't.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        comment="When an admin archived it (read-only, still searchable); null while it isn't.",
+    )
+    archived_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The member (a platform user id) who archived it; null while it isn't."
+    )
 
     members: Mapped[list["ChatMember"]] = relationship(
         back_populates="chat",

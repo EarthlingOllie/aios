@@ -356,8 +356,9 @@ def test_the_search_page_shows_a_person_everything_in_the_organisation(
 def test_deleting_a_source_takes_its_items_with_it(api, store_id, everything):
     agent, run = everything["agent"], everything["run"]
     assert api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code == 204
-    assert api.delete(f"/api/chats/{everything['chat']['id']}").status_code == 204
     with store_session(store_id, "rw") as store:
+        # Nobody deletes a chat, but its messages' items go with it all the same.
+        store.execute(text("DELETE FROM aios.chats"))
         store.execute(text("DELETE FROM aios.documents"))
         store.commit()
 

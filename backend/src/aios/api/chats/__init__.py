@@ -6,11 +6,16 @@ it (`is_member` says whether they've joined), and reads its messages, members an
 without joining. A chat has a name unique among the organisation's chats (a 409), a description,
 and says which member made it and last changed it (`aios.api.provenance`). Its members are
 people, agents and workflows of the organisation (an archived agent or workflow stays one, shown
-as archived). People join in one step (or by posting) and leave as easily, the last one too: the
-chat stays. Its members (not others) change it, add or remove its agents and workflows, or delete
-it: a 403 for anyone who hasn't joined. Someone leaving the organisation leaves its chats.
-Leaving deletes nothing, and whoever joins later reads the history from the start. A new chat's
-first agent is the organisation's documents assistant (`aios.assistant`).
+as archived). Chats have no owners, and what anyone may do to one is the chat rules'
+(`aios.api.chats.rules`), which each chat lists for its reader (`actions`). People join in one
+step (or by posting) and leave as easily, the last one too: the chat stays. Nobody adds or
+removes a person. Its members (not others) rename and describe it, and add or remove its agents
+and workflows: a 403 for anyone who hasn't joined. Admins archive and unarchive it: an archived
+chat is read-only (a 409 for posts, joins, edits and adds), listed apart (`?archived=true`), and
+still read and searched. Renames, archiving and unarchiving are in the audit log. Nobody deletes
+a chat. Someone leaving the organisation leaves its chats, with nothing handed over. Leaving
+deletes nothing, and whoever joins later reads the history from the start. A new chat's first
+agent is the organisation's documents assistant (`aios.assistant`).
 
 The agents and workflows among a chat's members are the ones it includes: only those can be
 mentioned there. A message mentioning one it doesn't include is a 422 naming what's missing
@@ -58,10 +63,10 @@ Either run is started by the member who mentioned it (its `created_by`) and exec
 organisation, over its store, like any other run: it doesn't depend on whoever made the agent or
 workflow, and every member of the organisation reads it, in the chat or not.
 
-The API is split by sub-domain (`crud`, `members`, `messages`, `invocations`) and mounted as one
-router. Every name is re-exported here, where callers import it; `newest_message_id`,
-`enqueue_starts` and `MESSAGE_PAGE` are read here at call time, so a test that replaces one
-here replaces it for every part.
+The API is split by sub-domain (`crud`, `members`, `messages`, `invocations`, and the chat rules
+in `rules`) and mounted as one router. Every name is re-exported here, where callers import it;
+`newest_message_id`, `enqueue_starts` and `MESSAGE_PAGE` are read here at call time, so a test
+that replaces one here replaces it for every part.
 """
 
 from fastapi import APIRouter
@@ -70,11 +75,9 @@ from aios.api.chats import crud as _crud
 from aios.api.chats import members as _members
 from aios.api.chats import messages as _messages
 from aios.api.chats.common import (
-    ALREADY_A_MEMBER,
     CHAT_NAME_INDEX,
     LOAD,
     MEMBER_CONSTRAINTS,
-    NOT_JOINED,
     TARGET_MODELS,
     ChatIn,
     ChatMemberOut,
@@ -84,7 +87,6 @@ from aios.api.chats.common import (
     MemberIn,
     chat_out,
     chat_summary,
-    get_chat_if_member,
     get_visible_chat,
     is_member,
     load,
@@ -98,10 +100,11 @@ from aios.api.chats.common import (
 )
 from aios.api.chats.crud import (
     ChatListed,
+    archive_chat,
     create_chat,
-    delete_chat,
     get_chat,
     list_chats,
+    unarchive_chat,
     update_chat,
 )
 from aios.api.chats.invocations import enqueue_starts
@@ -146,6 +149,7 @@ from aios.api.chats.messages import (
     resolve_mentions,
     with_runs,
 )
+from aios.api.chats.rules import ALREADY_A_MEMBER, ARCHIVED, NOT_JOINED, ChatAction
 
 # One router for the package, its sub-domains' routes in the order they were declared.
 router = APIRouter()
@@ -155,6 +159,8 @@ router.include_router(_messages.router)
 
 __all__ = [
     "ALREADY_A_MEMBER",
+    "ARCHIVED",
+    "ChatAction",
     "AgentRunLiveOut",
     "CHAT_NAME_INDEX",
     "ChatIn",
@@ -189,11 +195,10 @@ __all__ = [
     "author_out",
     "chat_out",
     "chat_summary",
+    "archive_chat",
     "create_chat",
-    "delete_chat",
     "enqueue_starts",
     "get_chat",
-    "get_chat_if_member",
     "get_visible_chat",
     "invocation_out",
     "is_member",
@@ -220,6 +225,7 @@ __all__ = [
     "resolve_mentions",
     "still_member",
     "take_out",
+    "unarchive_chat",
     "update_chat",
     "user_member",
     "with_runs",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type SetStateAction } from "react";
-import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
-import { LogIn, LogOut, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
+import { Link, Navigate, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
+import { Archive, ArchiveRestore, LogIn, LogOut, Pencil, Plus, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
@@ -32,11 +32,12 @@ import {
   type ChatInput,
   type ChatListed,
   type ChatMember,
-  type ChatMemberKind,
+  type ChatTargetKind,
   type ChatMention,
 } from "@/lib/api";
 import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { archivedNotice, can } from "@/lib/chats";
 import { composerMentionables } from "@/lib/mentions";
 import { useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
@@ -57,12 +58,17 @@ const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
       { key: "joined", label: "Joined", test: (chat) => chat.is_member },
       { key: "not-joined", label: "Not joined", test: (chat) => !chat.is_member },
       { key: "unread", label: "Unread", test: (chat) => (chat.unread_count ?? 0) > 0 },
+      // The list is loaded from the archived chats for this one (`ChatsSection`); the others
+      // narrow the default list, which leaves archived chats out.
+      { key: "archived", label: "Archived", test: (chat) => chat.archived_at !== null },
     ],
   },
 ];
 
 export function ChatsSection() {
-  const { data, error, reload } = useLoad(api.listChats);
+  const [params] = useSearchParams();
+  const archived = params.get("filter") === "archived";
+  const { data, error, reload } = useLoad(useCallback(() => api.listChats(archived), [archived]));
   const visible = useVisible();
   // Unread counts go up as others post, in chats other than the one open.
   usePoll(data !== undefined, reload, visible ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
@@ -90,6 +96,7 @@ function ChatListItem({ chat }: { chat: ChatListed }) {
         <span className={cn("min-w-0 flex-1 truncate font-medium", !chat.is_member && "text-muted-foreground")}>
           {chat.name}
         </span>
+        {chat.archived_at && <Badge variant="secondary">archived</Badge>}
         {chat.is_member ? (
           <span className="text-muted-foreground shrink-0 text-xs">{plural(chat.member_count, "member")}</span>
         ) : (
@@ -125,10 +132,10 @@ export function ChatsIndex() {
 
 export function ChatDetail() {
   const id = Number(useParams().chatId);
-  const navigate = useNavigate();
   const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
+  const me = useCurrentUser();
   // Who the composer offers to mention: the members, again whenever they change.
   const { data: mentionable, reload: reloadMentionable } = useLoad(
     useCallback(() => api.listChatMentionable(id), [id]),
@@ -144,7 +151,7 @@ export function ChatDetail() {
   // The composer's unsent text, per chat. Held outside the room, which unmounts while the
   // Members tab is open, and outside this page, so it survives the Edit page, another section
   // and a reload; keyed so one chat's (or user's) draft never shows in another.
-  const userId = useCurrentUser()?.id ?? 0;
+  const userId = me?.id ?? 0;
   const [, rerender] = useState(0);
   const draft = chatDrafts.get(userId, id);
   const setDraft = useCallback(
@@ -163,13 +170,14 @@ export function ChatDetail() {
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!chat) return null;
+  const archived = archivedNotice(chat, me);
 
-  async function onDelete() {
-    if (!window.confirm(`Delete the chat “${chat!.name}”?`)) return;
+  /** Archive or unarchive it (admins): it stays open here, read-only while it's archived. */
+  async function onArchive(archive: boolean) {
+    if (archive && !window.confirm(`Archive the chat “${chat!.name}”? It becomes read-only.`)) return;
     try {
-      await api.deleteChat(id);
-      await reloadList();
-      navigate(listHref("/chats"));
+      await (archive ? api.archiveChat(id) : api.unarchiveChat(id));
+      await Promise.all([reload(), reloadList()]);
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -195,7 +203,7 @@ export function ChatDetail() {
     }
   }
 
-  async function onAdd(kind: ChatMemberKind, targetId: number) {
+  async function onAdd(kind: ChatTargetKind, targetId: number) {
     try {
       await api.addChatMember(id, { kind, id: targetId });
       await Promise.all([reload(), reloadList()]);
@@ -234,32 +242,49 @@ export function ChatDetail() {
         </>
       }
       actions={
-        chat.is_member ? (
-          <>
+        <>
+          {can(chat, "edit") && (
             <Button asChild variant="outline" size="sm">
               <Link to={listHref(`/chats/${id}/edit`)}>
                 <Pencil />
                 Edit
               </Link>
             </Button>
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              <Trash2 />
-              Delete
+          )}
+          {can(chat, "archive") && (
+            <Button variant="outline" size="sm" onClick={() => onArchive(true)}>
+              <Archive />
+              Archive
             </Button>
+          )}
+          {can(chat, "unarchive") && (
+            <Button size="sm" onClick={() => onArchive(false)}>
+              <ArchiveRestore />
+              Unarchive
+            </Button>
+          )}
+          {can(chat, "leave") && (
             <Button variant="outline" size="sm" onClick={onLeave}>
               <LogOut />
               Leave
             </Button>
-          </>
-        ) : (
-          <Button size="sm" onClick={onJoin}>
-            <LogIn />
-            Join
-          </Button>
-        )
+          )}
+          {can(chat, "join") && (
+            <Button size="sm" onClick={onJoin}>
+              <LogIn />
+              Join
+            </Button>
+          )}
+        </>
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {archived && (
+        <p role="status" aria-label="Archived" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
+          {archived}
+          {chat.archived_at && ` Archived on ${formatDate(chat.archived_at)}.`}
+        </p>
+      )}
       <Tabs
         label="Chat details"
         tabs={[
@@ -271,6 +296,7 @@ export function ChatDetail() {
                 key={chat.id}
                 chatId={chat.id}
                 joined={chat.is_member}
+                readOnly={can(chat, "post") ? null : "This chat is archived, so nobody can post in it."}
                 mentionable={mentionable}
                 offered={composerMentionables(mentionable, targets)}
                 // Posting in a chat they haven't joined joins them.
@@ -289,8 +315,8 @@ export function ChatDetail() {
             content: (
               <MembersPanel
                 chat={chat}
-                onAdd={chat.is_member ? onAdd : undefined}
-                onRemove={chat.is_member ? onRemove : undefined}
+                onAdd={can(chat, "include") ? onAdd : undefined}
+                onRemove={can(chat, "include") ? onRemove : undefined}
               />
             ),
           },
@@ -306,13 +332,14 @@ function MembersPanel({
   onRemove,
 }: {
   chat: Chat;
-  /** Set for its members, who can add the organisation's members, agents and workflows. */
-  onAdd?: (kind: ChatMemberKind, id: number) => Promise<void>;
-  /** Set for its members, who can remove a member. */
+  /** Set for those who may add the organisation's agents and workflows (its members). People join
+   * themselves: nobody adds one. */
+  onAdd?: (kind: ChatTargetKind, id: number) => Promise<void>;
+  /** Set for those who may remove an agent or workflow. Nobody removes a person: they leave. */
   onRemove?: (member: ChatMember) => void;
 }) {
-  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatMemberKind }[] = [
-    { title: "Users", members: chat.members.users, empty: "No users.", add: "user" },
+  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatTargetKind }[] = [
+    { title: "Users", members: chat.members.users, empty: "No users." },
     { title: "Agents", members: chat.members.agents, empty: "No agents yet.", add: "agent" },
     { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet.", add: "workflow" },
   ];
@@ -335,7 +362,7 @@ function MembersPanel({
                   />
                   <span className="min-w-0 flex-1 truncate">{member.name}</span>
                   {member.archived && <Badge variant="secondary">archived</Badge>}
-                  {onRemove && (
+                  {onRemove && member.kind !== "user" && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -358,12 +385,6 @@ function MembersPanel({
   );
 }
 
-/** The organisation's members, as the picker offers them. */
-async function listPeople(): Promise<{ id: number; name: string }[]> {
-  const { members } = await api.getOrganisation();
-  return members.map(({ user }) => ({ id: user.id, name: user.name }));
-}
-
 /** The organisation's agents and workflows (not archived), as the composer offers them. */
 async function listTargets(): Promise<(ChatMention & { kind: "agent" | "workflow" })[]> {
   const [agents, workflows] = await Promise.all([api.listAgents(), api.listWorkflows()]);
@@ -373,20 +394,19 @@ async function listTargets(): Promise<(ChatMention & { kind: "agent" | "workflow
   ];
 }
 
-const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
-  user: { list: listPeople, a: "a member" },
+const ADDABLE: Record<ChatTargetKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
   agent: { list: () => api.listAgents(), a: "an agent" },
   workflow: { list: () => api.listWorkflows(), a: "a workflow" },
 };
 
-/** A member's picker for adding one of the organisation's members, agents or workflows that
- * isn't in the chat yet. */
+/** A member's picker for adding one of the organisation's agents or workflows that isn't in the
+ * chat yet. */
 function AddMember({
   kind,
   members,
   onAdd,
 }: {
-  kind: ChatMemberKind;
+  kind: ChatTargetKind;
   members: ChatMember[];
   onAdd: (id: number) => Promise<void>;
 }) {
@@ -427,7 +447,7 @@ function AddMember({
       </select>
       <Button type="submit" variant="outline" size="sm" disabled={!chosen || adding}>
         <Plus />
-        Add {kind === "user" ? "member" : kind}
+        Add {kind}
       </Button>
     </form>
   );

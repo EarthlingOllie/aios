@@ -36,8 +36,8 @@ test("opens on the Chat tab, with the header and actions above the tabs", async 
   await expect(heading).toBeVisible();
   await expect(heading.locator("..")).toContainText("Where design happens");
   await expect(panel(page).getByText("Where design happens")).toHaveCount(0);
-  await expect(panel(page).getByRole("button", { name: "Delete" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Leave" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Leave" })).toBeVisible();
 });
 
 test("switches to Members, keeps the tab in the URL, and a deep link opens it", async ({ page }) => {

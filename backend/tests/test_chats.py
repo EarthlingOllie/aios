@@ -80,36 +80,40 @@ def test_read(api):
     assert api.get(f"/api/chats/{chat['id'] + 1000}").status_code == 404
 
 
-def add_user(api, chat: dict, user: User) -> dict:
-    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": user.id})
-    assert resp.status_code == 201, resp.text
+def join_as(api, chat: dict, user: User) -> dict:
+    """`user` joins the chat (nobody adds another person); returns it as they then read it."""
+    with signed_in_as(user):
+        resp = api.post(f"/api/chats/{chat['id']}/join")
+    assert resp.status_code == 200, resp.text
     return resp.json()
 
 
-def test_a_member_adds_a_user_as_a_member(api, user, other):
+def test_a_member_joins_once(api, user, other):
     chat = make_chat(api, "Design")
-    updated = add_user(api, chat, other)
-    assert updated["member_count"] == 3
-    first, added = updated["members"]["users"]
+    joined = join_as(api, chat, other)
+    assert joined["member_count"] == 3
+    first, added = joined["members"]["users"]
     assert first["target_id"] == user.id
     assert added["target_id"] == other.id
     assert added["name"] == "Other Person"
 
     # Once only.
-    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
+    with signed_in_as(other):
+        resp = api.post(f"/api/chats/{chat['id']}/join")
     assert resp.status_code == 409
-    # A user who doesn't exist, and agents and workflows that don't.
-    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": -1})
-    assert resp.status_code == 404
+    # Agents and workflows that don't exist.
     for kind in ("agent", "workflow"):
         resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": 99_999})
         assert resp.status_code == 422, kind
 
 
 def test_someone_who_hasnt_joined_cant_add_to_a_chat(api, user, other):
+    agent = make_agent(api, "Bot")
     chat = make_chat(api, "Design")
     with signed_in_as(other):
-        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
+        resp = api.post(
+            f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": agent["id"]}
+        )
         assert resp.status_code == 403
         assert resp.json()["detail"] == chats.NOT_JOINED
 
@@ -119,7 +123,7 @@ def test_list_is_every_chat_most_recently_active_first(api, user, other):
     with signed_in_as(other):
         theirs_with_me = make_chat(api, "Theirs with me")
         make_chat(api, "Theirs")
-        add_user(api, theirs_with_me, user)
+    join_as(api, theirs_with_me, user)
     listed = api.get("/api/chats").json()
     assert [c["name"] for c in listed] == ["Theirs with me", "Theirs", "Mine"]
     assert [c["is_member"] for c in listed] == [True, False, True]
@@ -132,20 +136,19 @@ def test_list_is_every_chat_most_recently_active_first(api, user, other):
     assert [c["name"] for c in api.get("/api/chats").json()][0] == "Mine"
 
 
-def test_only_its_members_change_or_delete_a_chat(api, user, other):
+def test_only_its_members_change_a_chat(api, user, other):
     chat = make_chat(api, "Design")
     body = {"name": "Product design", "description": "Pixels"}
     with signed_in_as(other):
-        # Anyone reads it, but someone who hasn't joined can't change or delete it.
+        # Anyone reads it, but someone who hasn't joined can't change it.
         assert api.get(f"/api/chats/{chat['id']}").status_code == 200
         resp = api.put(f"/api/chats/{chat['id']}", json=body)
         assert resp.status_code == 403
         assert resp.json()["detail"] == chats.NOT_JOINED
-        assert api.delete(f"/api/chats/{chat['id']}").status_code == 403
     assert api.get(f"/api/chats/{chat['id']}").json()["name"] == "Design"
 
     # Any member can.
-    add_user(api, chat, other)
+    join_as(api, chat, other)
     with signed_in_as(other):
         updated = api.put(f"/api/chats/{chat['id']}", json=body).json()
     assert updated["name"] == "Product design"
@@ -156,30 +159,26 @@ def test_only_its_members_change_or_delete_a_chat(api, user, other):
     resp = api.put(f"/api/chats/{chat['id']}", json={**body, "name": "Taken"})
     assert resp.status_code == 409
 
-    assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
-    assert api.get(f"/api/chats/{chat['id']}").status_code == 404
-    assert api.delete(f"/api/chats/{chat['id']}").status_code == 404
-    assert [c["name"] for c in api.get("/api/chats").json()] == ["Taken"]
 
-
-def test_a_member_removes_a_member(api, user, other):
+def test_a_member_removes_an_agent_or_workflow(api, user, other):
+    agent = make_agent(api, "Bot")
     chat = make_chat(api, "Design")
-    updated = add_user(api, chat, other)
-    first, added = updated["members"]["users"]
+    updated = add(api, chat, "agent", agent)
+    added = next(m for m in updated["members"]["agents"] if m["target_id"] == agent["id"])
     # A member of another chat isn't one of this chat's.
-    elsewhere = add_user(api, make_chat(api, "Elsewhere"), other)
-    stray = elsewhere["members"]["users"][1]["id"]
-    assert api.delete(f"/api/chats/{chat['id']}/members/{stray}").status_code == 404
+    elsewhere = add(api, make_chat(api, "Elsewhere"), "agent", agent)
+    stray = next(m for m in elsewhere["members"]["agents"] if m["target_id"] == agent["id"])
+    assert api.delete(f"/api/chats/{chat['id']}/members/{stray['id']}").status_code == 404
 
     assert api.delete(f"/api/chats/{chat['id']}/members/{added['id']}").status_code == 204
     assert api.delete(f"/api/chats/{chat['id']}/members/{added['id']}").status_code == 404
     after = api.get(f"/api/chats/{chat['id']}").json()
-    assert [m["target_id"] for m in after["members"]["users"]] == [user.id]
+    assert agent["id"] not in [m["target_id"] for m in after["members"]["agents"]]
     assert after["member_count"] == 2
-    # Out of it, the other user still reads it, but can't remove anyone.
+    # Someone who hasn't joined reads it, but can't remove anything.
+    [assistant] = after["members"]["agents"]
     with signed_in_as(other):
-        assert api.get(f"/api/chats/{chat['id']}").json()["is_member"] is False
-        resp = api.delete(f"/api/chats/{chat['id']}/members/{first['id']}")
+        resp = api.delete(f"/api/chats/{chat['id']}/members/{assistant['id']}")
         assert resp.status_code == 403
 
 
@@ -191,7 +190,7 @@ def test_a_chat_of_another_organisation_is_a_404_everywhere(api, user, outsider)
     with signed_in_as(outsider):
         assert api.get(url).status_code == 404
         assert api.put(url, json=body).status_code == 404
-        assert api.delete(url).status_code == 404
+        assert api.post(f"{url}/archive").status_code == 404
         assert api.post(f"{url}/messages", json={"body": "Hi"}).status_code == 404
         assert api.delete(f"{url}/members/{first['id']}").status_code == 404
         assert api.get("/api/chats").json() == []
@@ -282,7 +281,7 @@ def test_the_before_cursor_pages_back_through_history(api, monkeypatch):
 def test_a_message_outlives_its_author(api, db, user):
     leaver = join_organisation(db, user, "leaver")
     chat = make_chat(api, "Design")
-    add_user(api, chat, leaver)
+    join_as(api, chat, leaver)
     with signed_in_as(leaver):
         post(api, chat, "Bye")
     db.delete(leaver)
@@ -349,7 +348,7 @@ def test_a_member_adds_the_organisations_agents_and_workflows(api, other, outsid
 
 def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
     chat = make_chat(api, "Design")
-    add_user(api, chat, other)
+    join_as(api, chat, other)
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Review")
     [assistant] = chat["members"]["agents"]
@@ -464,7 +463,7 @@ def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, in_store):
 
 def test_mentions_are_stored_structurally(api, user, other):
     chat = make_chat(api, "Design")
-    add_user(api, chat, other)
+    join_as(api, chat, other)
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Review")
     add(api, chat, "agent", agent)
@@ -499,7 +498,7 @@ def test_mentions_are_stored_structurally(api, user, other):
 
 def test_a_mention_of_a_user_still_points_at_them_once_theyre_renamed(api, db, other):
     chat = make_chat(api, "Design")
-    add_user(api, chat, other)
+    join_as(api, chat, other)
     token = f"@[Other Person](user:{other.id})"
     mention = {"kind": "user", "id": other.id}
     resp = api.post(

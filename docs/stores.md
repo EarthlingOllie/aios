@@ -228,7 +228,8 @@ a cause, so far always a mention) and schema change requests (`aios.schema_chang
 followed (store revision `0012`, platform revision `0063`, which drops the platform's tables;
 nothing was copied, and development data is rebuilt with `make seed`). Chats moved as they
 were, owner and visibility included (both dropped by store revision `0019`, when every chat
-became open; it also gave chat messages their Jev verdict). Beside the runs they name, they do so by foreign key: a
+became open; it also gave chat messages their Jev verdict). Store revision `0022` gives chats
+when and by whom an admin archived them (`archived_at`, `archived_by`). Beside the runs they name, they do so by foreign key: a
 run deleted clears a schedule's last run, an invocation's run and a request's run; a schedule
 deleted clears its runs' `trigger_id`; a waiting step names its request.
 
@@ -303,8 +304,9 @@ read it (`provision.APPEND_ONLY`). Its details are on the deny list.
   changes, archiving and unarchiving (agents, skills, workflows, schedules, sources), version
   restores, exports and imports (`agent.exported`, `workflow.exported`, and an `*.imported`
   entry, with the file's name, for each skill, agent and workflow an import makes; a dry run
-  records nothing), approval decisions, approval rule changes, restores asked for, and each
-  `write_data` call (its table, operation, row count, run and agent).
+  records nothing), approval decisions, approval rule changes, restores asked for, chats renamed
+  (`chat.renamed`, with the old and new names), archived and unarchived (`chat.archived`,
+  `chat.unarchived`), and each `write_data` call (its table, operation, row count, run and agent).
 - **Platform-side actions** (role changes, joining and leaving, invitation links, renames,
   settings, deletion scheduled or cancelled) write an outbox row on the platform
   (`audit_outbox`) in their own transaction. The routine worker's beat drains it into each

@@ -5,7 +5,7 @@ from conftest import store_of
 from test_chat_agent_invocations import replies_from, say
 from test_chats import (  # noqa: F401
     add,
-    add_user,
+    join_as,
     make_chat,
     messages,
     other,
@@ -115,7 +115,7 @@ def test_mentioning_the_assistant_searches_the_chat_owners_documents_and_posts_t
 
     monkeypatch.setattr(hybrid_search, "document_search_results", search)
     chat = make_chat(api, "Design")
-    add_user(api, chat, other)
+    join_as(api, chat, other)
     assistant = assistant_of(chat)
     target = {"id": assistant["target_id"]}
 
