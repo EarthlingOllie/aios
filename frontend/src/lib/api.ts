@@ -487,6 +487,8 @@ export type SchemaProperty = {
   minimum?: number;
   maximum?: number;
   items?: SchemaProperty;
+  /** A field that picks things of the organisation's: "workflows" picks workflows by id. */
+  "x-picker"?: "workflows";
 };
 
 /** A tool in the library, which can be given to agents. */
@@ -812,10 +814,11 @@ export type NotificationList = {
   notifications: Notification[];
 };
 
-export type InvocationCause = "mention" | "schedule" | "manual" | "event";
+export type InvocationCause = "mention" | "schedule" | "manual" | "event" | "start_workflow";
 
-/** Why a run ran: a mention, a schedule, an event trigger, or a person starting it by hand. A workflow agent
- * node's is a child of its workflow run's. */
+/** Why a run ran: a mention, a schedule, an event trigger, a person starting it by hand, or an agent's
+ * `start_workflow` call (chained to the calling turn's). A workflow agent node's is a child of its
+ * workflow run's. */
 export type InvocationRecord = {
   id: number;
   cause: InvocationCause;
@@ -1090,7 +1093,12 @@ export type WorkflowRun = WorkflowRunSummary & {
   steps: WorkflowRunStep[];
   /** While it waits: the pins it would resume on that are no longer current. */
   stale_pins: StalePin[];
+  /** For a run an agent started (`start_workflow`): that agent, and its run (null once deleted). */
+  started_by_agent?: StartingAgent | null;
 };
+
+/** The agent whose `start_workflow` call started a workflow run. */
+export type StartingAgent = { agent_id: number; name: string; run_id: number | null };
 
 /** A workflow run as its page reads it. */
 export type WorkflowRunPage = WorkflowRun & {

@@ -38,6 +38,8 @@ class InvocationCause(enum.StrEnum):
     manual = "manual"
     # An event trigger's firing (`aios.events`).
     event = "event"
+    # An agent's `start_workflow` call (`aios.tools.start_workflow`), chained to its turn's.
+    start_workflow = "start_workflow"
 
 
 class InvocationStatus(enum.StrEnum):

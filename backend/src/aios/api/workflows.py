@@ -45,6 +45,7 @@ from aios.db import DB, DbId, SessionLocal
 from aios.limits import RunLimits
 from aios.models import (
     InvocableBy,
+    InvocationCause,
     InvocationStatus,
     Role,
     SchemaChangeStatus,
@@ -1119,6 +1120,16 @@ class StalePin(BaseModel):
     current_version: int | None
 
 
+class StartingAgent(BaseModel):
+    """The agent whose `start_workflow` call started a run (`aios.tools.start_workflow`), and its
+    run that called it."""
+
+    agent_id: int
+    name: str
+    # Null once that run has been deleted.
+    run_id: int | None
+
+
 class WorkflowRunOut(WorkflowRunSummary):
     # The pinned version's graph.
     version: WorkflowVersionOut
@@ -1128,6 +1139,8 @@ class WorkflowRunOut(WorkflowRunSummary):
     stale_pins: list[StalePin]
     # Why it ran (`aios.invocations`).
     invocation: InvocationRecordOut | None = None
+    # For a run an agent started (cause `start_workflow`): that agent, and its run.
+    started_by_agent: StartingAgent | None = None
 
 
 def stale_pins(db: Session, version_id: int) -> list[StalePin]:
@@ -1350,6 +1363,7 @@ def new_workflow_run(
     trigger_id: int | None = None,
     by_mention: bool = False,
     event: Event | None = None,
+    started_by: Invocation | None = None,
 ) -> WorkflowRun:
     """Add (and flush, not commit) a run of the workflow's current version to the store of the
     organisation `organisation_id` (`store`, where the workflow is), given `input`, started by
@@ -1367,7 +1381,8 @@ def new_workflow_run(
     validation errors if it doesn't fit (`run_input`).
 
     Its invocation is made with it (`invocations.for_run`): a schedule's, an event trigger's
-    (with the `event` it fired on), or one started by hand by `created_by`, running from when
+    (with the `event` it fired on), an agent's `start_workflow` call's (`started_by`, the
+    calling turn's invocation), or one started by hand by `created_by`, running from when
     the run is queued. A mention's run (`by_mention`) has its
     mention's, which the caller links.
     """
@@ -1402,6 +1417,7 @@ def new_workflow_run(
             requested_by=created_by,
             trigger_id=trigger_id,
             event=event,
+            started_by=started_by,
             status=InvocationStatus.running,
         )
         invocation.workflow_run_id = run.id
@@ -1542,7 +1558,27 @@ def workflow_run_out(
         steps=steps_out,
         stale_pins=stale,
         invocation=None if invocation is None else InvocationRecordOut.model_validate(invocation),
+        started_by_agent=starting_agent(store, invocation),
     )
+
+
+def starting_agent(store: Session, invocation: Invocation | None) -> StartingAgent | None:
+    """The agent whose `start_workflow` call caused the invocation, and its run: the calling
+    turn's invocation is the last of its ancestors. None for any other cause."""
+    if (
+        invocation is None
+        or invocation.cause != InvocationCause.start_workflow
+        or not invocation.ancestor_ids
+    ):
+        return None
+    found = store.execute(
+        select(Agent.id, Agent.name, Invocation.agent_run_id)
+        .join(Agent, Agent.id == Invocation.agent_id)
+        .where(Invocation.id == invocation.ancestor_ids[-1])
+    ).one_or_none()
+    if found is None:
+        return None
+    return StartingAgent(agent_id=found.id, name=found.name, run_id=found.agent_run_id)
 
 
 @router.get(

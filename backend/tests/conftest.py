@@ -179,6 +179,14 @@ def rate_limits() -> None:
     ratelimits.reset()
 
 
+def _in_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class RunService:
     """The run service as tests run it (`aios.run_service`): whatever a request wakes it for is
     run in-process once the response is sent, by its drain-once entry point, as if a run
@@ -194,8 +202,9 @@ class RunService:
         asyncio.run(executor.drain_once(**kwargs))
 
     def woken(self, *lanes) -> None:
-        # Not within a drain (a request made from inside a turn): that drain picks it up.
-        if not self.auto or getattr(self._draining, "on", False):
+        # Not within a drain (a request made from inside a turn, or an item woken from its
+        # event loop, `start_workflow`'s): that drain picks it up.
+        if not self.auto or getattr(self._draining, "on", False) or _in_event_loop():
             return
         self._draining.on = True
         try:

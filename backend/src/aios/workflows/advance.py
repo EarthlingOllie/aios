@@ -40,8 +40,21 @@ from aios import approvals, jev, turns
 from aios import workflows as package
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.datastores.models import AgentRun, Workflow, WorkflowRun, WorkflowRunStep, WorkflowVersion
-from aios.models import WorkflowRunStatus, WorkflowStepStatus, WorkKind, WorkLane
+from aios.datastores.models import (
+    AgentRun,
+    Invocation,
+    Workflow,
+    WorkflowRun,
+    WorkflowRunStep,
+    WorkflowVersion,
+)
+from aios.models import (
+    InvocationCause,
+    WorkflowRunStatus,
+    WorkflowStepStatus,
+    WorkKind,
+    WorkLane,
+)
 from aios.run_service.queue import Work
 from aios.ui_stream import error_text
 from aios.workflows import structured
@@ -152,6 +165,25 @@ class _Given:
     def of_step(step: WorkflowRunStep) -> "_Given":
         value = step.input_json if step.input_json is not None else step.input
         return _Given(step.input, value, step.message or step.input)
+
+
+# Where a run's input an agent started it with (`start_workflow`) says it's from, in its
+# untrusted block: derived text.
+STARTED_WITH = "derived:start_workflow"
+
+
+def _message(store: Session, run: WorkflowRun) -> str:
+    """The run's input as its start nodes' models are sent it: wrapped as untrusted if an agent
+    started the run (`aios.tools.start_workflow`), whose input is derived text; else as given."""
+    cause = store.scalar(
+        select(Invocation.cause)
+        .where(Invocation.workflow_run_id == run.id)
+        .order_by(Invocation.id)
+        .limit(1)
+    )
+    if cause == InvocationCause.start_workflow:
+        return jev.wrap(run.input, STARTED_WITH)
+    return run.input
 
 
 class _InputFailed(Exception):
@@ -587,7 +619,7 @@ def advance_run(
             graph = load_graph(store, run.workflow_version_id, organisation_id, strict=not steps)
             moving = _Advance(store, data_store_id, organisation_id, run, steps)
             run_input = run.input_json if run.input_json is not None else run.input
-            outcome = moving.graph(graph, (), _Given(run.input, run_input, run.input))
+            outcome = moving.graph(graph, (), _Given(run.input, run_input, _message(store, run)))
         except RunError as exc:
             store.rollback()
             return [], end_after_rollback(store, run_id, str(exc))

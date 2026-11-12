@@ -203,6 +203,24 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       subtitle={
         <>
           <StartedBy run={r} after=" · " />
+          {r.started_by_agent && (
+            <>
+              <span data-testid="started-by-agent">
+                Started by the agent{" "}
+                {r.started_by_agent.run_id !== null ? (
+                  <Link
+                    to={`/agents/${r.started_by_agent.agent_id}/runs/${r.started_by_agent.run_id}`}
+                    className="hover:underline"
+                  >
+                    {r.started_by_agent.name}
+                  </Link>
+                ) : (
+                  r.started_by_agent.name
+                )}
+              </span>
+              {" · "}
+            </>
+          )}
           <span>
             {r.status === "waiting" && r.waiting_since
               ? `Started ${formatDate(r.started_at!)} · waiting since ${formatDate(r.waiting_since)}`

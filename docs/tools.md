@@ -78,6 +78,28 @@ chat's name and a markdown body, and optionally the names of the chat's members 
 [Chats](chats.md#agents-posting-into-other-chats) for what it refuses and how a post is treated.
 Its result (which message, or why not) is the platform's own, so it isn't sent to Jev.
 
+## Start workflow
+
+**Start workflow** (`start_workflow`) lets an agent hand structured work to the workflows its
+settings allow, picked on the agent's form. Its description lists each one's id, name,
+description and input schema. A call names a workflow and gives an input; the run it starts is
+caused by `start_workflow`, chained to the calling turn's invocation, and started by the person
+behind that turn (if any). The input is derived text, wrapped as untrusted wherever it reaches a
+model in the run.
+
+- **Results.** The call waits up to its wait time (120 seconds by default, at most 600) and
+  returns the run's output, or its error. A run still going by then returns its id: its result
+  is handed back (summarised) to the calling turn's chat, else to the delivery chat of the
+  trigger behind the chain, else only to the run's page.
+- **Refused**, as the tool's result, refusing only that call: a workflow not in its list,
+  deleted or archived; input that doesn't fit the input schema; the workflow's invocable by
+  against the role of the person behind the chain; a workflow already in the chain of causes;
+  a chain longer than `CHAIN_MAX_DEPTH` (shared with event triggers); past
+  `START_WORKFLOW_RATE_PER_AGENT` runs a minute.
+
+A run an agent started says so on its page, naming the agent and the run that started it. See
+`aios.tools.start_workflow`.
+
 ## Web search
 
 **Web search** uses the model provider's native search tool (Anthropic's server-side web
