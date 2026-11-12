@@ -63,7 +63,9 @@ def signature(secret: str, timestamp: str, body: bytes) -> str:
 
 
 def signed(secret: str, timestamp: str, body: bytes, given: str) -> bool:
-    return hmac.compare_digest(signature(secret, timestamp, body), given.strip())
+    # compare_digest takes only ASCII str; a header may carry any latin-1 character.
+    given = given.strip()
+    return given.isascii() and hmac.compare_digest(signature(secret, timestamp, body), given)
 
 
 def index(data_store_id: uuid.UUID, organisation_id: int, trigger_id: int, hashed: str) -> None:

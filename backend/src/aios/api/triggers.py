@@ -370,6 +370,19 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> Ap
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.target_kind.value}"
         )
+    if (
+        event_type == EventType.webhook_received
+        and body.debounce_seconds is not None
+        and model is Workflow
+        and target.current_version is not None
+        and target.current_version.input_schema
+    ):
+        # A debounced run is given the batch, not a body, so it can't meet the schema each
+        # call's body is checked against.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"A webhook trigger for {target.name}, which has an input schema, can't be debounced.",
+        )
     # An archived target starts nothing, so its schedules can be changed only while paused.
     # Share-locked until the store's transaction ends, with the trigger's, so a concurrent
     # archive of the target (which pauses its triggers) either waits and then pauses this one,

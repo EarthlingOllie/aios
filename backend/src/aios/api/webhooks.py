@@ -203,7 +203,7 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
     stamp = request.headers.get(webhooks.TIMESTAMP_HEADER, "").strip()
     given = request.headers.get(webhooks.SIGNATURE_HEADER, "")
     if (
-        not stamp.isdigit()
+        not (stamp.isascii() and stamp.isdigit())
         or abs(time.time() - int(stamp)) > settings.webhook_tolerance_seconds
         or not webhooks.signed(found.secret, stamp, raw, given)
     ):

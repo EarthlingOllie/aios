@@ -189,6 +189,26 @@ def test_a_bad_signature_or_stale_timestamp_is_401(hook, outside):
     assert webhook_events() == []
 
 
+def test_a_non_ascii_signature_or_timestamp_is_401_not_500(hook, outside):
+    url, secret = hook["webhook_url"], hook["webhook_secret"]
+    path = url.removeprefix(get_settings().public_url.rstrip("/"))
+    data = b"{}"
+    stamp = str(int(time.time()))
+    # Header values arrive decoded as latin-1, so any of its characters can reach the checks.
+    for headers in (
+        {webhooks.TIMESTAMP_HEADER: stamp.encode(), webhooks.SIGNATURE_HEADER: b"sha256=\xe9"},
+        {
+            webhooks.TIMESTAMP_HEADER: "\xb2".encode("latin-1"),
+            webhooks.SIGNATURE_HEADER: webhooks.signature(secret, "\xb2", data).encode(),
+        },
+    ):
+        resp = outside.post(
+            path, content=data, headers={"Content-Type": "application/json", **headers}
+        )
+        assert resp.status_code == 401, resp.text
+    assert webhook_events() == []
+
+
 def test_an_unknown_or_disabled_token_is_404(api, hook, outside):
     url, secret = hook["webhook_url"], hook["webhook_secret"]
     assert call(outside, url + "x", secret).status_code == 404
@@ -297,6 +317,23 @@ def test_payloads_are_validated_against_the_workflows_input_schema(
     run = in_store.get(WorkflowRun, invocation.workflow_run_id)
     # The body is the run's input.
     assert run.input_json == {"order": 7}
+
+
+def test_a_webhook_trigger_for_a_workflow_with_an_input_schema_cant_be_debounced(api):
+    # A debounced run is given the batch, which the schema checking each body would refuse.
+    workflow = schema_workflow(api)
+    body = webhook_trigger("workflow", workflow["id"], debounce_seconds=30)
+    resp = api.post("/api/triggers", json=body)
+    assert resp.status_code == 422, resp.text
+    assert "debounced" in resp.text
+    t = make_trigger(api, webhook_trigger("workflow", workflow["id"]))
+    resp = api.put(f"/api/triggers/{t['id']}", json=body)
+    assert resp.status_code == 422, resp.text
+    # Without a schema a batch is a fine input.
+    agent = make_echo_agent(api, "Plain", base_prompt="echo")
+    plain = api.post("/api/workflows", json=workflow_body("Plain", [agent_node("a", agent)]))
+    assert plain.status_code == 201, plain.text
+    make_trigger(api, webhook_trigger("workflow", plain.json()["id"], debounce_seconds=30))
 
 
 def test_a_template_is_rendered_with_the_body_before_its_checked(api, in_store, outside, queued):  # noqa: F811
