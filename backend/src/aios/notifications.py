@@ -43,7 +43,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios.db import SessionLocal
-from aios.models import DataStore, Notification, OrganisationMember
+from aios.models import DataStore, Notification, OrganisationMember, Role
 
 log = logging.getLogger(__name__)
 
@@ -238,6 +238,18 @@ def notify_from_store(
         db.commit()
 
 
+def admins(db: Session, organisation_id: int) -> list[int]:
+    """The organisation's admins' user ids."""
+    return list(
+        db.scalars(
+            select(OrganisationMember.user_id).where(
+                OrganisationMember.organisation_id == organisation_id,
+                OrganisationMember.role == Role.admin,
+            )
+        )
+    )
+
+
 # --- From the store side, once it commits --------------------------------------------------------
 
 
@@ -248,6 +260,8 @@ class _Due:
     ref: dict[str, Any]
     # The chat whose stream, open in a visible tab, means a person needn't be told.
     unless_watching: int | None
+    # The organisation's admins too.
+    and_admins: bool = False
 
 
 _DUE = "aios.notifications.due"
@@ -260,11 +274,15 @@ def after_store_commit(
     ref: dict[str, Any],
     *,
     unless_watching: int | None = None,
+    and_admins: bool = False,
 ) -> None:
     """Notify the users of `kind` about `ref` once the store's transaction (`store`'s) commits,
     from its organisation; nothing if it rolls back. With `unless_watching` (a chat's id), not
-    those watching that chat's stream in a visible tab then (`aios.streams.watching`)."""
-    store.info.setdefault(_DUE, []).append(_Due(tuple(user_ids), kind, ref, unless_watching))
+    those watching that chat's stream in a visible tab then (`aios.streams.watching`). With
+    `and_admins`, the organisation's admins too."""
+    store.info.setdefault(_DUE, []).append(
+        _Due(tuple(user_ids), kind, ref, unless_watching, and_admins)
+    )
 
 
 @sa_event.listens_for(Session, "after_commit")
@@ -290,6 +308,8 @@ def _deliver_after_store_commit(session: Session) -> None:
                     if d.unless_watching is None
                     or not streams.watching(store_id, d.unless_watching, u)
                 ]
+                if d.and_admins:
+                    users += admins(db, organisation_id)
                 notify(db, users, organisation_id, d.kind, d.ref)
             db.commit()
     except Exception:

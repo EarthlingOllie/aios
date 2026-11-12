@@ -550,12 +550,14 @@ export type ChatMessageRow = {
   invocation_id: number | null;
   created_at: string;
 };
-type InvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed" | "refused";
-/** An agent's or workflow's run that a mention started. */
+type InvocationStatus = "queued" | "briefing" | "running" | "handing_back" | "succeeded" | "failed" | "refused";
+/** An agent's or workflow's run that a mention started, or a schedule's whose result was
+ * delivered to the chat (`delivered`). */
 export type InvocationRow = {
   id: number;
   chat_id: number;
-  message_id: number;
+  message_id: number | null;
+  delivered?: boolean;
   requested_by: number;
   target_kind: Kind;
   target_id: number;
@@ -565,12 +567,32 @@ export type InvocationRow = {
   refusal_reason?: string | null;
   /** What the handoff told its run of the chat; null until it has. */
   brief: string | null;
+  /** The handback: the full output it summarised, the summary posted, and why summarising failed. */
+  full_output?: string | null;
+  summary?: string | null;
+  handback_error?: string | null;
+  delivery_error?: string | null;
   /** The run it started; gone from `runs` (or `agentRuns`) once it's deleted. */
   run_id: number | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
 };
+
+/** Whether a mention's result is handed back before it's posted, as the API decides it. */
+function handsBack(invocation: InvocationRow, body: string): boolean {
+  if (invocation.delivered) return false;
+  if (invocation.target_kind === "workflow") return body.trim() !== "";
+  const trimmed = body.trim();
+  if (trimmed.length > HANDBACK_THRESHOLD) return true;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** How the API names a user (the backend's `User.full_name`): "First Last". */
 function fullName(user: ChatUser): string {
@@ -647,6 +669,11 @@ const runInput = (brief: string | null, body: string) => (brief ? `${brief}\n\n$
 
 /** What a mentioned member's handoff writes: what it understood and the brief, or why it failed. */
 export type Handoff = { ack: string; brief: string } | { error: string };
+/** What the handback answers for a result (`handbacks`, by target id): a summary (by default the
+ * output as it came), or an error, which posts the raw output with a note. */
+export type Handback = { summary: string } | { error: string };
+/** Agent replies longer than this are handed back (the API's `handback_threshold`). */
+export const HANDBACK_THRESHOLD = 3000;
 export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
 /** The acknowledgement's placeholder, until the handoff writes what was understood. */
 const ACKNOWLEDGEMENT = "Reading the chat…";
@@ -778,6 +805,8 @@ export class FakeApi {
   refuseStart = new Map<number, string>();
   /** How each mentioned agent's turn goes, by agent id (`AGENT_TURN` if unset). */
   agentTurns = new Map<number, AgentTurn>();
+  /** What the handback answers for each agent's or workflow's results, by target id. */
+  handbacks = new Map<number, Handback>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The organisation's data store's status: documents and search answer 409 until it's "ready". */
@@ -1447,8 +1476,23 @@ export class FakeApi {
       last_error: null,
       last_run_id: null,
       last_workflow_run_id: null,
+      ...this.destination(body.deliver_to as number | null | undefined),
       created_at: NOW,
       updated_at: NOW,
+    };
+  }
+
+  /** The chat a trigger delivers to, as the API returns it, and who chose it (`me`). */
+  private destination(chatId: number | null | undefined) {
+    const chat = chatId ? this.chats.get(chatId) : undefined;
+    return {
+      deliver_to: chat
+        ? { id: chat.id, name: chat.name, archived: !!chat.archived_at }
+        : null,
+      deliver_to_set_by: chat
+        ? { id: this.me.id, name: fullName(this.me) }
+        : null,
+      delivery_problem: null as string | null,
     };
   }
 
@@ -1474,6 +1518,15 @@ export class FakeApi {
       created_at: NOW,
       updated_at: NOW,
     });
+  }
+
+  /** Why a chat can't be chosen to deliver to (it's archived), as the API refuses it; else null. */
+  private archivedDestination(chatId: unknown): string | null {
+    const chat =
+      typeof chatId === "number" ? this.chats.get(chatId) : undefined;
+    return chat?.archived_at
+      ? `${chat.name} is archived, so results can't be delivered there. Choose another chat.`
+      : null;
   }
 
   /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
@@ -1956,7 +2009,10 @@ export class FakeApi {
       refusal ?? ACKNOWLEDGEMENT,
       { kind, id: target.id, name: target.name },
       [],
-      { kind: "run_card", invocation_id: invocation.id },
+      {
+        kind: "run_card",
+        invocation_id: invocation.id,
+      },
     );
     // An archived agent's or workflow's fails at once, as the API's does: no handoff, no run.
     if (!refusal && target.archived_at !== null) {
@@ -1966,8 +2022,18 @@ export class FakeApi {
     return invocation;
   }
 
-  /** Ends an invocation and posts its result back from its agent or workflow, as the API does. */
+  /**
+   * Ends an invocation and posts its result back from its agent or workflow, as the API does: a
+   * workflow's result, and an agent's reply in JSON or over the threshold, is handed back first
+   * (`handing_back`), and posted summarised on the next beat (`handBack`).
+   */
   private finishInvocation(invocation: InvocationRow, status: "succeeded" | "failed", body: string, error: string | null = null) {
+    // What the handback answered is posted as it is.
+    if (status === "succeeded" && invocation.status !== "handing_back" && handsBack(invocation, body)) {
+      Object.assign(invocation, { status: "handing_back", full_output: body });
+      this.drafts.delete(invocation.id);
+      return;
+    }
     Object.assign(invocation, { status, error, finished_at: NOW });
     // The posted reply (or the failure) replaces the draft.
     this.drafts.delete(invocation.id);
@@ -1979,6 +2045,76 @@ export class FakeApi {
       [],
       { invocation_id: invocation.id },
     );
+  }
+
+  /** Posts what the handback of an invocation handing back answers, as `handbacks` scripts it. */
+  private handBack(invocation: InvocationRow) {
+    const output = invocation.full_output ?? "";
+    const handback = this.handbacks.get(invocation.target_id) ?? {
+      summary: output,
+    };
+    const body =
+      "error" in handback
+        ? `${output}\n\n_Couldn't summarise this result (${handback.error}), so it's posted as it came._`
+        : handback.summary;
+    Object.assign(invocation, {
+      summary: "error" in handback ? null : handback.summary,
+      handback_error: "error" in handback ? handback.error : null,
+    });
+    this.finishInvocation(invocation, "succeeded", body);
+  }
+
+  /**
+   * A schedule's run whose result was delivered to the chat: its summary posted from the agent or
+   * workflow, with its run's card (collapsed) under it and the full output behind it.
+   */
+  addDelivery(
+    chat: ChatRow,
+    kind: Kind,
+    target: AgentRow | WorkflowRow,
+    summary: string,
+    fullOutput: string,
+  ) {
+    const run =
+      kind === "agent"
+        ? this.addAgentRun(target as AgentRow, "Go", 2, {
+            status: "succeeded",
+            started_at: NOW,
+            finished_at: NOW,
+          })
+        : this.addRun(target as WorkflowRow, {
+            status: "succeeded",
+            output: fullOutput,
+          });
+    const invocation: InvocationRow = {
+      id: this.id(),
+      chat_id: chat.id,
+      message_id: null,
+      delivered: true,
+      requested_by: this.me.id,
+      target_kind: kind,
+      target_id: target.id,
+      status: "succeeded",
+      error: null,
+      brief: null,
+      full_output: fullOutput,
+      summary,
+      run_id: run.id,
+      created_at: NOW,
+      started_at: NOW,
+      finished_at: NOW,
+    };
+    this.invocations.set(invocation.id, invocation);
+    this.addChatMessage(
+      chat,
+      summary,
+      { kind, id: target.id, name: target.name },
+      [],
+      {
+        invocation_id: invocation.id,
+      },
+    );
+    return invocation;
   }
 
   /**
@@ -2005,7 +2141,11 @@ export class FakeApi {
    */
   advanceInvocations(chat: ChatRow) {
     for (const invocation of this.invocations.values()) {
-      if (invocation.chat_id !== chat.id || invocation.status === "refused") continue;
+      if (invocation.chat_id !== chat.id || invocation.status === "refused" || invocation.delivered) continue;
+      if (invocation.status === "handing_back") {
+        this.handBack(invocation);
+        continue;
+      }
       if (invocation.status === "queued") {
         invocation.status = "briefing";
         continue;
@@ -2405,8 +2545,15 @@ export class FakeApi {
     const { run_id, ...invocationRest } = invocation;
     const rest = {
       ...invocationRest,
+      delivered: invocation.delivered ?? false,
       refusal_reason: invocation.refusal_reason ?? null,
-      acknowledgement: this.cardOf(chat, invocation).body,
+      acknowledgement: invocation.delivered
+        ? ""
+        : this.cardOf(chat, invocation).body,
+      full_output: invocation.full_output ?? null,
+      summary: invocation.summary ?? null,
+      handback_error: invocation.handback_error ?? null,
+      delivery_error: invocation.delivery_error ?? null,
     };
     if (invocation.target_kind === "agent") {
       const run = run_id === null ? undefined : this.agentRuns.get(run_id);
@@ -3456,6 +3603,8 @@ export class FakeApi {
         const unknown = Object.keys(body.filter ?? {}).find((k) => !["sources", "content_types"].includes(k));
         if (unknown) return fail(422, `Unknown filter field '${unknown}' (known: content_types, sources).`);
       }
+      const archived = this.archivedDestination(body.deliver_to);
+      if (archived) return fail(409, archived);
       const trigger = this.triggerOut(body);
       this.schedules.push(trigger);
       return reply(201, trigger);
@@ -3470,6 +3619,9 @@ export class FakeApi {
         return reply(204, null);
       }
       const old = this.schedules[at];
+      const chosen = (old.deliver_to as { id: number } | null)?.id;
+      const archived = body.deliver_to !== chosen && this.archivedDestination(body.deliver_to);
+      if (archived) return fail(409, archived);
       this.schedules[at] = { ...old, ...this.triggerOut(body, old.id as number), last_fired_at: old.last_fired_at, last_status: old.last_status, last_error: old.last_error };
       return reply(200, this.schedules[at]);
     }

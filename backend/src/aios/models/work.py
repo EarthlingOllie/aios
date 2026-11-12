@@ -55,6 +55,8 @@ class WorkKind(enum.StrEnum):
     # Embedding a store's search items still waiting for an embedding, under a time budget
     # (`aios.search_index.embed_pending`): background work, one queued per store at a time.
     embedding_sweep = "embedding_sweep"
+    # Summarising an ended run's output and posting it to its chat (`aios.handback`).
+    handback = "handback"
 
 
 class WorkItem(Base):

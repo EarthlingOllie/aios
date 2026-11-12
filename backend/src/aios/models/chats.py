@@ -46,6 +46,8 @@ class InvocationStatus(enum.StrEnum):
     # The handoff is briefing its run on the chat (`aios.handoff`); the run starts next.
     briefing = "briefing"
     running = "running"
+    # Its run has ended, and the handback is summarising its output to post (`aios.handback`).
+    handing_back = "handing_back"
     succeeded = "succeeded"
     failed = "failed"
     # A mention the poster may not make (the target's invocable-by, `aios.guards`): posted with

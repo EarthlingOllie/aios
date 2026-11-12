@@ -6,8 +6,9 @@ tests use (`aios.testing.fake_model`) instead of a provider's; embeddings are a 
 too (`aios.embeddings`). The full-stack browser test runs the stack this way, so it makes no
 calls to model, embedding or tracing providers (Compose's `fullstack` profile).
 
-Every scenario answers the handoff (`aios.handoff`) with "On it." and an empty brief, so the
-deployment's model can be the handoff's too. Later steps add scenarios here, one per story the
+Every scenario answers the handoff (`aios.handoff`) with "On it." and an empty brief, and the
+handback (`aios.handback`) with the output it was sent, so the deployment's model can be theirs
+too. Later steps add scenarios here, one per story the
 full-stack test tells.
 """
 
@@ -22,6 +23,7 @@ from aios.testing.fake_model import (
     Info,
     Script,
     ToolCall,
+    handback_output,
     last_tool_results,
     model,
     tool_output,
@@ -32,6 +34,8 @@ PROVIDER = "scripted"
 # The handoff's structured output (`aios.handoff.Handoff`), as the model is asked for it.
 HANDOFF = "Handoff"
 ACK = "On it."
+# The handback's (`aios.handback.Handback`): its summary is the output, as it came.
+HANDBACK = "Handback"
 
 # The core loop's table, and what the agent says once it has written its row.
 NOTES = {
@@ -94,11 +98,15 @@ SCENARIOS: dict[str, Script] = {
 
 
 def handing_off(script: Script) -> Script:
-    """`script`, answering the handoff's request for a brief itself."""
+    """`script`, answering the handoff's request for a brief, and the handback's for a summary,
+    itself."""
 
     async def scripted(messages: list[BaseMessage], info: Info):
         if HANDOFF in info.schemas:
             yield ToolCall(HANDOFF, {"ack": ACK, "brief": ""})
+            return
+        if HANDBACK in info.schemas:
+            yield ToolCall(HANDBACK, {"summary": handback_output(messages)})
             return
         async for item in script(messages, info):
             yield item

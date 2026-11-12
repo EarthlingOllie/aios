@@ -45,7 +45,7 @@ from aios.datastores.models import (
 )
 from aios.datastores.schema_changes.expiry import not_given
 from aios.db import SessionLocal
-from aios.invocations import UNFINISHED
+from aios.invocations import LIVE
 from aios.models import (
     AgentRunStatus,
     DataStore,
@@ -168,7 +168,7 @@ def _agent_run_in_flight(cutoff: datetime) -> ColumnElement[bool]:
         ),
         exists().where(
             Invocation.agent_run_id == AgentRun.id,
-            or_(Invocation.status.in_(UNFINISHED), Invocation.finished_at >= cutoff),
+            or_(Invocation.status.in_(LIVE), Invocation.finished_at >= cutoff),
         ),
         exists().where(SchemaChangeRequest.requested_by_run == AgentRun.id, *not_given()),
     )
@@ -183,7 +183,7 @@ def _prune_runs(store: Session, cutoff: datetime) -> tuple[int, int, list[Sandbo
             WorkflowRun.status.in_(FINISHED_WORKFLOW_RUN),
             func.coalesce(WorkflowRun.finished_at, WorkflowRun.created_at) < cutoff,
             ~exists().where(
-                Invocation.workflow_run_id == WorkflowRun.id, Invocation.status.in_(UNFINISHED)
+                Invocation.workflow_run_id == WorkflowRun.id, Invocation.status.in_(LIVE)
             ),
             # None of its agent nodes waits, nor has a run still in flight.
             ~exists()
@@ -260,12 +260,12 @@ def _prune_messages(store: Session, cutoff: datetime) -> tuple[int, int, list[Sa
             # Its own invocation (a card's or a result's) is finished.
             ~exists().where(
                 own.id == ChatMessage.invocation_id,
-                or_(own.status.in_(UNFINISHED), own.finished_at >= cutoff),
+                or_(own.status.in_(LIVE), own.finished_at >= cutoff),
             ),
             # And so is every one it started, before the cutoff.
             ~exists().where(
                 started.message_id == ChatMessage.id,
-                or_(started.status.in_(UNFINISHED), started.finished_at >= cutoff),
+                or_(started.status.in_(LIVE), started.finished_at >= cutoff),
             ),
         )
         .order_by(ChatMessage.id)

@@ -66,8 +66,64 @@ export function triggerInput(t: Trigger, changes: Partial<TriggerInput> = {}): T
     ...(t.kind === "event"
       ? { event_type: t.event_type, filter: t.filter, fire_on_own_events: t.fire_on_own_events }
       : {}),
+    deliver_to: t.deliver_to?.id ?? null,
     ...changes,
   };
+}
+
+/**
+ * Where the schedule's runs' results go: a chat (any that isn't archived; choosing one adds the
+ * agent or workflow to it), or nowhere. One delivering to a chat archived since keeps it, shown
+ * as archived, with a prompt to choose another.
+ */
+function DeliverToPicker({
+  id,
+  trigger,
+  value,
+  onChange,
+}: {
+  id: string;
+  trigger?: Trigger;
+  value: number | null;
+  onChange: (chatId: number | null) => void;
+}) {
+  const chats = useLoad(useCallback(() => api.listChats(), []));
+  const current = trigger?.deliver_to;
+  const archived = current?.archived && current.id === value ? current : null;
+  return (
+    <Field
+      label="Deliver to"
+      htmlFor={id}
+      hint="When a run ends, its result is summarised and posted in this chat, or a short message if it failed. Choosing a chat adds this schedule's agent or workflow to it."
+    >
+      <select
+        id={id}
+        className={selectClass}
+        value={value ?? ""}
+        onChange={(e) =>
+          onChange(e.target.value ? Number(e.target.value) : null)
+        }
+      >
+        <option value="">Nowhere</option>
+        {archived && (
+          <option value={archived.id} disabled>
+            {archived.name} (archived)
+          </option>
+        )}
+        {chats.data?.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {archived && (
+        <p role="alert" className="text-destructive mt-1 text-xs">
+          {archived.name} is archived, so results aren't delivered there. Choose
+          another chat.
+        </p>
+      )}
+    </Field>
+  );
 }
 
 /** The event types a trigger can be made for so far, as the form offers them. */
@@ -265,6 +321,12 @@ export function ScheduleEditor({
           }
         />
       </Field>
+      <DeliverToPicker
+        id={`${id}-deliver-to`}
+        trigger={trigger}
+        value={form.deliver_to ?? null}
+        onChange={(deliver_to) => set({ deliver_to })}
+      />
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -576,6 +638,21 @@ export function ScheduleRow({
           )}
         </div>
         {t.input && <p className="text-muted-foreground truncate text-xs">“{t.input}”</p>}
+        {t.deliver_to && (
+          <p className="text-muted-foreground text-xs" data-testid="deliver-to">
+            Delivers to{" "}
+            <Link to={`/chats/${t.deliver_to.id}`} className="underline">
+              {t.deliver_to.name}
+            </Link>
+            {t.deliver_to.archived && " (archived)"}
+            {t.deliver_to_set_by && ` · chosen by ${t.deliver_to_set_by.name}`}
+          </p>
+        )}
+        {t.delivery_problem && (
+          <p role="alert" className="text-destructive text-xs" data-testid="delivery-problem">
+            {t.delivery_problem}
+          </p>
+        )}
         <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
           {t.next_run_at ? (
             <span data-testid="next-run">

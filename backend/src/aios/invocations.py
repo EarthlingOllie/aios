@@ -46,14 +46,18 @@ organisation's store, so everything here is on a session on it (`store`), in one
 a run deleted clears the invocation's link to it by its foreign key.
 """
 
+import json
+import logging
 import re
 import uuid
 from collections.abc import Sequence
 
+from sqlalchemy import event as sa_event
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, jev, limits, notifications, outbox, search_index, streams
+from aios.config import get_settings
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -62,18 +66,24 @@ from aios.datastores.models import (
     Event,
     Invocation,
     SchemaChangeRequest,
+    Trigger,
     Workflow,
     WorkflowRun,
 )
 from aios.datastores.schema_changes import not_given
+from aios.db import SessionLocal
 from aios.models import (
     ChatAuthorKind,
     ChatMessageKind,
+    DataStore,
     InvocationCause,
     InvocationStatus,
     TriggerTargetKind,
     WorkflowRunStatus,
+    WorkLane,
 )
+
+log = logging.getLogger(__name__)
 
 # The acknowledgement a run card carries until the handoff replaces it with what the member
 # understood (`aios.handoff`).
@@ -87,6 +97,8 @@ NO_REPLY = "_The agent finished without a reply._"
 # Before its run has started, and before it has finished.
 NOT_STARTED = (InvocationStatus.queued, InvocationStatus.briefing)
 UNFINISHED = (*NOT_STARTED, InvocationStatus.running)
+# Not finished yet: its run going, or its result being handed back (`aios.handback`).
+LIVE = (*UNFINISHED, InvocationStatus.handing_back)
 
 # A mention's token in a message (`@[name](kind:id)`, the name with `\`, `[` and `]` escaped).
 TOKEN = re.compile(r"@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):[1-9]\d*\)")
@@ -139,6 +151,12 @@ def for_run(
         cause = InvocationCause.manual
         ancestors = []
     is_agent = kind == TriggerTargetKind.agent
+    # A trigger's run delivers its result to the chat the trigger names, as it fires.
+    deliver_to = None
+    if trigger_id is not None and parent is None:
+        deliver_to = store.scalar(
+            select(Trigger.destination_chat_id).where(Trigger.id == trigger_id)
+        )
     invocation = Invocation(
         cause=cause,
         requested_by=requested_by,
@@ -152,6 +170,7 @@ def for_run(
         workflow_id=None if is_agent else target_id,
         status=status,
         started_at=func.now() if status == InvocationStatus.running else None,
+        delivery_chat_id=deliver_to,
     )
     store.add(invocation)
     store.flush()
@@ -301,32 +320,222 @@ def _finish(
     store: Session, invocation: Invocation, status: InvocationStatus, body: str, error=None
 ) -> None:
     """End the (locked, unfinished) invocation and post its result back into its chat, if a
-    chat follows it."""
+    chat follows it: as written, or handed back to be summarised first (`hands_back`). A
+    trigger's run that delivers to a chat posts there instead (`_deliver`)."""
     invocation.status = status
     invocation.error = error
     invocation.finished_at = func.now()
     if invocation.chat_id is None:
+        if invocation.delivery_chat_id is not None and invocation.parent_id is None:
+            _deliver(store, invocation, status, body, error)
+            return
         _notify(store, invocation, status, None)
         return
+    if status == InvocationStatus.succeeded and hands_back(invocation, body):
+        _hand_back(store, invocation, body)
+        return
+    result = _post(store, invocation, invocation.chat_id, body)
+    _notify(store, invocation, status, result)
+
+
+def _post(store: Session, invocation: Invocation, chat_id: int, body: str) -> ChatMessage:
+    """Post the invocation's result into the chat, as a message from its agent or workflow
+    belonging to it: derived text (its verdict `derived`), never re-classified."""
     result = ChatMessage(
-        chat_id=invocation.chat_id,
+        chat_id=chat_id,
         author_kind=ChatAuthorKind(invocation.target_kind.value),
         author_workflow_id=invocation.workflow_id,
         author_agent_id=invocation.agent_id,
         kind=ChatMessageKind.text,
         body=body,
         invocation_id=invocation.id,
+        verdict=jev.Verdict.derived,
     )
     store.add(result)
     search_index.index_chat_message(store, result)
     outbox.message_posted(store, result, invocation_id=invocation.id)
     # A result is activity.
-    store.execute(update(Chat).where(Chat.id == invocation.chat_id).values(updated_at=func.now()))
+    store.execute(update(Chat).where(Chat.id == chat_id).values(updated_at=func.now()))
+    return result
+
+
+# Results that say there's nothing to summarise.
+PLACEHOLDERS = (NO_OUTPUT, NO_FINAL_STEP, NO_REPLY)
+
+
+def is_json(text: str) -> bool:
+    """Whether the text is a JSON object or array."""
+    stripped = text.strip()
+    if not stripped.startswith(("{", "[")):
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return False
+    return True
+
+
+def hands_back(invocation: Invocation, body: str) -> bool:
+    """Whether a mention's successful result is summarised by the handback before it's posted
+    (`aios.handback`): a workflow's, and an agent's longer than `handback_threshold` characters
+    or in JSON. An agent's short reply is posted as written."""
+    if invocation.parent_id is not None or invocation.cause != InvocationCause.mention:
+        return False
+    if body in PLACEHOLDERS or not body.strip():
+        return False
+    if invocation.target_kind == TriggerTargetKind.workflow:
+        return True
+    return len(body) > get_settings().handback_threshold or is_json(body)
+
+
+_HANDBACKS = "aios.invocations.handbacks"
+
+
+def _hand_back(store: Session, invocation: Invocation, output: str) -> None:
+    """Keep the run's full output and mark the invocation handing back, its card showing
+    "Summarising"; once the store commits, its handback is enqueued (`aios.handback`)."""
+    invocation.status = InvocationStatus.handing_back
+    invocation.finished_at = None
+    invocation.full_output = output
+    store.info.setdefault(_HANDBACKS, set()).add(invocation.id)
+    streams.invocation_changed(store, invocation.id)
+
+
+def enqueue_handbacks(data_store_id: uuid.UUID, invocation_ids: Sequence[int]) -> None:
+    """Enqueue the handbacks of the store's invocations, committed handing back, and wake the
+    run service for them."""
+    from aios.run_service import queue, work
+
+    with SessionLocal() as db:
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+        if organisation_id is None:
+            return
+        queue.enqueue(
+            db, [work.handback_work(organisation_id, data_store_id, i) for i in invocation_ids]
+        )
+        db.commit()
+    queue.wake(WorkLane.interactive)
+
+
+@sa_event.listens_for(Session, "after_commit")
+def _enqueue_handbacks(session: Session) -> None:
+    due: set[int] | None = session.info.pop(_HANDBACKS, None)
+    if not due:
+        return
+    try:
+        enqueue_handbacks(store_id_of(session), sorted(due))
+    except Exception:
+        # The requeue sweep finds them (`aios.run_service.work.lost`).
+        log.exception("couldn't enqueue handbacks")
+
+
+@sa_event.listens_for(Session, "after_rollback")
+def _forget_handbacks(session: Session) -> None:
+    session.info.pop(_HANDBACKS, None)
+
+
+def post_handback(
+    store: Session,
+    invocation_id: int,
+    body: str,
+    *,
+    summary: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Post what the handback gave for the invocation handing back (the summary, or the raw
+    output with a note if summarising failed, `error`) as its result, and mark it succeeded;
+    in the caller's transaction. A no-op unless it's handing back. A delivery to a chat that has
+    been archived since posts nothing, and says why."""
+    invocation = store.scalars(
+        select(Invocation)
+        .where(Invocation.id == invocation_id, Invocation.status == InvocationStatus.handing_back)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if invocation is None:
+        return
+    invocation.status = InvocationStatus.succeeded
+    invocation.finished_at = func.now()
+    invocation.summary = summary
+    invocation.handback_error = error
+    chat_id = invocation.chat_id
+    if chat_id is None:
+        chat = _destination(store, invocation)
+        if chat is None:
+            return
+        chat_id = chat.id
+    result = _post(store, invocation, chat_id, body)
+    _notify(store, invocation, InvocationStatus.succeeded, result)
+
+
+# --- Delivering a trigger's results to a chat ----------------------------------------------------
+
+UNDELIVERED = "{chat} is archived, so the result wasn't delivered. Choose another chat."
+UNDELIVERED_GONE = "The chat has gone, so the result wasn't delivered. Choose another chat."
+# How much of why a delivered run failed its failure message says.
+FAILURE_LIMIT = 500
+
+
+def _destination(store: Session, invocation: Invocation) -> Chat | None:
+    """The chat the trigger's run delivers to, if it can still be posted in; else None, with why
+    on the invocation (`delivery_error`), and whoever chose the chat notified."""
+    chat = store.get(Chat, invocation.delivery_chat_id) if invocation.delivery_chat_id else None
+    if chat is not None and chat.archived_at is None:
+        return chat
+    invocation.delivery_error = (
+        UNDELIVERED_GONE if chat is None else UNDELIVERED.format(chat=chat.name)
+    )
+    setter = None
+    if invocation.trigger_id is not None:
+        setter = store.scalar(
+            select(Trigger.destination_set_by).where(Trigger.id == invocation.trigger_id)
+        )
+    ref = _run_ref(invocation)
+    if setter is not None and ref is not None:
+        notifications.after_store_commit(
+            store, [setter], notifications.RUN_FAILED, {**ref, "undelivered": True}
+        )
+    return None
+
+
+def _deliver(
+    store: Session, invocation: Invocation, status: InvocationStatus, body: str, error=None
+) -> None:
+    """End a trigger's run that delivers to a chat: once it has run, its result handed back to
+    be summarised and posted there, or a short failure message posted. Nothing is posted in an
+    archived chat (`_destination`); the run has still run."""
+    chat = _destination(store, invocation)
+    if chat is None:
+        _notify(store, invocation, status, None)
+        return
+    if status == InvocationStatus.succeeded:
+        output = body
+        if not output and invocation.agent_run_id is not None:
+            output = last_reply(store_id_of(store), invocation.agent_run_id)
+        _hand_back(store, invocation, output or NO_OUTPUT)
+        return
+    reason = error or "The run failed."
+    if len(reason) > FAILURE_LIMIT:
+        reason = reason[: FAILURE_LIMIT - 1].rstrip() + "…"
+    result = _post(store, invocation, chat.id, f"The run failed: {reason}")
     _notify(store, invocation, status, result)
 
 
 # The causes whose runs' ends notify whoever caused them.
 NOTIFYING = (InvocationCause.mention, InvocationCause.manual)
+# The causes whose runs' failures notify their trigger's creator and the admins.
+TRIGGERED = (InvocationCause.schedule, InvocationCause.event)
+
+
+def _run_ref(invocation: Invocation) -> dict | None:
+    """What a notification about the invocation's run names: the agent or workflow, and run."""
+    if invocation.agent_run_id is not None:
+        return {"agent_id": invocation.agent_id, "run_id": invocation.agent_run_id}
+    if invocation.workflow_run_id is not None:
+        return {"workflow_id": invocation.workflow_id, "run_id": invocation.workflow_run_id}
+    return None
 
 
 def _notify(
@@ -335,12 +544,33 @@ def _notify(
     """Once the store commits the end of an invocation a person caused (a mention, or starting
     its run by hand; not a workflow's agent node's, whose workflow run's own says), notify them
     (`aios.notifications`): a failure as `run_failed`, about the result posted or else the run;
-    a mention's result as `reply`, unless they're watching the chat."""
-    if invocation.parent_id is not None or invocation.requested_by is None:
-        return
-    if invocation.cause not in NOTIFYING:
+    a mention's result as `reply`, unless they're watching the chat. A trigger's run that failed
+    notifies the trigger's creator and the organisation's admins."""
+    if invocation.parent_id is not None:
         return
     failed = status == InvocationStatus.failed
+    if invocation.cause in TRIGGERED:
+        if not failed or invocation.trigger_id is None:
+            return
+        if result is not None:
+            store.flush()
+            ref = notifications.chat_ref(result.chat_id, result.id)
+        else:
+            ref = _run_ref(invocation)
+        creator = store.scalar(
+            select(Trigger.created_by).where(Trigger.id == invocation.trigger_id)
+        )
+        if ref is not None:
+            notifications.after_store_commit(
+                store,
+                [creator] if creator is not None else [],
+                notifications.RUN_FAILED,
+                ref,
+                and_admins=True,
+            )
+        return
+    if invocation.requested_by is None or invocation.cause not in NOTIFYING:
+        return
     if result is not None:
         store.flush()
         ref = notifications.chat_ref(invocation.chat_id, result.id)
@@ -359,11 +589,8 @@ def _notify(
         return
     if not failed:
         return
-    if invocation.agent_run_id is not None:
-        ref = {"agent_id": invocation.agent_id, "run_id": invocation.agent_run_id}
-    elif invocation.workflow_run_id is not None:
-        ref = {"workflow_id": invocation.workflow_id, "run_id": invocation.workflow_run_id}
-    else:
+    ref = _run_ref(invocation)
+    if ref is None:
         return
     notifications.after_store_commit(
         store, [invocation.requested_by], notifications.RUN_FAILED, ref

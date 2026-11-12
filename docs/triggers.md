@@ -30,6 +30,23 @@ schedule's run records its schedule rather than a member.
   or changed while paused: turning one on answers 409 with the same. Cron parsing is
   `cronsim`'s, wrapped in `aios.cron`.
 
+## Delivering results to a chat
+
+A trigger can name a chat its runs' results are delivered to (**Deliver to** on the schedule
+forms; `deliver_to` on the API): any chat of the organisation that isn't archived, whether or not
+whoever sets it is in it. Choosing one adds the trigger's agent or workflow to the chat, and the
+trigger records who chose it. An archived chat is refused (409) with why.
+
+- Nothing is posted when the run starts. When it ends, a successful run's result is summarised by
+  the handback (see [Chats](chats.md#handback)) and posted once, from the agent or workflow, with
+  the run's card collapsed under it and the full output behind it; a failed one posts a short
+  failure message, and the trigger's creator and the organisation's admins are notified.
+- If the chat has been archived since it was chosen, the run still runs, but nothing is
+  delivered: the trigger shows why (`delivery_problem`), with a prompt to choose another chat,
+  and whoever chose it is notified. Choosing another chat clears it.
+- The chat is fixed for each run as it fires (`invocations.delivery_chat_id`), and why nothing was
+  delivered is kept on the run's invocation (`delivery_error`).
+
 ## The scheduler
 
 - Schedules are in each organisation's store (`aios.triggers`). The platform keeps a thin index

@@ -59,6 +59,7 @@ CHAT_TITLES = {
     RUN_FAILED: "{author} failed in {chat}",
 }
 RUN_FAILED_TITLE = "A run of {name} failed"
+UNDELIVERED_TITLE = "{name}'s result wasn't delivered"
 
 
 def _int(value) -> int | None:
@@ -194,6 +195,13 @@ def _in_store(
         target_row = store.get(model, target) if target is not None else None
         if invocation is None or target_row is None:
             found[n.id] = None
+            continue
+        if n.ref.get("undelivered"):
+            # A delivery to a chat that couldn't happen (`aios.invocations._destination`).
+            found[n.id] = Description(
+                UNDELIVERED_TITLE.format(name=target_row.name),
+                excerpt(invocation.delivery_error) if invocation.delivery_error else None,
+            )
             continue
         found[n.id] = Description(
             RUN_FAILED_TITLE.format(name=target_row.name),

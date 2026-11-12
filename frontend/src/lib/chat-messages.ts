@@ -37,6 +37,22 @@ export function isLive(invocation: ChatInvocation): boolean {
 }
 
 /**
+ * A run's full output as the card's disclosure shows it: a JSON object or array pretty-printed
+ * (`json`), anything else as it is.
+ */
+export function fullOutputShown(output: string): { text: string; json: boolean } {
+  const trimmed = output.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return { text: JSON.stringify(JSON.parse(trimmed), null, 2), json: true };
+    } catch {
+      // Not JSON after all: shown as it is.
+    }
+  }
+  return { text: output, json: false };
+}
+
+/**
  * The text a message shows. A run card's is its acknowledgement as of the latest read of its
  * invocation, which the handoff rewrites (from the placeholder to what the member understood)
  * after the card was read; any other message's is its own.

@@ -59,6 +59,7 @@ describe("triggerInput", () => {
       event_type: "document_ingested",
       filter: { content_types: ["text/*"] },
       fire_on_own_events: true,
+      deliver_to: null,
     });
   });
 
@@ -73,5 +74,17 @@ describe("triggerInput", () => {
       fire_on_own_events: false,
     } as unknown as Trigger;
     expect(triggerInput(t)).not.toHaveProperty("event_type");
+  });
+
+  it("keeps the chat it delivers to, by id", () => {
+    const t = {
+      ...base,
+      kind: "schedule",
+      cron: "0 9 * * *",
+      timezone: "Europe/London",
+      deliver_to: { id: 4, name: "Ops", archived: false },
+    } as unknown as Trigger;
+    expect(triggerInput(t).deliver_to).toBe(4);
+    expect(triggerInput(t, { deliver_to: null }).deliver_to).toBeNull();
   });
 });

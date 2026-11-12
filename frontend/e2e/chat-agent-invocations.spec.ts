@@ -90,7 +90,8 @@ test("an agent and a workflow mentioned together each get a card", async ({ page
 
   await post(page, `@[Scout](agent:${agent.id}) and @[Digest](workflow:${digest.id}), please`);
   await expect(card(page)).toHaveCount(2);
-  await expect(message(page, "sum done")).toBeVisible();
+  // The workflow's result is handed back first: a beat more.
+  await expect(message(page, "sum done")).toBeVisible({ timeout: 10_000 });
   await expect(message(page, /^.*Done: @Scout and @Digest, please/)).toBeVisible();
 });
 

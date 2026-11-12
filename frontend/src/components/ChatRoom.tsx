@@ -484,6 +484,17 @@ function MessageItem({ message, invocation }: { message: ChatMessage; invocation
             <RunCard invocation={invocation} />
           </div>
         )}
+        {message.kind === "text" && invocation?.delivered && (
+          // A schedule's result delivered here: its run's card, collapsed under it.
+          <details data-testid="delivered-run" className="mt-1 text-sm">
+            <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+              Run
+            </summary>
+            <div className="mt-1">
+              <RunCard invocation={invocation} />
+            </div>
+          </details>
+        )}
       </div>
     </article>
   );
