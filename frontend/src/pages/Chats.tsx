@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { usePersonStream } from "@/components/PersonStream";
 import {
   api,
   describeError,
@@ -40,7 +41,7 @@ import { archivedNotice, can } from "@/lib/chats";
 import { composerMentionables } from "@/lib/mentions";
 import { useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
-import { FALLBACK_READ_MS, useStream, type StreamEvent } from "@/lib/stream";
+import { FALLBACK_READ_MS, type StreamEvent } from "@/lib/stream";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -74,7 +75,7 @@ export function ChatsSection() {
     },
     [refresh],
   );
-  const stream = useStream(data !== undefined ? api.personStreamUrl() : null, {
+  const stream = usePersonStream({
     onEvent,
     // What changed while it wasn't open.
     onOpen: refresh,

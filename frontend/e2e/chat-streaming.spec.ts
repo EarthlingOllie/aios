@@ -93,9 +93,9 @@ test("a dropped stream catches up from the newest message shown, with nothing tw
   await expect(message(page, "Missed two")).toBeVisible();
   await expect(message(page, "Missed one")).toHaveCount(1);
   await expect(message(page, "Missed two")).toHaveCount(1);
-  expect(api.streamReads[0]).toBe(`?last_event_id=${seen.id}`);
+  expect(api.streamReads[0]).toBe(`?visible=true&last_event_id=${seen.id}`);
   // Later openings resume after what was shown by then.
-  await expect.poll(() => api.streamReads.at(-1)).not.toBe(`?last_event_id=${seen.id}`);
+  await expect.poll(() => api.streamReads.at(-1)).not.toBe(`?visible=true&last_event_id=${seen.id}`);
   await expect(messageList(page).getByRole("article")).toHaveCount(3);
 });
 

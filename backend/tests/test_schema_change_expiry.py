@@ -95,9 +95,9 @@ def test_only_requests_past_the_expiry_expire_and_their_notifications_clear(
     expired = request_of(api, old)
     assert expired["status"] == "expired"
     assert expired["decided_at"] is not None
-    listed = api.get("/api/notifications").json()
+    listed = api.get("/api/me/notifications").json()
     assert listed["unread"] == 1
-    unread = {n["ref"]["request_id"] for n in listed["notifications"] if n["read_at"] is None}
+    unread = {n["ref"]["approval_id"] for n in listed["notifications"] if n["read_at"] is None}
     assert unread == {young["id"]}
 
 
@@ -115,7 +115,7 @@ def test_deleting_a_waiting_chat_run_cancels_its_request_and_nothing_resumes(
     cancelled = request_of(api, request)
     assert cancelled["status"] == "cancelled"
     assert cancelled["decided_at"] is not None
-    assert api.get("/api/notifications").json()["unread"] == 0
+    assert api.get("/api/me/notifications").json()["unread"] == 0
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
     expire(queued)
     assert queued == []

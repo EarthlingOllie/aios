@@ -311,8 +311,8 @@ def test_a_released_document_whose_content_changes_goes_back_to_awaiting_check(
                 Notification.user_id == user.id, Notification.kind == "released_document_changed"
             )
         ).all()
-    assert note.ref["document_id"] == flagged
-    assert note.ref["filename"] == "notes.md"
+    # A reference, never content: the filename is read when it's listed.
+    assert note.ref == {"document_id": flagged}
 
     jev_classifier.down = False
     verdicts.sweep(store_id)

@@ -11,10 +11,13 @@ the streams open in its process.
   messages read returns it, its id the event id), `invocation` (its state, run and all), `draft`
   (the whole reply so far of an agent invocation), `chat` (its header: name, description,
   archived) and `members`.
-- **A person's channel** (`person_channel`) carries what keeps their chat list live: `chat
-  activity` (a chat's newest message and their unread count) and `chat list` (a chat appeared,
-  was joined, left, renamed, archived or unarchived), and `gone` (they left an organisation:
-  their streams of it close).
+- **A person's channel** (`person_channel`) carries what keeps their chat list and bell live:
+  `chat activity` (a chat's newest message and their unread count), `chat list` (a chat
+  appeared, was joined, left, renamed, archived or unarchived), `notification` (theirs changed:
+  new or read, with their unread count; `aios.notifications`), and `gone` (they left an
+  organisation: their streams of it close).
+- **Watching.** A chat's stream open in a visible tab says so (`watch`), so a reply's
+  notification isn't sent to someone already looking at it (`watching`).
 - **Drafts.** While an agent's turn runs, the run service keeps its reply so far in Redis, with
   an expiry (`Draft`), and publishes the whole text at most every
   `draft_publish_interval_seconds`, so a missed event costs nothing. Drafts never reach the
@@ -71,6 +74,43 @@ def person_channel(user_id: int) -> str:
 
 def draft_key(data_store_id: uuid.UUID, chat_id: int, invocation_id: int) -> str:
     return f"aios:draft:{data_store_id}:{chat_id}:{invocation_id}"
+
+
+def watching_key(data_store_id: uuid.UUID, chat_id: int, user_id: int) -> str:
+    return f"aios:watching:{_namespace()}:{data_store_id}:{chat_id}:{user_id}"
+
+
+def watch(data_store_id: uuid.UUID, chat_id: int, user_id: int, token: str) -> None:
+    """A stream of the person's on the chat is open in a visible tab (`token` names it), for as
+    long as it keeps saying so: twice the heartbeat, which it refreshes this on."""
+    ttl = max(1, int(get_settings().stream_heartbeat_seconds * 2))
+    key = watching_key(data_store_id, chat_id, user_id)
+    try:
+        with _client() as client:
+            pipe = client.pipeline(transaction=False)
+            pipe.sadd(key, token)
+            pipe.expire(key, ttl)
+            pipe.execute()
+    except (redis.RedisError, OSError) as exc:
+        log.warning("couldn't note a watched chat: %s", exc)
+
+
+def unwatch(data_store_id: uuid.UUID, chat_id: int, user_id: int, token: str) -> None:
+    try:
+        with _client() as client:
+            client.srem(watching_key(data_store_id, chat_id, user_id), token)
+    except (redis.RedisError, OSError) as exc:
+        log.warning("couldn't note a chat no longer watched: %s", exc)
+
+
+def watching(data_store_id: uuid.UUID, chat_id: int, user_id: int) -> bool:
+    """Whether the person has the chat's stream open in a visible tab now (as its client
+    reports, `aios.api.streams.chat_stream`). Not, as far as anyone can tell, with Redis down."""
+    try:
+        with _client() as client:
+            return bool(client.exists(watching_key(data_store_id, chat_id, user_id)))
+    except (redis.RedisError, OSError):
+        return False
 
 
 def _client() -> redis.Redis:

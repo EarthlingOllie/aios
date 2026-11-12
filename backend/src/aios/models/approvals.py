@@ -1,7 +1,7 @@
 """What agents' schema change requests can be.
 
 The requests are in each organisation's store (`aios.datastores.models.SchemaChangeRequest`);
-the platform's notifications name them by id and store.
+the platform's `approval_needed` notifications name them by id, from the store's organisation.
 """
 
 import enum

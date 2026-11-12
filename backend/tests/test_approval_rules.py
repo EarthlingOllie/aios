@@ -58,8 +58,8 @@ def notified(db, request) -> set[int]:
     return set(
         db.scalars(
             select(Notification.user_id).where(
-                Notification.kind == "schema_change_request",
-                Notification.ref["request_id"].astext == str(request.id),
+                Notification.kind == "approval_needed",
+                Notification.ref["approval_id"].astext == str(request.id),
             )
         )
     )

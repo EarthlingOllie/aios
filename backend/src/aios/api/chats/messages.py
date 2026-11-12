@@ -14,6 +14,7 @@ from aios import (
     guards,
     invocations,
     jev,
+    notifications,
     organisations,
     outbox,
     run_service,
@@ -425,10 +426,18 @@ class ReadIn(BaseModel):
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.post)],
 )
-def mark_read(chat_id: DbId, body: ReadIn, user: CurrentUser, store: CurrentStore) -> None:
+def mark_read(
+    chat_id: DbId,
+    body: ReadIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
+) -> None:
     """Note that the user, a member, has seen the chat's messages up to `message_id`, which
-    clears their unread count of those. Never back: a read of an earlier message (another tab's)
-    leaves it, and never past the chat's newest message."""
+    clears their unread count of those, and their mention, reply and run failed notifications
+    about them. Never back: a read of an earlier message (another tab's) leaves it, and never
+    past the chat's newest message."""
     chat = get_visible_chat(store, user.id, chat_id)
     member = user_member(chat, user.id)
     if member is None:
@@ -445,6 +454,8 @@ def mark_read(chat_id: DbId, body: ReadIn, user: CurrentUser, store: CurrentStor
         )
     )
     store.commit()
+    notifications.mark_read_in_chat(db, org.id, user.id, chat.id, seen)
+    db.commit()
 
 
 @router.post(
@@ -474,7 +485,8 @@ def post_message(
     mention the poster may not make (its target's invocable-by) is posted refused, its card
     saying why; past the poster's mention rate, a 429 with when to try again. Then Jev
     (`check_with_jev`): flagged is a 422 with the reason, unchecked a 503. None of those writes
-    anything: no message, membership, invocation or search item."""
+    anything: no message, membership, invocation, search item or notification. The people it
+    mentions are notified (`mention`), never the poster."""
     targets = list(
         dict.fromkeys(
             (TriggerTargetKind(m.kind.value), m.id)
@@ -527,6 +539,15 @@ def post_message(
     # Posting is activity.
     chat.updated_at = func.now()
     store.commit()
+    # The people it mentions are notified, never its poster; with the post, now the store has
+    # it (`organisations.holds_member` keeps the poster in until this commits).
+    notifications.notify(
+        db,
+        [m.id for m in mentions if m.kind == ChatMemberKind.user and m.id != user.id],
+        org.id,
+        notifications.MENTION,
+        notifications.chat_ref(chat.id, message.id),
+    )
     db.commit()
     store_id = store_id_of(store)
     invocation_ids = [i.id for i in started]

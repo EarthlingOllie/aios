@@ -1,17 +1,24 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router";
 import { Bell } from "lucide-react";
 
-import { formatDate, useLoad, usePoll, useVisible } from "@/components/crud";
+import { formatDate, useLoad, usePoll } from "@/components/crud";
+import { usePersonStream } from "@/components/PersonStream";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type Notification, type NotificationList } from "@/lib/api";
-import { useCurrentUser } from "@/lib/current-user";
 import { badgeText, describeNotification, notificationLink } from "@/lib/notifications";
 import { organisationInPath } from "@/lib/organisation-path";
+import { FALLBACK_READ_MS } from "@/lib/stream";
 import { cn } from "@/lib/utils";
-
-/** How often the signed-in user's notifications are read again (ms). */
-export const NOTIFICATIONS_POLL_MS = 10_000;
 
 type NotificationsState = {
   data: NotificationList | undefined;
@@ -23,20 +30,22 @@ type NotificationsState = {
 const NotificationsContext = createContext<NotificationsState | null>(null);
 
 /**
- * Polls for the signed-in user's notifications, for every `NotificationsMenu` below it (the
- * navigation has one for wide screens and one for narrow), so they're read once however many
- * show them. Not while the tab is hidden: it asks again as soon as it's shown.
+ * The signed-in person's notifications, from every organisation they're in, for every
+ * `NotificationsMenu` below it (the navigation has one for wide screens and one for narrow), so
+ * they're read once however many show them. Read again when the person's stream says they
+ * changed (new, or read) and each time it opens; nothing polls while it's open. While it can't
+ * open they're read every `FALLBACK_READ_MS`.
  */
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { data, error, reload } = useLoad(useCallback(() => api.listNotifications(), []));
-  const visible = useVisible();
-  const wasVisible = useRef(visible);
-  useEffect(() => {
-    // Shown again: what changed meanwhile, now (the first load is useLoad's).
-    if (visible && !wasVisible.current) void reload();
-    wasVisible.current = visible;
-  }, [visible, reload]);
-  usePoll(visible, reload, NOTIFICATIONS_POLL_MS);
+  const stream = usePersonStream({
+    onEvent: ({ event }) => {
+      if (event === "notification") void reload();
+    },
+    // What changed while it wasn't open.
+    onOpen: () => void reload(),
+  });
+  usePoll(!stream.live && stream.gone === null, reload, FALLBACK_READ_MS);
   return (
     <NotificationsContext.Provider value={{ data, error, reload }}>{children}</NotificationsContext.Provider>
   );
@@ -50,8 +59,10 @@ export function useRefreshNotifications(): () => Promise<void> {
 }
 
 /**
- * The navigation's bell: an unread badge, opening a list of the user's notifications, unread
- * first. An item opens what it's about; an unread one can be marked read.
+ * The navigation's bell: an unread badge, opening a list of the person's notifications from
+ * every organisation they're in, unread first, each labelled with its organisation. An item
+ * opens what it's about, in its organisation (switching to it), and is read; an unread one can be
+ * marked read without opening it, and **Mark all read** reads them all.
  */
 export function NotificationsMenu({ className }: { className?: string }) {
   const state = useContext(NotificationsContext);
@@ -120,22 +131,31 @@ function NotificationsPanel({
   onNavigate: () => void;
 }) {
   const [markError, setMarkError] = useState<string>();
-  const markRead = async (notification: Notification) => {
+  const marking = async (mark: () => Promise<unknown>) => {
     setMarkError(undefined);
     try {
-      await api.markNotificationRead(notification.id);
+      await mark();
       await reload();
     } catch (err) {
       setMarkError(describeError(err));
     }
   };
+  const markRead = (notification: Notification) => marking(() => api.markNotificationRead(notification.id));
+  const markAllRead = () => marking(() => api.markAllNotificationsRead());
   const shownError = markError ?? error;
   return (
     <section
       aria-label="Notifications"
       className="bg-background absolute top-full right-0 z-50 mt-1 flex max-h-96 w-80 max-w-[calc(100vw-1rem)] flex-col overflow-y-auto rounded-md border text-sm shadow-md md:right-auto md:left-0"
     >
-      <h2 className="border-b px-3 py-2 text-sm font-semibold">Notifications</h2>
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        <h2 className="text-sm font-semibold">Notifications</h2>
+        {(data?.unread ?? 0) > 0 && (
+          <Button variant="ghost" size="sm" className="h-auto px-2 py-1 text-xs" onClick={markAllRead}>
+            Mark all read
+          </Button>
+        )}
+      </div>
       {shownError && <p className="text-destructive px-3 py-2 text-xs">{shownError}</p>}
       {data && data.notifications.length === 0 && (
         <p className="text-muted-foreground px-3 py-3">Nothing yet. When an agent needs you, it shows here.</p>
@@ -162,15 +182,25 @@ function NotificationItem({
   // The organisation the page is open in (the router's basename): one from another opens there.
   const here = organisationInPath(window.location.pathname);
   const link = notificationLink(view, here);
-  const elsewhere = view.organisation !== here;
-  const from = useCurrentUser()?.organisations.find((o) => o.slug === view.organisation)?.name ?? view.organisation;
   const unread = !notification.read_at;
+  // Opening it reads it.
+  const open = () => {
+    if (unread) onMarkRead();
+    onNavigate();
+  };
+  const openElsewhere = async (event: MouseEvent<HTMLAnchorElement>) => {
+    // A new page load: marked read first, as the page's requests end with it.
+    event.preventDefault();
+    if (unread) await api.markNotificationRead(notification.id).catch(() => undefined);
+    onNavigate();
+    window.location.assign(link!.to);
+  };
   const body = (
     <>
       {unread && <span className="sr-only">Unread: </span>}
       <span className={cn("block", unread ? "font-medium" : "text-muted-foreground")}>{view.heading}</span>
       {view.detail && <span className="text-muted-foreground block truncate text-xs">{view.detail}</span>}
-      {elsewhere && <span className="text-muted-foreground block truncate text-xs">In {from}</span>}
+      <span className="text-muted-foreground block truncate text-xs">In {notification.organisation.name}</span>
       <span className="text-muted-foreground block text-xs">{formatDate(notification.created_at)}</span>
     </>
   );
@@ -181,11 +211,11 @@ function NotificationItem({
         <div className="min-w-0 flex-1">{body}</div>
       ) : link.reload ? (
         // In another organisation: a new page load, as the organisation is the router's basename.
-        <a href={link.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
+        <a href={link.to} onClick={openElsewhere} className="min-w-0 flex-1 hover:underline">
           {body}
         </a>
       ) : (
-        <Link to={link.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
+        <Link to={link.to} onClick={open} className="min-w-0 flex-1 hover:underline">
           {body}
         </Link>
       )}

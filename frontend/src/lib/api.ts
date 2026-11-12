@@ -683,18 +683,20 @@ export type DroppedObject = {
 export type Notification = {
   id: string;
   /** The organisation it's from (a person's notifications are from every organisation they're
-   * in): it opens there. */
-  organisation: { id: number; slug: string };
-  /** What it's about: `schema_change_request` (a request waiting for a decision),
-   * `organisation_deletion_scheduled`, `organisation_deletion_cancelled` or
-   * `released_document_changed` (a document the user released has changed since). */
+   * in): it's labelled with it, and opens there. */
+  organisation: { id: number; slug: string; name: string };
+  /** `mention`, `reply`, `run_failed`, `approval_needed`, `released_document_changed`,
+   * `organisation_deletion_scheduled` or `organisation_deletion_cancelled`. */
   kind: string;
-  /** For a schema change request, `request_id` and `data_store_id`; for an organisation's
-   * deletion, `organisation_name` (and, scheduled, `deletes_at`); for a released document,
-   * `document_id`, `filename` and `data_store_id`. */
-  ref: Record<string, string>;
-  /** What it says, in a line; null when what it's about has gone. */
+  /** What it's about, never what it says: for `mention`, `reply` and a chat's `run_failed`,
+   * `chat_id` and `message_id`; for a run's `run_failed`, `agent_id` or `workflow_id`, and
+   * `run_id`; for `approval_needed`, `approval_id`; for `released_document_changed`,
+   * `document_id`; for an organisation's deletion, nothing. */
+  ref: Record<string, string | number>;
+  /** What it says, in a line, read from its organisation as it's listed; null while that can't be read. */
   title: string | null;
+  /** More, if there's more: an excerpt, why a run failed. */
+  detail: string | null;
   created_at: string;
   read_at: string | null;
 };
@@ -1284,8 +1286,8 @@ export function openOrganisationApi(id: number): void {
 /**
  * The API's prefix for the organisation the page is open in, `/api/o/<id>`: what every
  * organisation-scoped path starts with (`${organisationApi()}/agents`). Only the person's own
- * routes are outside it: signing in, the profile, creating an organisation, invitations,
- * notifications, the tool library and the list of timezones.
+ * routes are outside it: signing in, the profile and their notifications, creating an
+ * organisation, invitations, the tool library and the list of timezones.
  */
 export function organisationApi(): string {
   if (organisationId === null) throw new Error("No organisation is open on this page");
@@ -1451,9 +1453,10 @@ export const api = {
     request<DroppedObject>(`${organisationApi()}/dropped/${id}/restore`, { method: "POST" }),
   rejectSchemaChange: (id: string, note: string) =>
     request<SchemaChangeRequest>(`${organisationApi()}/schema-changes/${id}/reject`, json("POST", { note })),
-  listNotifications: () => request<NotificationList>("/api/notifications"),
+  listNotifications: () => request<NotificationList>("/api/me/notifications"),
   markNotificationRead: (id: string) =>
-    request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
+    request<Notification>(`/api/me/notifications/${id}/read`, { method: "POST" }),
+  markAllNotificationsRead: () => request<void>("/api/me/notifications/read", { method: "POST" }),
   /** Every kind if `kinds` is empty. */
   search: (q: string, limit: number, kinds: SearchKind[] = []) =>
     request<SearchHit[]>(
@@ -1630,9 +1633,11 @@ export const api = {
     request<Chat>(`${organisationApi()}/chats/${id}/members`, json("POST", member)),
   joinChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/join`, { method: "POST" }),
   leaveChat: (id: number) => request<void>(`${organisationApi()}/chats/${id}/leave`, { method: "POST" }),
-  /** The chat's live events (`lib/stream`): its messages, run cards, drafts, header and members. */
-  chatStreamUrl: (id: number) => `${organisationApi()}/chats/${id}/stream`,
-  /** The person's live chat list events, across every organisation they're in (`lib/stream`). */
+  /** The chat's live events (`lib/stream`): its messages, run cards, drafts, header and members.
+   * `visible`: the tab shows it, so replies in it don't notify the person. */
+  chatStreamUrl: (id: number, visible = true) =>
+    `${organisationApi()}/chats/${id}/stream${visible ? "?visible=true" : ""}`,
+  /** The person's live chat list and notification events, across every organisation they're in (`lib/stream`). */
   personStreamUrl: () => "/api/me/stream",
   /** Notes that the user has seen the chat's messages up to `messageId`, clearing their unread count. */
   markChatRead: (id: number, messageId: number) =>

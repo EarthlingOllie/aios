@@ -53,7 +53,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, jev, limits, outbox, search_index, streams
+from aios import checkpoints, jev, limits, notifications, outbox, search_index, streams
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -306,6 +306,7 @@ def _finish(
     invocation.error = error
     invocation.finished_at = func.now()
     if invocation.chat_id is None:
+        _notify(store, invocation, status, None)
         return
     result = ChatMessage(
         chat_id=invocation.chat_id,
@@ -321,6 +322,52 @@ def _finish(
     outbox.message_posted(store, result, invocation_id=invocation.id)
     # A result is activity.
     store.execute(update(Chat).where(Chat.id == invocation.chat_id).values(updated_at=func.now()))
+    _notify(store, invocation, status, result)
+
+
+# The causes whose runs' ends notify whoever caused them.
+NOTIFYING = (InvocationCause.mention, InvocationCause.manual)
+
+
+def _notify(
+    store: Session, invocation: Invocation, status: InvocationStatus, result: ChatMessage | None
+) -> None:
+    """Once the store commits the end of an invocation a person caused (a mention, or starting
+    its run by hand; not a workflow's agent node's, whose workflow run's own says), notify them
+    (`aios.notifications`): a failure as `run_failed`, about the result posted or else the run;
+    a mention's result as `reply`, unless they're watching the chat."""
+    if invocation.parent_id is not None or invocation.requested_by is None:
+        return
+    if invocation.cause not in NOTIFYING:
+        return
+    failed = status == InvocationStatus.failed
+    if result is not None:
+        store.flush()
+        ref = notifications.chat_ref(invocation.chat_id, result.id)
+        if failed:
+            notifications.after_store_commit(
+                store, [invocation.requested_by], notifications.RUN_FAILED, ref
+            )
+        elif invocation.cause == InvocationCause.mention:
+            notifications.after_store_commit(
+                store,
+                [invocation.requested_by],
+                notifications.REPLY,
+                ref,
+                unless_watching=invocation.chat_id,
+            )
+        return
+    if not failed:
+        return
+    if invocation.agent_run_id is not None:
+        ref = {"agent_id": invocation.agent_id, "run_id": invocation.agent_run_id}
+    elif invocation.workflow_run_id is not None:
+        ref = {"workflow_id": invocation.workflow_id, "run_id": invocation.workflow_run_id}
+    else:
+        return
+    notifications.after_store_commit(
+        store, [invocation.requested_by], notifications.RUN_FAILED, ref
+    )
 
 
 def failed(store: Session, invocation: Invocation, error: str) -> None:

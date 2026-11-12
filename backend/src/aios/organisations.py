@@ -29,8 +29,7 @@ and for the last admin while others remain, since nobody would be left to run it
 (`leave_refusal`).
 Otherwise only the membership goes: the person drops out of the organisation's chats, in its
 store (`leave_chats`; adding them to one, or their making or joining one, waits for a leave
-under way and is then refused: `holds_member`) and their unread notifications about its schema
-change requests go. Nothing is
+under way and is then refused: `holds_member`) and their notifications from it go. Nothing is
 made for them: they're left in the organisations they're still in, or in none. What they made
 stays in the organisation, and so do the chats they were in, open to everyone in it as before:
 nothing is handed over.
@@ -78,7 +77,6 @@ from aios.models import (
     ChatMemberKind,
     DataStore,
     DataStoreStatus,
-    Notification,
     Organisation,
     OrganisationDeletion,
     OrganisationInvite,
@@ -427,9 +425,8 @@ def leave(db: Session, org: Organisation, user: User) -> None:
     # Their open streams of it close, once it's done.
     streams.left_organisation(db, org.id, user.id)
     audit.enqueue(db, org.id, audit.person(user.id), "member.left", "member", user.id)
-    store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
-    if store_id is not None:
-        _forget_requests(db, user, store_id)
+    # Their notifications from it go.
+    notifications.forget_organisation(db, org.id, user.id)
     # They stay in its people mirror, as a former member.
     people.changed(db, org.id)
     # The bulk deletes bypass the session: anything it loaded of them (`org.members`) is stale.
@@ -487,23 +484,10 @@ def _close_store_work(session: Session) -> None:
         work.close()
 
 
-def _forget_requests(db: Session, user: User, store_id: uuid.UUID) -> None:
-    """Delete the user's unread notifications of the store's schema change requests: the store
-    is no longer theirs to decide for."""
-    db.execute(
-        delete(Notification).where(
-            Notification.user_id == user.id,
-            Notification.read_at.is_(None),
-            Notification.kind == notifications.SCHEMA_CHANGE_REQUEST,
-            Notification.ref.contains({"data_store_id": str(store_id)}),
-        )
-    )
-
-
 # Deleting an organisation.
 
-ORGANISATION_DELETION_SCHEDULED = "organisation_deletion_scheduled"
-ORGANISATION_DELETION_CANCELLED = "organisation_deletion_cancelled"
+ORGANISATION_DELETION_SCHEDULED = notifications.ORGANISATION_DELETION_SCHEDULED
+ORGANISATION_DELETION_CANCELLED = notifications.ORGANISATION_DELETION_CANCELLED
 
 NAME_MISMATCH = "That isn't the organisation's name."
 ALREADY_SCHEDULED = "The organisation is already scheduled for deletion."
@@ -528,12 +512,10 @@ def _members(db: Session, org: Organisation) -> list[int]:
     )
 
 
-def _notify_members(db: Session, org: Organisation, kind: str, deletes_at) -> None:
-    ref = {
-        "organisation_name": org.name,
-        "deletes_at": deletes_at.isoformat() if deletes_at is not None else None,
-    }
-    notifications.notify(db, _members(db, org), org.id, kind, ref)
+def _notify_members(db: Session, org: Organisation, kind: str) -> None:
+    """Notify every member of the organisation's `kind`: about the organisation itself, whose
+    name is read as it's listed."""
+    notifications.notify(db, _members(db, org), org.id, kind, {})
 
 
 def schedule_deletion(db: Session, org: Organisation, user: User, name: str) -> None:
@@ -566,7 +548,7 @@ def schedule_deletion(db: Session, org: Organisation, user: User, name: str) -> 
         org.id,
         {"deletes_at": org.deletes_at.isoformat()},
     )
-    _notify_members(db, org, ORGANISATION_DELETION_SCHEDULED, org.deletes_at)
+    _notify_members(db, org, ORGANISATION_DELETION_SCHEDULED)
     db.flush()
 
 
@@ -588,7 +570,7 @@ def cancel_deletion(db: Session, org: Organisation, user: User | None = None) ->
         "organisation",
         org.id,
     )
-    _notify_members(db, org, ORGANISATION_DELETION_CANCELLED, None)
+    _notify_members(db, org, ORGANISATION_DELETION_CANCELLED)
     db.flush()
 
 

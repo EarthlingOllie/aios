@@ -231,8 +231,9 @@ export function ChatRoom({
     },
     [show, onChanged],
   );
-  // Opened once the first page is shown, resuming after its newest message.
-  const stream = useStream(loaded ? api.chatStreamUrl(chatId) : null, {
+  // Opened once the first page is shown, resuming after its newest message. It says whether the
+  // tab is showing it (opened again when that changes): replies here don't notify while it is.
+  const stream = useStream(loaded ? api.chatStreamUrl(chatId, visible) : null, {
     onEvent,
     lastEventId: () => afterCursor(shown.current),
   });

@@ -5,7 +5,11 @@ the stream publisher (`aios.streams`) publishes over Redis.
   joined or not (a 404 for anyone else). It carries the chat's `message`, `invocation`, `draft`,
   `chat` and `members` events, `gone` and `ping`.
 - **A person's stream** (`GET /api/me/stream`), across every organisation they're in: their
-  `chat_activity` and `chat_list` events, and `ping`.
+  `chat_activity`, `chat_list` and `notification` events, and `ping`.
+
+**Watching.** A chat's stream opened with `visible` (the client's tab shows it) marks the person
+as watching the chat while it's open (`aios.streams.watch`): replies in it don't notify them.
+The client opens it again, without or with `visible`, when its tab is hidden or shown.
 
 **Catching up.** A chat's stream subscribes first, buffering what's published, then reads the
 messages after the last event id (the `Last-Event-ID` header or `last_event_id`), the chat's
@@ -157,10 +161,13 @@ async def _relay(
     channels: list[str],
     relay: Callable[[dict[str, Any]], list[Event] | None],
     catch_up: Callable[[], list[Event]] | None = None,
+    alive: Callable[[], None] | None = None,
+    ended: Callable[[], None] | None = None,
 ) -> AsyncIterator[str]:
     """The stream's events: subscribed to `channels` first, then what `catch_up` reads, then
     what's published, each as `relay` turns it into events (None: close with `gone`), message
-    ids sent once; a heartbeat every `stream_heartbeat_seconds`."""
+    ids sent once; a heartbeat every `stream_heartbeat_seconds`. `alive` is called once it's
+    open and at each heartbeat, `ended` once it has closed."""
     settings = get_settings()
     closed = stream.bind()
     client = aioredis.Redis.from_url(settings.redis_url, socket_connect_timeout=1)
@@ -185,6 +192,8 @@ async def _relay(
         except (redis.RedisError, OSError) as exc:
             log.warning("a stream couldn't subscribe: %s", exc)
             return
+        if alive is not None:
+            await run_in_threadpool(alive)
         yield f"retry: {settings.stream_retry_seconds * 1000}\n\n"
         if catch_up is not None and (chunk := out(await run_in_threadpool(catch_up))):
             yield chunk
@@ -221,8 +230,14 @@ async def _relay(
             if time.monotonic() >= next_ping:
                 yield sse("ping", {})
                 next_ping = time.monotonic() + heartbeat
+                if alive is not None:
+                    await run_in_threadpool(alive)
     finally:
         OPEN.release(stream)
+        if ended is not None:
+            # Here and now: a closing stream's task may not get to await anything more.
+            with contextlib.suppress(Exception):
+                ended()
         waiting_closed.cancel()
         if next_message is not None:
             next_message.cancel()
@@ -298,9 +313,13 @@ def chat_stream(
     store_id: CurrentDataStore,
     last_event_id: Annotated[int | None, Query(ge=0)] = None,
     last_event_header: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    visible: bool = False,
 ):
     """The chat's live events, as server-sent events (see the module docstring): anyone in the
-    organisation, joined or not; a 404 for a chat that isn't the organisation's."""
+    organisation, joined or not; a 404 for a chat that isn't the organisation's. `visible`: the
+    client's tab is showing it, so the person is watching the chat while it's open, and isn't
+    notified of replies in it (`aios.streams.watching`); the client opens it again when that
+    changes."""
     user_id, organisation_id = user.id, org.id
     with store_session(store_id, "ro") as store:
         if store.scalar(select(Chat.id).where(Chat.id == chat_id)) is None:
@@ -316,24 +335,27 @@ def chat_stream(
                 return []
             stream.close(data["reason"])
             return []
-        if event in ("chat_activity", "chat_list"):
+        if event in ("chat_activity", "chat_list", "notification"):
             return []
         return [(event, data, message.get("id"))]
 
+    token = uuid.uuid4().hex
     return _streaming(
         _relay(
             stream,
             [streams.chat_channel(store_id, chat_id), streams.person_channel(user_id)],
             relay,
             lambda: chat_catch_up(store_id, organisation_id, chat_id, after),
+            alive=(lambda: streams.watch(store_id, chat_id, user_id, token)) if visible else None,
+            ended=(lambda: streams.unwatch(store_id, chat_id, user_id, token)) if visible else None,
         )
     )
 
 
 @router.get("/me/stream")
 def person_stream(user: CurrentUser, db: DB):
-    """The person's live chat list events, across every organisation they're in, as server-sent
-    events (see the module docstring)."""
+    """The person's live chat list and notification events, across every organisation they're
+    in, as server-sent events (see the module docstring)."""
     user_id = user.id
     # Nothing more is read here: its connection goes back to the pool for the stream's life.
     db.close()
@@ -344,7 +366,7 @@ def person_stream(user: CurrentUser, db: DB):
         if event == "gone":
             # Their other organisations' chats are still theirs: the list hears it left this one.
             return [("chat_list", {**data, "change": data["reason"]}, None)]
-        if event in ("chat_activity", "chat_list"):
+        if event in ("chat_activity", "chat_list", "notification"):
             return [(event, data, None)]
         return []
 

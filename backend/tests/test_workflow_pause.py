@@ -424,7 +424,7 @@ def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store,
     [request] = api.get("/api/schema-changes").json()
     assert request["status"] == "cancelled"
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
-    assert api.get("/api/notifications").json()["unread"] == 0
+    assert api.get("/api/me/notifications").json()["unread"] == 0
     assert nothing_queued(queued)
     assert data_tables(store) == []
 
@@ -443,7 +443,7 @@ def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
     assert r.status_code == 204, r.text
     [request] = api.get("/api/schema-changes").json()
     assert request["status"] == "cancelled"
-    assert api.get("/api/notifications").json()["unread"] == 0
+    assert api.get("/api/me/notifications").json()["unread"] == 0
 
 
 def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
@@ -472,7 +472,7 @@ def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
     assert outcome["status"] == "expired"
     assert steps(out)["after"]["input"] == "builder:built(expired)"
     assert data_tables(store) == []
-    assert api.get("/api/notifications").json()["unread"] == 0
+    assert api.get("/api/me/notifications").json()["unread"] == 0
 
 
 def test_a_nested_workflows_waiting_node_pauses_and_resumes_the_top_level_run(

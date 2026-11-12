@@ -78,15 +78,15 @@ def test_the_creator_schedules_deletion_by_typing_the_name_and_every_member_is_t
     for u in (user, member):
         [told] = notifications_of(db, u)
         assert (told.kind, told.organisation_id) == ("organisation_deletion_scheduled", org.id)
-        assert told.ref["organisation_name"] == "Test User"
-        assert parse(told.ref["deletes_at"]) == parse(deletion["deletes_at"])
+        # About the organisation itself: its name is read when it's listed.
+        assert told.ref == {}
         # The banner's date: the organisation as "me" lists it, from either seat.
         with signed_in_as(u):
             [listed] = api.get("/api/me").json()["organisations"]
             assert parse(listed["deletes_at"]) == parse(deletion["deletes_at"])
             assert api.get("/api/organisation").json()["deletion"] == deletion
     with signed_in_as(member):
-        [listed] = api.get("/api/notifications").json()["notifications"]
+        [listed] = api.get("/api/me/notifications").json()["notifications"]
     assert listed["kind"] == "organisation_deletion_scheduled"
     assert listed["title"] == "Test User is scheduled for deletion."
 

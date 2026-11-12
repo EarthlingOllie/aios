@@ -253,7 +253,8 @@ through them (`upgrade_store` revokes it each migration).
   names a row of it carries the store too: worker task arguments (`apply_schema_change_task`),
   the run service's work items, the turn lease's Redis channels, a
   sandbox's session key, the firing of a schedule or an invocation, the schedule due index and
-  notifications (a request's id and its store's). Trace sessions are
+  notifications (named by their organisation, whose store it is, and the row's id: a request's,
+  a chat message's, a run's). Trace sessions are
   `agent-run-<organisation>-<id>`, and a chat's handoffs `chat-<organisation>-<id>`.
 - **Writes across the two databases.** The store is the source of truth for everything it holds
   and commits first; the platform's derived copies are written after, idempotently: the people

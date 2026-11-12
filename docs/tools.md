@@ -129,16 +129,20 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
 
 - Any member of the store's organisation (`can_approve`, `resolve.approvers`) approves or
   rejects it (with an optional note) there or in the Data page's Changes section.
-- Each user who can decide a new request gets a notification (`aios.notifications`, the
-  `notifications` table: user, the organisation it's from, kind, a jsonb reference, created and
-  read times), which the navigation's bell polls for (`GET /api/notifications`, unread first
-  with an unread count, every 10s) and shows as an unread badge with a list. Notifications are
-  the person's, from every organisation they're in, so not under the organisation prefix: each
-  carries its organisation's id and slug, and one from another organisation says which and
-  opens in it (a new page load). An item opens the request on the Data page, and one can be
-  marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding
-  or cancelling the request marks its notifications read
-  (`schema_changes.clear_notifications`). Users only ever see their own.
+- Each user who can decide a new request gets an **approval needed** notification
+  (`aios.notifications`, the `notifications` table: user, the organisation it's from, kind, a
+  jsonb reference naming the approval, `approval_id`, never its content, created and read
+  times). The navigation's bell lists the person's notifications from every organisation
+  they're in (`GET /api/me/notifications`, unread first with an unread count), each labelled
+  with its organisation, and hears of new and read ones on the person's stream (`notification`
+  events on `GET /api/me/stream`): nothing polls while it's open. What each says is read from
+  its organisation's store as it's listed; one whose reference has gone is dropped and marked
+  read. An item opens the request on the Data page (in its organisation: a new page load from
+  another) and is read; one can be marked read (`POST /api/me/notifications/{id}/read`,
+  idempotent), or all of them (`POST /api/me/notifications/read`). Deciding, cancelling or
+  expiring the request marks its notifications read for everyone
+  (`schema_changes.clear_notifications`). Users only ever see their own. The other kinds
+  (mentions, replies, failed runs) are in `aios.notifications`.
 - An approved request is applied on the urgent worker (`aios.apply_schema_change`), as
   the provisioner `SET ROLE` to the store's owner, in one transaction under
   `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the
