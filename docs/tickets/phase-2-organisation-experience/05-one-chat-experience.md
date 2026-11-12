@@ -8,9 +8,9 @@
 
 **Blocked by:** [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [04: Streamed conversations and chat list, with limits and fallback](04-streaming.md), [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Clicking **Chat with this agent** makes a new chat with that agent included and the generated name, and the agent's reply streams in. Clicking again the same day makes a second chat with " (2)".
-- [ ] Anyone in the organisation can find and read that chat, and its members can rename it. It shows the notice that the whole organisation can see it.
-- [ ] A person not allowed to invoke the agent is refused with the reason.
-- [ ] A browser test covers **Chat with this agent** and its notice.
+- [x] Clicking **Chat with this agent** makes a new chat with that agent included and the generated name, and the agent's reply streams in. Clicking again the same day makes a second chat with " (2)".
+- [x] Anyone in the organisation can find and read that chat, and its members can rename it. It shows the notice that the whole organisation can see it.
+- [x] A person not allowed to invoke the agent is refused with the reason.
+- [x] A browser test covers **Chat with this agent** and its notice.

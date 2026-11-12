@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
-import { Archive, ArchiveRestore, LogIn, LogOut, Pencil, Plus, UserMinus } from "lucide-react";
+import { Archive, ArchiveRestore, Globe, LogIn, LogOut, Pencil, Plus, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
@@ -37,9 +37,9 @@ import {
 } from "@/lib/api";
 import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
-import { archivedNotice, can } from "@/lib/chats";
+import { archivedNotice, can, openNotice } from "@/lib/chats";
 import { composerMentionables } from "@/lib/mentions";
-import { useCurrentUser } from "@/lib/current-user";
+import { useCurrentOrganisation, useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { FALLBACK_READ_MS, type StreamEvent } from "@/lib/stream";
 import { cn } from "@/lib/utils";
@@ -176,6 +176,7 @@ export function ChatDetail() {
   const { reloadList } = useOutletContext<ListContext>();
   const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
   const me = useCurrentUser();
+  const organisation = useCurrentOrganisation();
   // Who the composer offers to mention: the members, again whenever they change.
   const { data: mentionable, reload: reloadMentionable } = useLoad(
     useCallback(() => api.listChatMentionable(id), [id]),
@@ -279,6 +280,10 @@ export function ChatDetail() {
             {plural(chat.member_count, "member")} · Last active {formatDate(chat.updated_at)}
           </p>
           <ProvenanceLine of={chat} />
+          <p role="note" aria-label="Who can see this chat" className="mt-0.5 flex items-center gap-1 text-xs">
+            <Globe aria-hidden className="size-3 shrink-0" />
+            {openNotice(organisation?.name)}
+          </p>
         </>
       }
       actions={

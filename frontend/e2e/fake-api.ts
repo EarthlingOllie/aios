@@ -2367,6 +2367,16 @@ export class FakeApi {
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them: not its
    * archived agents and workflows, unless `archived` (posting takes a mention of one, which fails
    * at once). */
+  /** Why the signed-in member may not invoke `target` (its invocable-by, `aios.guards`), or null. */
+  private invokeRefusal(kind: string, target: { name: string; invocable_by?: InvocableBy }) {
+    const role = this.roleOf(this.me.id);
+    const by = target.invocable_by ?? "everyone";
+    if ((by === "editors" && role === "participant") || (by === "admins" && role !== "admin")) {
+      return `Only ${by === "editors" ? "editors and admins" : "admins"} can invoke the ${kind} ${target.name}.`;
+    }
+    return null;
+  }
+
   private mentionable(chat: ChatRow, archived = false) {
     const users = new Map(chat.members.flatMap((m) => (m.kind === "user" ? [[m.user.id, m.user]] : [])));
     return byKind(
@@ -3694,6 +3704,23 @@ export class FakeApi {
       );
     }
     if (path === "/api/chats" && method === "POST") {
+      if (body.agent_id != null) {
+        // **Chat with this agent**: that agent only, named for it unless a name is given.
+        const agent = this.agents.get(Number(body.agent_id));
+        if (!agent) return fail(404, "Unknown agent");
+        const refused = this.invokeRefusal("agent", agent);
+        if (refused) return fail(403, refused);
+        if (agent.archived_at) return fail(409, `The agent ${agent.name} is archived. Unarchive it first.`);
+        const base = `${agent.name} – ${fullName(this.me)} – ${NOW.slice(0, 10)}`;
+        const taken = new Set(this.organisationChats().map((c) => c.name));
+        let n = 1;
+        while (taken.has(n === 1 ? base : `${base} (${n})`)) n += 1;
+        const name = body.name ?? (n === 1 ? base : `${base} (${n})`);
+        if (taken.has(name)) return fail(409, CHAT_NAME_TAKEN);
+        const chat = this.addChat(name, { description: body.description ?? "" });
+        this.addChatTarget(chat, "agent", agent);
+        return reply(201, this.chatOut(chat));
+      }
       if (this.organisationChats().some((c) => c.name === body.name)) {
         return fail(409, CHAT_NAME_TAKEN);
       }
@@ -3791,15 +3818,10 @@ export class FakeApi {
             `A message can mention at most ${this.mentionsPerMessage} agents and workflows. Mention fewer, or split it into several messages.`,
           );
         }
-        const role = this.roleOf(this.me.id);
         const refusals = new Map<string, string>();
         for (const x of targets) {
-          const target = (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!;
-          const by = target.invocable_by ?? "everyone";
-          if ((by === "editors" && role === "participant") || (by === "admins" && role !== "admin")) {
-            const who = by === "editors" ? "editors and admins" : "admins";
-            refusals.set(`${x.kind}:${x.id}`, `Only ${who} can invoke the ${x.kind} ${target.name}.`);
-          }
+          const refused = this.invokeRefusal(x.kind, (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!);
+          if (refused) refusals.set(`${x.kind}:${x.id}`, refused);
         }
         const allowed = targets.length - refusals.size;
         if (allowed && this.mentionsMade + allowed > this.mentionRate) {

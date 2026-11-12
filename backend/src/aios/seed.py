@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from aios import jev, organisations, seed_documents
 from aios.api.agents import AgentIn, archive_agent, create_agent, new_agent_run
-from aios.api.chats import ChatIn, MemberIn, MessageIn, add_member, create_chat, post_message
+from aios.api.chats import ChatCreateIn, MemberIn, MessageIn, add_member, create_chat, post_message
 from aios.api.skills import SkillIn, create_skill
 from aios.api.triggers import TriggerIn, create_trigger
 from aios.api.workflows import WorkflowEdgeIn, WorkflowIn, WorkflowNodeIn, create_workflow
@@ -197,7 +197,7 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
         db,
         store,
     )
-    chat = create_chat(ChatIn(name="General"), user, org, Role.admin, db, store)
+    chat = create_chat(ChatCreateIn(name="General"), user, org, Role.admin, db, store)
     for member in (writer, old):
         add_member(
             chat.id,

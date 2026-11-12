@@ -6,6 +6,7 @@ import {
   ArrowUpCircle,
   CalendarClock,
   MessageSquare,
+  MessageSquarePlus,
   MessagesSquare,
   Pencil,
   Trash2,
@@ -65,7 +66,9 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
-import { useRefusal, useRole } from "@/lib/current-user";
+import { agentChatDraft } from "@/lib/chats";
+import { chatDrafts } from "@/lib/chat-drafts";
+import { useCurrentUser, useRefusal, useRole } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 
 const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
@@ -274,6 +277,8 @@ export function AgentDetail() {
   const [busy, setBusy] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const buildRefusal = useRefusal("build");
+  const navigate = useNavigate();
+  const me = useCurrentUser();
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
   if (!agent.data) return null;
@@ -330,6 +335,15 @@ export function AgentDetail() {
     });
   };
 
+  /** **Chat with this agent**: a new chat with it, opened with a mention of it in the composer.
+   * Someone its invocable-by leaves out is refused, the reason in the banner. */
+  const onChat = () =>
+    act(async () => {
+      const chat = await api.chatWithAgent(id);
+      if (me) chatDrafts.set(me.id, chat.id, agentChatDraft(a));
+      navigate(`/chats/${chat.id}`);
+    });
+
   const onDeleteRun = (runId: number) => {
     if (!window.confirm("Delete this run and its history?")) return;
     act(async () => {
@@ -354,6 +368,12 @@ export function AgentDetail() {
       }
       actions={
         <>
+          {!a.archived_at && (
+            <Button size="sm" onClick={onChat} disabled={busy}>
+              <MessageSquarePlus />
+              Chat with this agent
+            </Button>
+          )}
           {a.archived_at && !buildRefusal && (
             <Button size="sm" onClick={onUnarchive} disabled={busy}>
               <ArchiveRestore />

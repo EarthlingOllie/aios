@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ChatAction } from "@/lib/api";
-import { archivedNotice, can } from "@/lib/chats";
+import { agentChatDraft, archivedNotice, can, openNotice } from "@/lib/chats";
 
 const sam = { id: 2, name: "Sam Admin", former_member: false };
 
@@ -37,5 +37,25 @@ describe("archivedNotice", () => {
   it("leaves out who when they're no longer known", () => {
     const archived = { ...chat([]), archived_by: null };
     expect(archivedNotice(archived)).toMatch(/^This chat was archived\. It's read-only/);
+  });
+});
+
+describe("openNotice", () => {
+  it("says the whole organisation can see the chat", () => {
+    expect(openNotice("Acme")).toBe("Everyone in Acme can see this chat and read it, joined or not.");
+  });
+
+  it("falls back to the organisation when its name isn't known yet", () => {
+    expect(openNotice(undefined)).toBe("Everyone in the organisation can see this chat and read it, joined or not.");
+  });
+});
+
+describe("agentChatDraft", () => {
+  it("starts the message with a mention of the agent the chat was made with", () => {
+    expect(agentChatDraft({ id: 3, name: "Researcher" })).toBe("@[Researcher](agent:3) ");
+  });
+
+  it("escapes brackets in its name, as any mention does", () => {
+    expect(agentChatDraft({ id: 4, name: "Bot [beta]" })).toBe("@[Bot \\[beta\\]](agent:4) ");
   });
 });
