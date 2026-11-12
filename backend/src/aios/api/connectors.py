@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aios import audit, connectors, organisations, source_providers
-from aios.api.sources import SourceOut, _all
+from aios.api.sources import SourceOut, sources_out
 from aios.auth import CurrentDataStore, CurrentOrganisation, CurrentUser
 from aios.config import get_settings
 from aios.datastores import store_session
@@ -96,7 +96,7 @@ def _title(provider: str) -> str:
 
 
 def _outs(store: Session, rows: list[Connector]) -> list[ConnectorOut]:
-    sources = {s.id: s for s in _all(store)}
+    sources = {s.id: s for s in sources_out(store)}
     by_connector = dict(
         store.execute(
             select(Source.connector_id, Source.id).where(Source.connector_id.is_not(None))
