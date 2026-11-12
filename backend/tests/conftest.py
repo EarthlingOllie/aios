@@ -362,6 +362,14 @@ def handoff_model() -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def handback_model() -> Iterator[None]:
+    """The handback step's model (`aios.handback`), scripted rather than the provider's: its
+    summary is the output it was sent, as it came (`fake_model.use_handback` scripts another)."""
+    with fake_model.use_handback(fake_model.summarises()):
+        yield
+
+
 def delete_user(db, user: User) -> None:
     """Delete every organisation the user is in (cascading to what each owns) with its store,
     the user, and the stores' databases if they were provisioned."""

@@ -2,7 +2,9 @@
 (`use_model`, `use_handoff`), and a running app can name a scenario of it as its model
 (`aios.testing.scenarios`, with scripted models enabled)."""
 
+import html
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -137,6 +139,52 @@ def use_handoff(fake: FakeChatModel) -> Iterator[FakeChatModel]:
     from aios import handoff
 
     with mock.patch.object(handoff, "model", lambda: fake):
+        yield fake
+
+
+# Where the output a handback summarises says it's from, in its untrusted block.
+HANDBACK_OUTPUT = "output"
+
+
+def untrusted_blocks(messages: list[BaseMessage]) -> list[tuple[str, str]]:
+    """Every untrusted block (`aios.jev.wrap`) in the messages, in order: where each says it's
+    from, and its content as it was wrapped."""
+    from aios.jev import _unescape
+
+    found = []
+    for message in messages:
+        text = message.content if isinstance(message.content, str) else str(message.content)
+        for source, body in re.findall(
+            r'<untrusted source="([^"]*)">\n(.*?)\n</untrusted>', text, re.DOTALL
+        ):
+            found.append((html.unescape(source), _unescape(body)))
+    return found
+
+
+def handback_output(messages: list[BaseMessage]) -> str:
+    """The output a handback (`aios.handback`) was asked to summarise, out of its untrusted
+    block; empty if it wasn't sent one."""
+    blocks = untrusted_blocks(messages)
+    return next((body for source, body in blocks if source == HANDBACK_OUTPUT), "")
+
+
+def summarises(summary: str | None = None) -> FakeChatModel:
+    """A handback model (`aios.handback`) answering with `summary`, or else with the output it
+    was sent, as it came: so a result reads the same summarised or not, unless a test says."""
+
+    async def script(messages, info):
+        yield ToolCall("Handback", {"summary": summary or handback_output(messages)})
+
+    return model(script)
+
+
+@contextmanager
+def use_handback(fake: FakeChatModel) -> Iterator[FakeChatModel]:
+    """Runs the handback step on `fake` instead of `summarises()`, which every test has by
+    default."""
+    from aios import handback
+
+    with mock.patch.object(handback, "model", lambda: fake):
         yield fake
 
 

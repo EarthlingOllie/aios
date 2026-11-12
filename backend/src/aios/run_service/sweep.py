@@ -3,8 +3,8 @@
 - **Requeue**: enqueueing is after the store commits, so an enqueue can be lost (the process
   stopped, or the platform database failed, in between). Every so often each store's
   invocations left unstarted for over `queue_requeue_after_seconds` without an item in the queue
-  are enqueued again (`aios.run_service.work.lost`); enqueueing is idempotent, so one found
-  twice is queued once.
+  are enqueued again (`aios.run_service.work.lost`), and so are those handing back without a
+  handback queued; enqueueing is idempotent, so one found twice is queued once.
 - **Embedding**: every `search_embed_interval_seconds` each process enqueues an embedding sweep
   per ready store (`aios.run_service.work.embedding_work`), queued once however many ask."""
 
@@ -15,10 +15,18 @@ from fastapi.concurrency import run_in_threadpool
 from aios.config import get_settings
 from aios.datastores import ready_stores, store_session
 from aios.db import SessionLocal
-from aios.models import WorkLane
+from aios.models import WorkKind, WorkLane
 from aios.run_service import queue, work
 
 log = logging.getLogger(__name__)
+
+
+def _keys(store_id, invocation_id: int, w: queue.Work) -> tuple[str, ...]:
+    """The keys of the items that carry the invocation on, any of which queued means it isn't
+    lost."""
+    if w.kind == WorkKind.handback:
+        return (work.handback_key(store_id, invocation_id),)
+    return (work.start_key(store_id, invocation_id), work.turn_key(store_id, invocation_id))
 
 
 def requeue() -> int:
@@ -35,22 +43,10 @@ def requeue() -> int:
             continue
         if not lost:
             continue
-        keys = [
-            key
-            for invocation_id, _ in lost
-            for key in (
-                work.start_key(store_id, invocation_id),
-                work.turn_key(store_id, invocation_id),
-            )
-        ]
+
         with SessionLocal() as db:
-            queued = queue.queued_keys(db, keys)
-            missing = [
-                w
-                for invocation_id, w in lost
-                if work.start_key(store_id, invocation_id) not in queued
-                and work.turn_key(store_id, invocation_id) not in queued
-            ]
+            queued = queue.queued_keys(db, [k for i, w in lost for k in _keys(store_id, i, w)])
+            missing = [w for i, w in lost if not queued.intersection(_keys(store_id, i, w))]
             queue.enqueue(db, missing)
             db.commit()
         for w in missing:

@@ -327,7 +327,8 @@ def publish_committed(data_store_id: uuid.UUID, pending: "_Pending") -> None:
                     (channel, encode("message", message.model_dump(mode="json"), message.id))
                 )
             for invocation in out.invocations:
-                if invocation.id in cards or invocation.message_id in ids:
+                # A delivered result's invocation comes with its message.
+                if invocation.id in cards or invocation.message_id in ids or invocation.delivered:
                     cards.pop(invocation.id, None)
                     items.append(
                         (channel, encode("invocation", invocation.model_dump(mode="json")))

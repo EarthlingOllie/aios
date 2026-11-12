@@ -1022,8 +1022,20 @@ export type Trigger = Provenance & {
   last_run_id: number | null;
   /** The workflow run it last started (workflows). */
   last_workflow_run_id: number | null;
+  /** The chat its runs' results are delivered to, and who chose it; null for none. */
+  deliver_to: TriggerDestination | null;
+  deliver_to_set_by: User | null;
+  /** Why its last run's result wasn't delivered to that chat (it's archived); null if it was. */
+  delivery_problem: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/** The chat a trigger delivers to. */
+export type TriggerDestination = {
+  id: number;
+  name: string;
+  archived: boolean;
 };
 
 export type TriggerInput = {
@@ -1037,6 +1049,8 @@ export type TriggerInput = {
   event_type?: EventType | null;
   filter?: TriggerFilter;
   fire_on_own_events?: boolean;
+  /** The chat its runs' results are delivered to (any that isn't archived); null for none. */
+  deliver_to?: number | null;
 };
 
 export type SchedulePreview = { description: string; next_runs: string[] };
@@ -1183,15 +1197,25 @@ export type ChatMessage = {
 };
 
 /** queued: waiting to start; briefing: the handoff is briefing its run on the chat, which starts next;
+ * handing_back: its run has ended and the handback is summarising its output to post;
  * refused: the poster may not invoke it (its invocable-by), so nothing ran. */
-export type ChatInvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed" | "refused";
+export type ChatInvocationStatus =
+  | "queued"
+  | "briefing"
+  | "running"
+  | "handing_back"
+  | "succeeded"
+  | "failed"
+  | "refused";
 
-/** A run a mention in a chat started, as its card follows it. */
+/** A run a mention in a chat started, as its card follows it; or a schedule's run whose result
+ * was delivered to the chat (`delivered`), its card collapsed under the result. */
 export type ChatInvocation = {
   id: number;
   chat_id: number;
-  /** The message that mentioned it, and who posted it. */
-  message_id: number;
+  /** The message that mentioned it (null for a delivery), and who posted it. */
+  message_id: number | null;
+  delivered: boolean;
   requested_by: number | null;
   target_kind: ChatTargetKind;
   /** The agent's or workflow's id. */
@@ -1206,6 +1230,14 @@ export type ChatInvocation = {
   acknowledgement: string;
   /** What the handoff told the run of the chat, before the message; null until it has. */
   brief: string | null;
+  /** The run's full output, kept when its result was summarised by the handback (null if it was
+   * posted as written); the summary posted; and why summarising failed (the raw output was
+   * posted instead). */
+  full_output: string | null;
+  summary: string | null;
+  handback_error: string | null;
+  /** Why a delivery to a chat didn't happen. */
+  delivery_error: string | null;
   workflow_run_id: number | null;
   agent_run_id: number | null;
   /** Whether it started a run that has since been deleted. */
@@ -1529,7 +1561,10 @@ export const api = {
     body.append("file", file);
     return request<ImportResult>(
       `${organisationApi()}/imports${dryRun ? "?dry_run=true" : ""}`,
-      { method: "POST", body },
+      {
+        method: "POST",
+        body,
+      },
     );
   },
   getAgentUsedBy: (id: number) => request<AgentUsedBy>(`${organisationApi()}/agents/${id}/used-by`),

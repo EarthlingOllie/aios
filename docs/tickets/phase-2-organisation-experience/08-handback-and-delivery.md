@@ -18,14 +18,14 @@
 
 **Blocked by:** [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [07: Notifications across organisations: mentions, replies, failures](07-notifications.md), [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md), [Phase 1 · 13: Workflows node by node; approvals resume there; workflow worker removed](../phase-1-foundation/13-workflows-node-by-node.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Results are summarised or posted as written according to the rules: by kind, by length against the threshold, and by whether they're JSON.
-- [ ] The full output is behind the card's disclosure, with JSON pretty-printed.
-- [ ] A handback that times out or answers malformed posts the raw output, cut short, with a note, and the invocation is marked succeeded. A handback step whose lease was abandoned is retried, through the run service's drain entry point.
-- [ ] Each handback call is traced (tagged handback) and recorded in the usage ledger.
-- [ ] Posted handbacks and deliveries carry the verdict `derived`, and the scripted model receives them, and the asking message, inside untrusted blocks.
-- [ ] **Deliver to** appears on the schedule forms and the Scheduler page. Choosing a chat adds the schedule's agent or workflow to it.
-- [ ] A successful scheduled run posts one summary message, and a failed one posts one failure message and notifies the trigger's creator and the admins.
-- [ ] After the destination chat is archived, the run still runs, nothing is delivered, the trigger shows the reason, and the setter is notified.
-- [ ] Choosing an archived chat as a destination is refused with a clear reason.
+- [x] Results are summarised or posted as written according to the rules: by kind, by length against the threshold, and by whether they're JSON.
+- [x] The full output is behind the card's disclosure, with JSON pretty-printed.
+- [x] A handback that times out or answers malformed posts the raw output, cut short, with a note, and the invocation is marked succeeded. A handback step whose lease was abandoned is retried, through the run service's drain entry point.
+- [x] Each handback call is traced (tagged handback) and recorded in the usage ledger.
+- [x] Posted handbacks and deliveries carry the verdict `derived`, and the scripted model receives them, and the asking message, inside untrusted blocks.
+- [x] **Deliver to** appears on the schedule forms and the Scheduler page. Choosing a chat adds the schedule's agent or workflow to it.
+- [x] A successful scheduled run posts one summary message, and a failed one posts one failure message and notifies the trigger's creator and the admins.
+- [x] After the destination chat is archived, the run still runs, nothing is delivered, the trigger shows the reason, and the setter is notified.
+- [x] Choosing an archived chat as a destination is refused with a clear reason.

@@ -4,6 +4,7 @@ import { ApiError, type ChatInvocation, type ChatListed, type ChatMessage } from
 import {
   bodyShown,
   afterCursor,
+  fullOutputShown,
   hasOlder,
   isAtBottom,
   isLive,
@@ -87,6 +88,7 @@ function invocation(id: number, status: ChatInvocation["status"], extra: Partial
     id,
     chat_id: 1,
     message_id: 1,
+    delivered: false,
     requested_by: 1,
     target_kind: "workflow",
     target_id: 5,
@@ -95,6 +97,10 @@ function invocation(id: number, status: ChatInvocation["status"], extra: Partial
     refusal_reason: null,
     acknowledgement: "Reading the chat…",
     brief: null,
+    full_output: null,
+    summary: null,
+    handback_error: null,
+    delivery_error: null,
     workflow_run_id: null,
     agent_run_id: null,
     run_deleted: false,
@@ -265,5 +271,36 @@ describe("shownDrafts", () => {
     const drafts = { 2: "Replied", 3: "Failed", 4: "Going" };
     const invocations = { 2: invocation(2, "running"), 3: invocation(3, "failed"), 4: invocation(4, "running") };
     expect(shownDrafts(drafts, invocations, [message(1), reply(5, 2)]).map((d) => d.invocationId)).toEqual([4]);
+  });
+});
+
+describe("fullOutputShown", () => {
+  it("pretty-prints JSON objects and arrays", () => {
+    expect(fullOutputShown('{"total":3,"items":["a"]}')).toEqual({
+      text: '{\n  "total": 3,\n  "items": [\n    "a"\n  ]\n}',
+      json: true,
+    });
+    expect(fullOutputShown(" [1,2] ")).toEqual({
+      text: "[\n  1,\n  2\n]",
+      json: true,
+    });
+  });
+
+  it("shows anything else as it is", () => {
+    expect(fullOutputShown("Three stories: a, b and c.")).toEqual({
+      text: "Three stories: a, b and c.",
+      json: false,
+    });
+    expect(fullOutputShown("{not json")).toEqual({
+      text: "{not json",
+      json: false,
+    });
+    expect(fullOutputShown("42")).toEqual({ text: "42", json: false });
+  });
+});
+
+describe("isLive", () => {
+  it("counts an invocation handing back as still going", () => {
+    expect(isLive({ status: "handing_back" } as ChatInvocation)).toBe(true);
   });
 });

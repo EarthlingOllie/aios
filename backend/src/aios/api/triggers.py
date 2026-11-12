@@ -16,6 +16,14 @@ A trigger is its organisation's, like its target, and is in its store beside it:
 sees, changes and deletes every one, and each says which member made it and which last changed
 it. Once the store has committed a change, the platform's schedule due index is written
 (`aios.schedules`), which is how the scheduler finds what's due.
+
+**Deliver to.** A trigger may name a chat its runs' results are delivered to (`deliver_to`):
+any chat of the organisation that isn't archived, whether or not whoever sets it is in it (an
+archived one is refused with a 409). Setting it adds the trigger's agent or workflow to the chat,
+and records who chose it. When a run ends its result is handed back and posted there, or a short
+failure message is (`aios.invocations`). If the chat has been archived since, the run still runs
+but nothing is delivered: the trigger shows why (`delivery_problem`), and whoever chose the chat
+is notified.
 """
 
 from collections.abc import Sequence
@@ -25,16 +33,26 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import audit, cron, outbox, schedules
+from aios import audit, cron, outbox, schedules, streams
 from aios.api.provenance import Provenance, UserOut, built_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import store_id_of
-from aios.datastores.models import Agent, Trigger, Workflow, WorkflowRun
+from aios.datastores.models import (
+    Agent,
+    Chat,
+    ChatMember,
+    Invocation,
+    Trigger,
+    Workflow,
+    WorkflowRun,
+)
 from aios.db import DB, DbId
 from aios.models import (
+    ChatMemberKind,
     EventType,
     TriggerKind,
     TriggerStatus,
@@ -65,6 +83,16 @@ class TriggerIn(BaseModel):
     event_type: EventType | None = None
     filter: dict = Field(default_factory=dict)
     fire_on_own_events: bool = False
+    # The chat its runs' results are delivered to; null for none.
+    deliver_to: DbId | None = None
+
+
+class DestinationOut(BaseModel):
+    """The chat a trigger delivers to."""
+
+    id: int
+    name: str
+    archived: bool
 
 
 class TriggerOut(Provenance):
@@ -96,6 +124,11 @@ class TriggerOut(Provenance):
     # The agent run (agents) or workflow run (workflows) it last started.
     last_run_id: int | None
     last_workflow_run_id: int | None
+    # The chat its results are delivered to, and who chose it; null for none.
+    deliver_to: DestinationOut | None
+    deliver_to_set_by: UserOut | None
+    # Why its last run's result wasn't delivered to that chat (it was archived); null if it was.
+    delivery_problem: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -147,6 +180,36 @@ def last_outcome(trigger: Trigger, runs: LastRuns) -> tuple[TriggerStatus | None
     return RUN_STATUS[status], error if status == WorkflowRunStatus.failed else None
 
 
+# The chats triggers deliver to (id, name, archived), and why each one's last run's result
+# wasn't delivered, by trigger id.
+Deliveries = tuple[dict[int, DestinationOut], dict[int, str]]
+
+
+def deliveries(store: Session, triggers: Sequence[Trigger]) -> Deliveries:
+    """The chats these triggers deliver to, and the delivery problems of their last runs to
+    those chats, from their store."""
+    chat_ids = {t.destination_chat_id for t in triggers if t.destination_chat_id is not None}
+    chats: dict[int, DestinationOut] = {}
+    if chat_ids:
+        for i, name, archived_at in store.execute(
+            select(Chat.id, Chat.name, Chat.archived_at).where(Chat.id.in_(chat_ids))
+        ):
+            chats[i] = DestinationOut(id=i, name=name, archived=archived_at is not None)
+    problems: dict[int, str] = {}
+    by_id = {t.id: t for t in triggers if t.destination_chat_id is not None}
+    if by_id:
+        for trigger_id, chat_id, error in store.execute(
+            select(Invocation.trigger_id, Invocation.delivery_chat_id, Invocation.delivery_error)
+            .where(Invocation.trigger_id.in_(list(by_id)), Invocation.parent_id.is_(None))
+            .distinct(Invocation.trigger_id)
+            .order_by(Invocation.trigger_id, Invocation.id.desc())
+        ):
+            # Only a problem with the chat it delivers to now: choosing another clears it.
+            if error and chat_id == by_id[trigger_id].destination_chat_id:
+                problems[trigger_id] = error
+    return chats, problems
+
+
 def target_id(trigger: Trigger) -> int:
     """The id of the trigger's agent or workflow, in its organisation's store."""
     return (
@@ -175,12 +238,20 @@ def trigger_out(
     known: dict[int, UserOut] | None = None,
     names: dict[tuple[TriggerTargetKind, int], str] | None = None,
     runs: LastRuns | None = None,
+    delivered: Deliveries | None = None,
 ) -> TriggerOut:
     """The organisation's trigger (in its store, `store`), with who made and last changed it
     from `known` (`provenance.people`), its target's name from `names` (`target_names`) and its
     last workflow run from `runs` (`last_workflow_runs`), else read now."""
     if known is None:
-        known = people(db, organisation_id, [trigger.created_by, trigger.updated_by])
+        known = people(
+            db,
+            organisation_id,
+            [trigger.created_by, trigger.updated_by, trigger.destination_set_by],
+        )
+    if delivered is None:
+        delivered = deliveries(store, [trigger])
+    chats, problems = delivered
     if names is None:
         names = target_names(store, [trigger])
     if runs is None:
@@ -209,6 +280,11 @@ def trigger_out(
         last_error=last_error,
         last_run_id=trigger.last_run_id,
         last_workflow_run_id=trigger.last_workflow_run_id,
+        deliver_to=chats.get(trigger.destination_chat_id),
+        deliver_to_set_by=known.get(trigger.destination_set_by)
+        if trigger.destination_chat_id is not None and trigger.destination_set_by is not None
+        else None,
+        delivery_problem=problems.get(trigger.id),
         created_at=trigger.created_at,
         updated_at=trigger.updated_at,
         **provenance(db, trigger, known),
@@ -289,6 +365,56 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> No
     trigger.next_run_at = (
         cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled and expr is not None else None
     )
+    deliver_to(store, user_id, trigger, body.deliver_to)
+
+
+ARCHIVED_DESTINATION = (
+    "{name} is archived, so results can't be delivered there. Choose another chat."
+)
+
+
+def deliver_to(store: Session, user_id: int, trigger: Trigger, chat_id: int | None) -> None:
+    """Set the chat the trigger's results are delivered to (None: none), as `user_id` chose it:
+    a 422 for a chat the organisation hasn't, a 409 for an archived one. Its agent or workflow
+    is added to the chat if it isn't in it. Keeping the chat it had keeps who chose it."""
+    if chat_id is None:
+        trigger.destination_chat_id = None
+        trigger.destination_set_by = None
+        return
+    chat = store.get(Chat, chat_id)
+    if chat is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown chat")
+    if chat_id != trigger.destination_chat_id:
+        if chat.archived_at is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, ARCHIVED_DESTINATION.format(name=chat.name)
+            )
+        trigger.destination_chat_id = chat.id
+        trigger.destination_set_by = user_id
+    if chat.archived_at is None:
+        _include(store, user_id, chat, trigger)
+
+
+def _include(store: Session, user_id: int, chat: Chat, trigger: Trigger) -> None:
+    """Add the trigger's agent or workflow to the chat, unless it's in it already."""
+    kind = ChatMemberKind(trigger.target_kind.value)
+    column = ChatMember.agent_id if kind == ChatMemberKind.agent else ChatMember.workflow_id
+    found = store.scalar(
+        select(ChatMember.id).where(ChatMember.chat_id == chat.id, column == target_id(trigger))
+    )
+    if found is not None:
+        return
+    store.execute(
+        insert(ChatMember)
+        .values(
+            chat_id=chat.id,
+            kind=kind,
+            added_by=user_id,
+            **{f"{kind.value}_id": target_id(trigger)},
+        )
+        .on_conflict_do_nothing()
+    )
+    streams.members_changed(store, chat.id)
 
 
 def checked_event(body: TriggerIn) -> tuple[EventType, dict]:
@@ -370,6 +496,7 @@ def _described(trigger: Trigger) -> dict:
             "filter": trigger.filter,
             "fire_on_own_events": trigger.fire_on_own_events,
             "enabled": trigger.enabled,
+            "deliver_to": trigger.destination_chat_id,
         }
     return {
         "target_kind": trigger.target_kind.value,
@@ -377,6 +504,7 @@ def _described(trigger: Trigger) -> dict:
         "cron": trigger.cron,
         "timezone": trigger.timezone,
         "enabled": trigger.enabled,
+        "deliver_to": trigger.destination_chat_id,
     }
 
 
@@ -412,10 +540,15 @@ def list_triggers(
     elif target_kind == TriggerTargetKind.workflow:
         query = query.where(Trigger.workflow_id == target_id)
     triggers = store.scalars(query).all()
-    known = people(db, org.id, [i for t in triggers for i in (t.created_by, t.updated_by)])
+    known = people(
+        db,
+        org.id,
+        [i for t in triggers for i in (t.created_by, t.updated_by, t.destination_set_by)],
+    )
     names = target_names(store, triggers)
     runs = last_workflow_runs(store, triggers)
-    return [trigger_out(db, store, org.id, t, known, names, runs) for t in triggers]
+    delivered = deliveries(store, triggers)
+    return [trigger_out(db, store, org.id, t, known, names, runs, delivered) for t in triggers]
 
 
 @router.post(

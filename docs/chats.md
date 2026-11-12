@@ -229,3 +229,25 @@ errs, takes over a minute, or answers without `{ack, brief}`) fails the invocati
 a refused start does. The model is `HANDOFF_MODEL`, by default the deployment's `LLM_MODEL`;
 each call is traced to Langfuse tagged `handoff`, with the invocation's id and its chat as the
 session (see [Tracing](tracing.md)).
+
+### Handback
+
+Results coming back to a chat are summarised before they're posted (`aios.handback`): a
+mentioned workflow's result, every delivered result (see [Triggers](triggers.md)), and an agent's
+reply to a mention that's longer than `HANDBACK_THRESHOLD` characters (3,000) or is a JSON object
+or array. An agent's short reply is posted as written. Where the run ends, the invocation goes
+`handing_back` with the full output kept on it (`full_output`), its card saying "Summarising",
+and a handback item is enqueued on the run service's interactive lane once that commits (the
+requeue sweep puts back one whose enqueue was lost). The item makes one structured call to the
+handback model (`HANDBACK_MODEL`, else `HANDOFF_MODEL`, else `LLM_MODEL`), sent the asking
+message, the brief and the output (cut to `HANDBACK_INPUT_LIMIT`, 60,000 characters, keeping its
+start and end), each in an untrusted block, and posts the summary it returns (about 150 words,
+in the agent's or workflow's voice) as the result; the invocation succeeds with it (`summary`).
+The card keeps the full output behind a **Full output** disclosure, JSON pretty-printed. A
+handback that fails (the model errs, takes over `HANDBACK_TIMEOUT_SECONDS`, 60, or answers with
+no summary) posts the raw output cut to `HANDBACK_RAW_LIMIT` (8,000 characters) with a note,
+records why (`handback_error`), and the invocation still succeeds; so does one whose item's
+attempts run out. Each call is traced to Langfuse tagged `handback`, and recorded in the usage
+ledger with purpose `handback`. Handbacks, deliveries and failure messages are derived text:
+stored with the verdict `derived`, never re-classified, and wrapped as untrusted wherever they
+enter model context.

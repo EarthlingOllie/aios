@@ -36,6 +36,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios import (
+    handback,
     handoff,
     invocations,
     jev,
@@ -544,6 +545,10 @@ async def fail(item: Claimed) -> Outcome:
     if item.kind == WorkKind.embedding_sweep:
         # Nothing waits on it: the next sweep embeds what's left.
         return Done()
+    if item.kind == WorkKind.handback:
+        # The raw output is posted, with a note; the invocation still succeeds.
+        await handback.give_up(item.data_store_id, item.payload["invocation_id"])
+        return Done()
     if item.kind in (WorkKind.workflow_advance, WorkKind.workflow_node):
         return Done(await run_in_threadpool(_fail_workflow, item))
     if item.kind == WorkKind.resume_turn:
@@ -631,6 +636,30 @@ def enqueue_resume(data_store_id: uuid.UUID, request_id: uuid.UUID) -> None:
     queue.wake(work.lane)
 
 
+def handback_key(data_store_id: uuid.UUID, invocation_id: int) -> str:
+    return f"handback:{data_store_id}:{invocation_id}"
+
+
+def handback_work(organisation_id: int, data_store_id: uuid.UUID, invocation_id: int) -> Work:
+    """Summarising an ended run's result and posting it (`aios.handback`): in the interactive
+    lane, as people are waiting in the chat for it; one queued per invocation."""
+    return Work(
+        organisation_id,
+        data_store_id,
+        WorkLane.interactive,
+        WorkKind.handback,
+        {"invocation_id": invocation_id},
+        dedup_key=handback_key(data_store_id, invocation_id),
+    )
+
+
+async def hand_back(item: Claimed) -> Outcome:
+    """A run's handback (`aios.handback.hand_back`): its summary, or its raw output if
+    summarising failed, posted to its chat."""
+    await handback.hand_back(item.data_store_id, item.payload["invocation_id"])
+    return Done()
+
+
 def embedding_key(data_store_id: uuid.UUID) -> str:
     return f"embedding-sweep:{data_store_id}"
 
@@ -669,6 +698,7 @@ HANDLERS = {
     WorkKind.workflow_node: workflow_node,
     WorkKind.resume_turn: resume_turn,
     WorkKind.embedding_sweep: embedding_sweep,
+    WorkKind.handback: hand_back,
 }
 
 
@@ -676,9 +706,16 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
     """The store's invocations the run service owns that have waited unstarted for longer than
     `older_than_seconds` (a mention's from posting until its run starts, a schedule's agent turn
     until it begins), each with the item that carries it on: a mention's start, or a schedule's
-    turn. Whether each has an item queued is for the caller to check."""
+    turn; and those handing back made as long ago, each with its handback. Whether each has an
+    item queued is for the caller to check."""
     store_id = store_id_of(store)
     organisation_id = _organisation(store_id)
+    handing_back = store.scalars(
+        select(Invocation.id).where(
+            Invocation.status == InvocationStatus.handing_back,
+            Invocation.created_at < func.now() - timedelta(seconds=older_than_seconds),
+        )
+    ).all()
     found = store.execute(
         select(Invocation, Trigger)
         .outerjoin(
@@ -720,4 +757,6 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
             message = outbox.agent_message(trigger, event) if event else trigger.input
         schedule = Schedule(trigger.id, fired_at, message)
         out.append((invocation.id, turn_work(organisation_id, store_id, invocation.id, schedule)))
+    for invocation_id in handing_back:
+        out.append((invocation_id, handback_work(organisation_id, store_id, invocation_id)))
     return out

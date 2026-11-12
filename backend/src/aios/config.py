@@ -176,6 +176,17 @@ class Settings(BaseSettings):
     scripted_models_enabled: bool = False
     handoff_window_messages: int = Field(default=30, ge=1)
     handoff_window_tokens: int = Field(default=8_000, ge=1)
+    # The handback (`aios.handback`): a result coming back to a chat (a mentioned workflow's,
+    # a delivery's, or an agent's reply over `handback_threshold` characters or in JSON) is
+    # summarised by one call to this model (empty: `handoff_model`, then `llm_model`), sent at
+    # most `handback_input_limit` characters of the output (its start and end), within
+    # `handback_timeout_seconds`. Failing that, the raw output is posted, cut to
+    # `handback_raw_limit` characters, with a note.
+    handback_model: str = ""
+    handback_threshold: int = Field(default=3_000, ge=1)
+    handback_input_limit: int = Field(default=60_000, ge=100)
+    handback_raw_limit: int = Field(default=8_000, ge=100)
+    handback_timeout_seconds: float = Field(default=60.0, gt=0)
 
     # The usage ledger (`aios.usage`): estimated prices in pounds sterling, by model ("provider:
     # model", as `llm_model` and `embedding_model` name them), as a JSON object. A chat model's

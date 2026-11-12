@@ -8,6 +8,7 @@ export const statusLabel: Record<WorkflowRunStatus | ChatInvocationStatus | Node
   queued: "Queued",
   briefing: "Briefing",
   running: "Running",
+  handing_back: "Summarising",
   succeeded: "Succeeded",
   failed: "Failed",
   refused: "Refused",
@@ -52,7 +53,7 @@ export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus
         status === "failed" || status === "refused" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
       }
       className={cn(
-        (status === "running" || status === "briefing") && runningClass,
+        (status === "running" || status === "briefing" || status === "handing_back") && runningClass,
         status === "waiting" && waitingClass,
       )}
       {...props}

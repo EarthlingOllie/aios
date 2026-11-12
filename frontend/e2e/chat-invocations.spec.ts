@@ -108,8 +108,8 @@ test("several workflows mentioned in one message each get a card", async ({ page
   await composer(page).fill(`@[Report](workflow:${report.id}) and @[Digest](workflow:${digest.id}), please`);
   await composer(page).press("Enter");
   await expect(card(page)).toHaveCount(2);
-  await expect(message(page, "sum done")).toBeVisible();
-  // A stream batch a second, a node a batch.
+  // A stream batch a second, a node a batch, and one more for the handback.
+  await expect(message(page, "sum done")).toBeVisible({ timeout: 10_000 });
   await expect(message(page, "review done")).toBeVisible({ timeout: 10_000 });
 });
 

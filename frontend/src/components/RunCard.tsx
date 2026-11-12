@@ -5,6 +5,7 @@ import { WorkflowCanvas } from "@/components/workflow/canvas";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { formatCounters, formatElapsed, runCounters } from "@/lib/agent-runs";
 import type { ChatAgentRun, ChatInvocation, NodePosition, WorkflowVersion } from "@/lib/api";
+import { fullOutputShown } from "@/lib/chat-messages";
 import { edgeStates, isActive, nodesDone, nodeStates } from "@/lib/runs";
 
 /** How tall a card's graph is drawn (px), whatever its size. */
@@ -24,14 +25,47 @@ const TICK_MS = 1000;
  * an agent's, its status (waiting, while its schema change request waits for a decision), the time elapsed (ticking while it runs) and its tool calls and tokens
  * so far. Clicking anywhere on it opens the run. A run that couldn't start shows why; one since
  * deleted says so. Under it, behind a disclosure, is the brief the handoff gave the run, so
- * anyone can see exactly what it was told.
+ * anyone can see exactly what it was told. Once the run has ended, while the handback summarises
+ * its output the card says "Summarising"; a result that was summarised keeps its full output
+ * behind a disclosure, JSON pretty-printed.
  */
 export function RunCard({ invocation }: { invocation: ChatInvocation | undefined }) {
   return (
     <>
       <Card invocation={invocation} />
+      {invocation?.status === "handing_back" && (
+        <p data-testid="run-card-summarising" className="text-muted-foreground mt-1 flex items-center gap-2 text-xs">
+          <RunStatusBadge status="handing_back" />
+          Summarising the result…
+        </p>
+      )}
       {invocation?.brief && <Brief brief={invocation.brief} />}
+      {invocation?.full_output != null && invocation.status !== "handing_back" && (
+        <FullOutput output={invocation.full_output} />
+      )}
     </>
+  );
+}
+
+/** The run's full output, which the handback summarised: closed until asked for, and only
+ * drawn once it's opened (it can be long). */
+function FullOutput({ output }: { output: string }) {
+  const [open, setOpen] = useState(false);
+  const { text, json } = fullOutputShown(output);
+  return (
+    <details data-testid="run-card-full-output" className="mt-1 max-w-xl text-sm" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+        Full output
+      </summary>
+      {open && (
+        <pre
+          data-json={json || undefined}
+          className="bg-muted mt-1 max-h-96 overflow-auto rounded-md p-2 text-xs break-words whitespace-pre-wrap"
+        >
+          {text}
+        </pre>
+      )}
+    </details>
   );
 }
 

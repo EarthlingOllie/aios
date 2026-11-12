@@ -730,6 +730,12 @@ class Trigger(StoreBase):
     fire_on_own_events: Mapped[bool] = mapped_column(Boolean, server_default=sql_text("false"))
     # Why it was turned off, when the platform did it.
     disabled_reason: Mapped[str | None] = mapped_column(Text)
+    # The chat its runs' results are delivered to (null: none, or the chat has gone), and the
+    # member who chose it.
+    destination_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id", ondelete="SET NULL")
+    )
+    destination_set_by: Mapped[int | None] = mapped_column(Integer)
     # When it next fires; null while disabled. Missed runs aren't caught up: a schedule that's
     # overdue (the service was down) fires once, then moves on from now.
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -986,6 +992,18 @@ class Invocation(StoreBase):
     refusal_reason: Mapped[str | None] = mapped_column(Text)
     # What the handoff told its run of the chat (`aios.handoff`); null until it has.
     brief: Mapped[str | None] = mapped_column(Text)
+    # The handback (`aios.handback`): the run's full output, kept as it ended (null for one
+    # posted as written), the summary posted in its place, and why summarising failed (the raw
+    # output was posted instead).
+    full_output: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    handback_error: Mapped[str | None] = mapped_column(Text)
+    # A trigger's run that delivers to a chat (`aios.invocations`): the chat, as its trigger
+    # named it when it fired (cleared if the chat goes), and why nothing was delivered.
+    delivery_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id", ondelete="SET NULL")
+    )
+    delivery_error: Mapped[str | None] = mapped_column(Text)
     # The run it started; null until it has, and once that run has been deleted (the card says
     # so). Deleting the chat leaves the run.
     agent_run_id: Mapped[int | None] = mapped_column(
@@ -1015,6 +1033,7 @@ class Invocation(StoreBase):
         Index("ix_invocations_agent_run_id", "agent_run_id"),
         Index("ix_invocations_workflow_run_id", "workflow_run_id"),
         Index("ix_invocations_trigger_id", "trigger_id"),
+        Index("ix_invocations_delivery_chat_id", "delivery_chat_id"),
         Index("ix_invocations_parent_id", "parent_id"),
         Index("ix_invocations_event_id", "event_id"),
         # The unfinished ones: what a chat's poll reports on, and what waits for a turn.

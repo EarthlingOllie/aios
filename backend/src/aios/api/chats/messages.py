@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios import (
@@ -134,12 +134,16 @@ class AgentRunLiveOut(BaseModel):
 
 
 class InvocationOut(BaseModel):
-    """A run a mention started, as its card follows it."""
+    """A run a mention started, as its card follows it; or a trigger's run whose result was
+    delivered to the chat (`delivered`), its card collapsed under the result."""
 
     id: int
+    # The chat its card is in: the mention's, or the one it delivered to.
     chat_id: int
-    # The message that mentioned it, and who posted it (null once they're deleted).
-    message_id: int
+    # The message that mentioned it (null for a delivery), and who posted it (null once
+    # they're deleted).
+    message_id: int | None
+    delivered: bool
     requested_by: int | None
     target_kind: TriggerTargetKind
     # The agent's or workflow's id.
@@ -154,6 +158,14 @@ class InvocationOut(BaseModel):
     acknowledgement: str
     # What the handoff told the run of the chat, before the message; null until it has.
     brief: str | None
+    # The handback (`aios.handback`): the run's full output, kept when its result was
+    # summarised (null if it was posted as written), the summary posted, and why summarising
+    # failed (the raw output was posted instead). Its status is `handing_back` meanwhile.
+    full_output: str | None
+    summary: str | None
+    handback_error: str | None
+    # Why a delivery to a chat didn't happen.
+    delivery_error: str | None
     workflow_run_id: int | None
     agent_run_id: int | None
     # Whether it started a run that has since been deleted.
@@ -225,8 +237,9 @@ def invocation_out(invocation: Invocation, acknowledgement: str) -> InvocationOu
     run_id = invocation.workflow_run_id or invocation.agent_run_id
     return InvocationOut(
         id=invocation.id,
-        chat_id=invocation.chat_id,
+        chat_id=invocation.chat_id or invocation.delivery_chat_id,
         message_id=invocation.message_id,
+        delivered=invocation.chat_id is None,
         requested_by=invocation.requested_by,
         target_kind=invocation.target_kind,
         target_id=invocation.workflow_id or invocation.agent_id,
@@ -235,6 +248,10 @@ def invocation_out(invocation: Invocation, acknowledgement: str) -> InvocationOu
         refusal_reason=invocation.refusal_reason,
         acknowledgement=acknowledgement,
         brief=invocation.brief,
+        full_output=invocation.full_output,
+        summary=invocation.summary,
+        handback_error=invocation.handback_error,
+        delivery_error=invocation.delivery_error,
         workflow_run_id=invocation.workflow_run_id,
         agent_run_id=invocation.agent_run_id,
         run_deleted=invocation.started_at is not None and run_id is None,
@@ -292,11 +309,20 @@ def messages_out(
     found = store.scalars(
         select(Invocation)
         .where(
-            Invocation.chat_id == chat_id,
             or_(
-                Invocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
-                Invocation.status.in_(invocations.UNFINISHED),
-            ),
+                and_(
+                    Invocation.chat_id == chat_id,
+                    or_(
+                        Invocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
+                        Invocation.status.in_(invocations.LIVE),
+                    ),
+                ),
+                # Results delivered here: only with their message, posted when the run ends.
+                and_(
+                    Invocation.delivery_chat_id == chat_id,
+                    Invocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
+                ),
+            )
         )
         .order_by(Invocation.id)
     ).all()
@@ -314,7 +340,7 @@ def messages_out(
             db,
             store,
             organisation_id,
-            [invocation_out(i, acknowledgements[i.id]) for i in found],
+            [invocation_out(i, acknowledgements.get(i.id, "")) for i in found],
         ),
     )
 
