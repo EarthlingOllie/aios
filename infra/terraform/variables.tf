@@ -113,33 +113,95 @@ variable "redis_node_type" {
   default = "cache.t4g.micro"
 }
 
-# --- ECS sizing ---
+# --- ECS sizing and autoscaling (autoscaling.tf) ---
+# Each service runs between its min and max tasks, scaled by autoscaling.tf. Scale-in relies on
+# each service's graceful shutdown (its stopTimeout), so shrinking never fails a turn.
 variable "api" {
-  type    = object({ cpu = number, memory = number, count = number })
-  default = { cpu = 512, memory = 1024, count = 2 }
+  type    = object({ cpu = number, memory = number, min = number, max = number })
+  default = { cpu = 512, memory = 1024, min = 2, max = 4 }
+  validation {
+    condition     = 1 <= var.api.min && var.api.min <= var.api.max
+    error_message = "api: 1 <= min <= max."
+  }
 }
 
 variable "web" {
-  type    = object({ cpu = number, memory = number, count = number })
-  default = { cpu = 256, memory = 512, count = 2 }
+  type    = object({ cpu = number, memory = number, min = number, max = number })
+  default = { cpu = 256, memory = 512, min = 2, max = 4 }
+  validation {
+    condition     = 1 <= var.web.min && var.web.min <= var.web.max
+    error_message = "web: 1 <= min <= max."
+  }
 }
 
 variable "run_service" {
-  description = "The run service: agent turns, handoffs and schedules, many at once per task (concurrency), mostly waiting on the model."
-  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
-  default     = { cpu = 1024, memory = 2048, count = 2, concurrency = 50 }
+  description = "The run service's executors: agent turns, handoffs, schedules, workflow nodes and syncs, many at once per task (concurrency), mostly waiting on the model. Scaled on the interactive lane's oldest ready age and the background and sources lanes' depth; at least two, so one can be replaced."
+  type        = object({ cpu = number, memory = number, min = number, max = number, concurrency = number })
+  default     = { cpu = 1024, memory = 2048, min = 2, max = 4, concurrency = 50 }
+  validation {
+    condition     = 2 <= var.run_service.min && var.run_service.min <= var.run_service.max
+    error_message = "run_service: 2 <= min <= max."
+  }
 }
 
-variable "worker" {
-  description = "Docling is CPU/RAM hungry; give workers room."
-  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
-  default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
+variable "ingest_worker" {
+  description = "Document ingest (the ingest queue). Docling is CPU/RAM hungry; give workers room. Scaled on the ingest queue's depth."
+  type        = object({ cpu = number, memory = number, min = number, max = number, concurrency = number })
+  default     = { cpu = 2048, memory = 8192, min = 1, max = 4, concurrency = 2 }
+  validation {
+    condition     = 1 <= var.ingest_worker.min && var.ingest_worker.min <= var.ingest_worker.max
+    error_message = "ingest_worker: 1 <= min <= max."
+  }
 }
 
-variable "provisioning_worker" {
-  description = "Creates and migrates data stores (the provisioning queue): small and mostly idle. Each runs the retry beat, so keep count at 1 (more only retries twice)."
-  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
-  default     = { cpu = 256, memory = 512, count = 1, concurrency = 1 }
+variable "urgent_worker" {
+  description = "Urgent maintenance (the urgent queue): applying approved changes, and restores. Small and mostly idle; scaled on the urgent queue's depth."
+  type        = object({ cpu = number, memory = number, min = number, max = number, concurrency = number })
+  default     = { cpu = 256, memory = 512, min = 1, max = 4, concurrency = 1 }
+  validation {
+    condition     = 1 <= var.urgent_worker.min && var.urgent_worker.min <= var.urgent_worker.max
+    error_message = "urgent_worker: 1 <= min <= max."
+  }
+}
+
+variable "routine_worker" {
+  description = "Routine maintenance (the routine queue): provisioning, migrations, measuring, purging, expiry, retention, sweeps. Each runs the beat, so keep it at one (a second would only do everything twice)."
+  type        = object({ cpu = number, memory = number, min = number, max = number, concurrency = number })
+  default     = { cpu = 256, memory = 512, min = 1, max = 1, concurrency = 1 }
+  validation {
+    condition     = 1 <= var.routine_worker.min && var.routine_worker.min <= var.routine_worker.max
+    error_message = "routine_worker: 1 <= min <= max."
+  }
+}
+
+variable "autoscaling" {
+  description = "What the services scale on (autoscaling.tf), from the queue metrics (aios.queue_metrics): the interactive lane's oldest ready age (seconds), and items or messages waiting per task. Scale-in waits scale_in_cooldown seconds."
+  type = object({
+    interactive_age_target = number
+    background_per_task    = number
+    sources_per_task       = number
+    ingest_per_task        = number
+    urgent_per_task        = number
+    cpu_target             = number
+    scale_in_cooldown      = number
+    scale_out_cooldown     = number
+  })
+  default = {
+    interactive_age_target = 5
+    background_per_task    = 20
+    sources_per_task       = 10
+    ingest_per_task        = 4
+    urgent_per_task        = 2
+    cpu_target             = 60
+    scale_in_cooldown      = 600
+    scale_out_cooldown     = 60
+  }
+}
+
+variable "queue_metrics_interval" {
+  description = "How often (seconds) the routine worker's beat publishes the queue metrics."
+  type        = number
+  default     = 30
 }
 
 # --- run_python sandboxes (sandbox.tf) ---

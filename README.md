@@ -43,9 +43,14 @@ The processes:
   fairly from a work queue (see [Run service](docs/run-service.md),
   [Workflows](docs/workflows.md)).
 - **web**: the React SPA, served as static files.
-- **worker**: document ingest (see [Stores](docs/stores.md)) and embedding the search index.
-- **provisioning-worker**: creating, migrating, measuring and deleting each organisation's
-  store, and applying schema changes (see [Stores](docs/stores.md)).
+- **ingest-worker**: Celery's `ingest` queue: document ingest (see [Stores](docs/stores.md)) and
+  embedding the search index.
+- **urgent-worker**: Celery's `urgent` queue: applying approved schema changes, and restores, which
+  never wait behind routine maintenance.
+- **routine-worker**: Celery's `routine` queue: creating, migrating, measuring and deleting each
+  organisation's store, purging, expiry, retention and sweeps; it runs the beat, which only
+  enqueues (the queue metrics among it). Only the two maintenance workers hold the
+  provisioner's credentials.
 - **sandbox**: where Run Python's code runs; on AWS, one Fargate task per agent run (see
   [Deploy](docs/deploy.md#sandboxes-on-fargate-run_python)).
 
@@ -92,9 +97,9 @@ uv run python -m aios.datastores.files create-bucket   # uploaded files' bucket,
 uv run alembic upgrade head
 uv run python -m aios.datastores.provision migrate-all   # stores, after every upgrade
 uv run uvicorn aios.main:app --reload
-uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
+uv run celery -A aios.worker worker -Q ingest --loglevel=INFO   # separate shell
 uv run python -m aios.run_service   # another: agent turns, workflow runs, schedules
-uv run celery -A aios.worker worker -Q provisioning -B --loglevel=INFO   # and stores (-B: their retries)
+uv run celery -A aios.worker worker -Q urgent,routine -B --loglevel=INFO   # maintenance (-B: the beat)
 
 cd frontend
 pnpm install

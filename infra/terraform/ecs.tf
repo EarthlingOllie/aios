@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "run-service", "worker", "provisioning-worker", "web", "migrate", "migrate-stores", "db-roles", "sandbox", "egress-proxy"])
+  for_each          = toset(["api", "run-service", "ingest-worker", "urgent-worker", "routine-worker", "web", "migrate", "migrate-stores", "db-roles", "sandbox", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -71,8 +71,9 @@ resource "aws_iam_role_policy" "execution_db_roles_secrets" {
   policy = data.aws_iam_policy_document.read_db_roles_secrets.json
 }
 
-# The provisioning worker's and the migrate-stores task's: the only execution role that can read
-# the provisioner's secret (besides the app's and the external one, like the shared role).
+# The maintenance workers' (urgent and routine) and the migrate-stores task's: the only execution
+# role that can read the provisioner's secret (besides the app's and the external one, like the
+# shared role).
 resource "aws_iam_role" "execution_provisioner" {
   name               = "${var.name}-ecs-execution-provisioner"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -99,8 +100,9 @@ resource "aws_iam_role_policy" "execution_provisioner_secrets" {
   policy = data.aws_iam_policy_document.read_provisioner_secrets.json
 }
 
-# Runtime role for the web, migrate and provisioning containers. It has no permissions: they
-# make no AWS calls (their secrets come in through the execution role).
+# Runtime role for the web, migrate and urgent worker containers. It has no permissions: they
+# make no AWS calls (their secrets come in through the execution role). The routine worker's
+# (autoscaling.tf) may only publish the queue metrics.
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -149,6 +151,10 @@ locals {
       DATA_STORE_POOLER_ADDRESS = local.pooler_address
       # Jev, the prompt-injection classifier (jev.tf), hosted; its key is in the external secret.
       JEV_URL = var.jev_url
+      # Queue metrics (aios.queue_metrics), published by the routine worker's beat, for
+      # autoscaling (autoscaling.tf).
+      QUEUE_METRICS_NAMESPACE        = local.queue_metrics_namespace
+      QUEUE_METRICS_INTERVAL_SECONDS = tostring(var.queue_metrics_interval)
     } : { name = k, value = v }
   ]
 
@@ -159,7 +165,7 @@ locals {
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
   )
 
-  # The provisioning worker's and migrate-stores': the backend's, plus the provisioner's DSN.
+  # The maintenance workers' and migrate-stores': the backend's, plus the provisioner's DSN.
   provisioner_secrets = concat(local.backend_secrets, [
     {
       name      = "DATA_STORE_PROVISIONER_URL"
@@ -253,12 +259,15 @@ resource "aws_ecs_task_definition" "db_roles" {
   }])
 }
 
-resource "aws_ecs_task_definition" "worker" {
-  family                   = "${var.name}-worker"
+# Document ingest (the ingest queue; see aios.worker), with Docling. ECS sends SIGTERM, and SIGKILL
+# stopTimeout seconds later: Celery's warm shutdown finishes what it can, and an ingest cut short
+# is redelivered (acks late), so scale-in never loses one.
+resource "aws_ecs_task_definition" "ingest_worker" {
+  family                   = "${var.name}-ingest-worker"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = var.worker.cpu
-  memory                   = var.worker.memory
+  cpu                      = var.ingest_worker.cpu
+  memory                   = var.ingest_worker.memory
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.worker.arn
 
@@ -272,21 +281,23 @@ resource "aws_ecs_task_definition" "worker" {
   }
 
   container_definitions = jsonencode([{
-    name      = "worker"
-    image     = local.image.worker
-    essential = true
+    name        = "ingest-worker"
+    image       = local.image.worker
+    essential   = true
+    stopTimeout = 120
     command = [
-      "celery", "-A", "aios.worker", "worker", "--loglevel=INFO",
-      "--concurrency=${var.worker.concurrency}",
+      "celery", "-A", "aios.worker", "worker", "-Q", "ingest", "--loglevel=INFO",
+      "--concurrency=${var.ingest_worker.concurrency}",
     ]
     environment      = local.backend_env
     secrets          = local.backend_secrets
-    logConfiguration = local.log_config.worker
+    logConfiguration = local.log_config["ingest-worker"]
   }])
 }
 
 # The run service (aios.run_service): mentioned agents' turns, the handoff before every mention,
-# and the schedules, claimed from the work queue in the platform database. API image. ECS sends
+# schedules, events, workflow nodes and syncs, claimed from the work queue's lanes in the
+# platform database. API image. ECS sends
 # SIGTERM, and SIGKILL stopTimeout seconds later: it lets its items finish for up to
 # RUN_SERVICE_SHUTDOWN_GRACE_SECONDS (25) first, then hands the rest back to the queue.
 resource "aws_ecs_task_definition" "run_service" {
@@ -317,14 +328,16 @@ resource "aws_ecs_task_definition" "run_service" {
   }])
 }
 
-# Creates and migrates data stores (the provisioning queue; see aios.worker), as the provisioner.
-# API image: it needs no Docling. Its task role has no permissions.
-resource "aws_ecs_task_definition" "provisioning_worker" {
-  family                   = "${var.name}-provisioning-worker"
+# Celery's maintenance workers (see aios.worker), as the provisioner: the only services that hold
+# its credentials. API image: they need no Docling.
+# Urgent maintenance (the urgent queue): applying approved changes, and restores. It takes
+# nothing else, so never waits behind migrations or sweeps. Its task role has no permissions.
+resource "aws_ecs_task_definition" "urgent_worker" {
+  family                   = "${var.name}-urgent-worker"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = var.provisioning_worker.cpu
-  memory                   = var.provisioning_worker.memory
+  cpu                      = var.urgent_worker.cpu
+  memory                   = var.urgent_worker.memory
   execution_role_arn       = aws_iam_role.execution_provisioner.arn
   task_role_arn            = aws_iam_role.task.arn
 
@@ -334,18 +347,51 @@ resource "aws_ecs_task_definition" "provisioning_worker" {
   }
 
   container_definitions = jsonencode([{
-    name      = "provisioning-worker"
-    image     = local.image.api
-    essential = true
+    name        = "urgent-worker"
+    image       = local.image.api
+    essential   = true
+    stopTimeout = 120
     command = [
-      "celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO",
-      "--concurrency=${var.provisioning_worker.concurrency}",
-      # Its beat retries stores whose provisioning gave up (aios.worker.RETRY_UNFINISHED_EVERY).
+      "celery", "-A", "aios.worker", "worker", "-Q", "urgent", "--loglevel=INFO",
+      "--concurrency=${var.urgent_worker.concurrency}",
+    ]
+    environment      = local.backend_env
+    secrets          = local.provisioner_secrets
+    logConfiguration = local.log_config["urgent-worker"]
+  }])
+}
+
+# Routine maintenance (the routine queue): provisioning, migrations, measuring, purging, expiry,
+# retention, the event sweep and reconciliation. It runs the one beat (-B), which only enqueues,
+# the queue metrics among it; and drains the retired provisioning queue
+# (aios.worker.RETIRED_QUEUES). Its task role may only publish the queue metrics.
+resource "aws_ecs_task_definition" "routine_worker" {
+  family                   = "${var.name}-routine-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.routine_worker.cpu
+  memory                   = var.routine_worker.memory
+  execution_role_arn       = aws_iam_role.execution_provisioner.arn
+  task_role_arn            = aws_iam_role.routine_worker.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name        = "routine-worker"
+    image       = local.image.api
+    essential   = true
+    stopTimeout = 120
+    command = [
+      "celery", "-A", "aios.worker", "worker", "-Q", "routine,provisioning", "--loglevel=INFO",
+      "--concurrency=${var.routine_worker.concurrency}",
       "-B", "--schedule=/tmp/celerybeat-schedule",
     ]
     environment      = local.backend_env
     secrets          = local.provisioner_secrets
-    logConfiguration = local.log_config["provisioning-worker"]
+    logConfiguration = local.log_config["routine-worker"]
   }])
 }
 
@@ -393,12 +439,14 @@ resource "aws_ecs_task_definition" "web" {
 # --- Services ---
 
 locals {
+  # Each runs between its min and max tasks (autoscaling.tf); at zero while run_services is off.
   services = {
-    api                 = { task = aws_ecs_task_definition.api.arn, count = var.api.count, port = 8000, tg = aws_lb_target_group.api.arn }
-    web                 = { task = aws_ecs_task_definition.web.arn, count = var.web.count, port = 80, tg = aws_lb_target_group.web.arn }
-    run-service         = { task = aws_ecs_task_definition.run_service.arn, count = var.run_service.count, port = null, tg = null }
-    worker              = { task = aws_ecs_task_definition.worker.arn, count = var.worker.count, port = null, tg = null }
-    provisioning-worker = { task = aws_ecs_task_definition.provisioning_worker.arn, count = var.provisioning_worker.count, port = null, tg = null }
+    api            = { task = aws_ecs_task_definition.api.arn, size = var.api, port = 8000, tg = aws_lb_target_group.api.arn }
+    web            = { task = aws_ecs_task_definition.web.arn, size = var.web, port = 80, tg = aws_lb_target_group.web.arn }
+    run-service    = { task = aws_ecs_task_definition.run_service.arn, size = var.run_service, port = null, tg = null }
+    ingest-worker  = { task = aws_ecs_task_definition.ingest_worker.arn, size = var.ingest_worker, port = null, tg = null }
+    urgent-worker  = { task = aws_ecs_task_definition.urgent_worker.arn, size = var.urgent_worker, port = null, tg = null }
+    routine-worker = { task = aws_ecs_task_definition.routine_worker.arn, size = var.routine_worker, port = null, tg = null }
   }
 }
 
@@ -407,7 +455,7 @@ resource "aws_ecs_service" "this" {
   name            = each.key
   cluster         = aws_ecs_cluster.main.id
   task_definition = each.value.task
-  desired_count   = var.run_services ? each.value.count : 0
+  desired_count   = var.run_services ? each.value.size.min : 0
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -427,6 +475,11 @@ resource "aws_ecs_service" "this" {
   deployment_circuit_breaker {
     enable   = true
     rollback = true
+  }
+
+  # Autoscaling (autoscaling.tf) sets the count from here on.
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 
   depends_on = [aws_lb_listener.http, aws_lb_listener_rule.api]

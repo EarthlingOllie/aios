@@ -27,11 +27,14 @@ from aios.models.base import Base
 
 class WorkLane(enum.StrEnum):
     """Who waits on an item: people in a chat (`interactive`, mentions) or nobody
-    (`background`: schedules, workflow advances and nodes, resumes). Claiming
-    serves interactive work first."""
+    (`background`: schedules, events, workflow advances and nodes, resumes; `sources`: phase
+    4's syncs, so a big sync waits on its own share). Claiming serves interactive work first,
+    and fairly between organisations within each lane; background and sources work never take
+    interactive work's reserved capacity."""
 
     interactive = "interactive"
     background = "background"
+    sources = "sources"
 
 
 class WorkKind(enum.StrEnum):

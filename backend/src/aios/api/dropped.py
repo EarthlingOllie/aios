@@ -2,8 +2,8 @@
 they're purged, and restoring them (`aios.datastores.dropped`).
 
 Only users who pass `can_approve` for the store (every member of its organisation) see or
-restore them. Restoring is queued to the provisioning worker (only it acts as the store's
-owner role); one refused there says why on the item.
+restore them. Restoring is queued to the urgent worker (only the maintenance workers act as
+the store's owner role); one refused there says why on the item.
 """
 
 import logging

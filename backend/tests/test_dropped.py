@@ -620,11 +620,11 @@ def test_the_scheduled_purge_leaves_a_store_behind_the_trees_head_for_later(db, 
         assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (1,)
 
 
-def test_the_purge_is_scheduled_on_the_provisioning_worker():
+def test_the_purge_is_scheduled_on_the_routine_worker():
     scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
 
     assert "aios.purge_dropped" in scheduled
-    assert worker.celery_app.conf.task_routes["aios.purge_dropped"] == {"queue": "provisioning"}
+    assert worker.celery_app.conf.task_routes["aios.purge_dropped"] == {"queue": "routine"}
 
 
 def test_the_scheduled_purge_goes_through_every_ready_store(db, store, monkeypatch):

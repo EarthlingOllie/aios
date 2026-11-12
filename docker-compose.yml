@@ -168,7 +168,8 @@ services:
     command: ["python", "-m", "aios.datastores.provision", "migrate-all"]
     environment: &provisioner-env
       <<: *backend-env
-      # The provisioner's role (made by `db-roles`): only these two services have it.
+      # The provisioner's role (made by `db-roles`): only this and the maintenance workers below
+      # have it.
       DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@db:5432/aios
     depends_on:
       migrate:
@@ -177,15 +178,35 @@ services:
         condition: service_started
     restart: "no"
 
-  # Creates data stores (the provisioning queue, see aios.worker) as users sign up, and (-B)
-  # retries any that gave up every few minutes. It needs no Docling, so this reuses the api image.
-  provisioning-worker:
+  # Celery's maintenance workers (aios.worker), the only services (with the deploy's one-off
+  # tasks above) that hold the provisioner's credentials. They need no Docling, so they reuse the
+  # api image.
+  # Urgent maintenance: applying approved changes and restores, which people are waiting on. It
+  # takes nothing else, so never waits behind migrations or sweeps.
+  urgent-worker:
     <<: *backend
     image: aios-api:local
     pull_policy: never
     command:
-      ["celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO", "--concurrency=1",
-       "-B", "--schedule=/tmp/celerybeat-schedule"]
+      ["celery", "-A", "aios.worker", "worker", "-Q", "urgent", "--loglevel=INFO", "--concurrency=1"]
+    environment: *provisioner-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_started
+
+  # Routine maintenance: creating, migrating, measuring and deleting data stores, purging,
+  # expiry, retention, the event sweep and reconciliation. It runs the one beat (-B), which only
+  # enqueues: the queue metrics every QUEUE_METRICS_INTERVAL_SECONDS, and the sweeps. It also
+  # drains the retired `provisioning` queue (aios.worker.RETIRED_QUEUES).
+  routine-worker:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "routine,provisioning", "--loglevel=INFO",
+       "--concurrency=1", "-B", "--schedule=/tmp/celerybeat-schedule"]
     environment: *provisioner-env
     depends_on:
       migrate:
@@ -220,12 +241,14 @@ services:
         condition: service_started
     ports: ["8000:8000"]
 
-  worker:
+  # Document ingest (the `ingest` queue), with Docling.
+  ingest-worker:
     <<: *backend
     image: aios-worker:local
     build:
       context: ./backend
       target: worker
+    command: ["celery", "-A", "aios.worker", "worker", "-Q", "ingest", "--loglevel=INFO", "--concurrency=2"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -314,7 +337,7 @@ services:
 
   # ---------- The full-stack test's stack: `docker compose --profile fullstack up --wait fullstack`
   # Everything a chat turn and an approval need, with the shared db, redis, rustfs, roles,
-  # bucket, migrations (platform and stores) and provisioning worker above. The test drives it
+  # bucket, migrations (platform and stores) and maintenance workers above. The test drives it
   # through fullstack-web, on :8090 (frontend/playwright.fullstack.config.ts).
   fullstack-api:
     <<: *fullstack
@@ -329,11 +352,11 @@ services:
       interval: 2s
       retries: 60
 
-  # The ingest worker's queue (documents and the run history's exports). On the api image, which
-  # has no Docling: the core loop ingests no documents, and the history needs none.
+  # The ingest queue. On the api image, which has no Docling: the core loop ingests no
+  # documents.
   fullstack-worker:
     <<: *fullstack
-    command: ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=1"]
+    command: ["celery", "-A", "aios.worker", "worker", "-Q", "ingest", "--loglevel=INFO", "--concurrency=1"]
 
   fullstack-run-service:
     <<: *fullstack
@@ -369,7 +392,9 @@ services:
         condition: service_started
       fullstack-run-service:
         condition: service_started
-      provisioning-worker:
+      urgent-worker:
+        condition: service_started
+      routine-worker:
         condition: service_started
       migrate-stores:
         condition: service_completed_successfully

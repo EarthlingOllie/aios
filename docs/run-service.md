@@ -12,7 +12,8 @@ in the API process.
 
 Work waits in a queue in the platform database (`work_items`, `aios.run_service.queue`). Each
 item records its organisation and store, its **lane** (`interactive`: people waiting in a chat,
-i.e. mentions; `background`: schedules, workflow advances and nodes, resumes), its **kind** (an
+i.e. mentions; `background`: schedules, events, workflow advances and nodes, resumes;
+`sources`: phase 4's syncs, so a big sync waits on its own share), its **kind** (an
 invocation start, an agent turn, a workflow advance, a workflow node, or a resume turn), a
 payload of store ids, when it became ready and was enqueued, its attempts and lease, and an
 optional deduplication key. Items are deleted when done: their outcome lives in the store.
@@ -29,8 +30,9 @@ optional deduplication key. Items are deleted when done: their outcome lives in 
 - **Claiming** is one transaction in two stages. First it chooses candidates: it counts each
   organisation's items in flight, ranks each organisation's ready items (chat first, then by
   readiness), keeps only as many as its cap leaves room for, and orders them interactive lane
-  first, then by fewest in flight, then oldest. Then it locks and leases those still free,
-  skipping locked rows.
+  first. Within each lane it's fair between organisations: the one with the fewest of that
+  lane's items in flight first, then the fewest in flight at all, then the oldest. Then it locks
+  and leases those still free, skipping locked rows.
 - **The in-flight cap** is `QUEUE_IN_FLIGHT_CAP` (20) per organisation, which an admin can
   override for their organisation (`PUT /api/o/{org}/organisation/in-flight-cap`, `null` for
   the default; audited as `settings.changed`); the organisation's page returns it
@@ -39,7 +41,20 @@ optional deduplication key. Items are deleted when done: their outcome lives in 
   accepted over serialising claims.
 - **Each process** runs up to `RUN_SERVICE_CONCURRENCY` (50) items, and keeps
   `RUN_SERVICE_INTERACTIVE_RESERVE` (10) of those slots for the interactive lane: background
-  work never takes them.
+  and sources work never take them. Of the rest, sources work takes at most
+  `RUN_SERVICE_SOURCES_LIMIT` (20).
+
+## Metrics and autoscaling
+
+The routine worker's beat publishes the queue metrics (`aios.queue_metrics`) every
+`QUEUE_METRICS_INTERVAL_SECONDS` (30): per lane, `Depth` (items ready and waiting) and
+`OldestReadyAge` (seconds); per Celery queue (`ingest`, `urgent`, `routine`, and the retired
+`provisioning` until it's drained), `Depth`. They're logged, and sent to CloudWatch under
+`QUEUE_METRICS_NAMESPACE` where it's set (on AWS). There, run service processes scale on the
+interactive lane's oldest ready age (target 5 seconds) and the background and sources lanes'
+depth, and ingest workers on the ingest queue's depth, each between its configured minimum
+and maximum (`infra/terraform/autoscaling.tf`). Scale-in waits 10 minutes, and relies on the
+graceful shutdown below.
 
 ## Leases, retries and attempts
 

@@ -17,8 +17,9 @@ and `/workspace/docs/` for how each part works (one page per domain, listed in
 | `rustfs`          | `http://rustfs:9000`        | S3 stand-in for uploaded files (`rustfsadmin`)  |
 | `sandbox`         | `http://sandbox:8080`       | `run_python` runner (token `dev-sandbox-token`) |
 | `run-service`     | -                           | Agent turns, workflow runs, schedules (queue)   |
-| `worker`          | -                           | Celery, ingest queue (Docling)                  |
-| `provisioning-worker` | -                       | Celery, `provisioning` queue: data stores       |
+| `ingest-worker`   | -                           | Celery, `ingest` queue (Docling)                |
+| `urgent-worker`   | -                           | Celery, `urgent` queue: approved changes        |
+| `routine-worker`  | -                           | Celery, `routine` queue + beat: data stores     |
 
 One-shot setup services, whose logs explain a stack that didn't start: `db-roles`,
 `files-bucket`, `migrate`, `migrate-stores`.

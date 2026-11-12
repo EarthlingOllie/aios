@@ -655,7 +655,7 @@ def delete_deleting(
     """Delete every store that's `deleting` (`delete_store`), one at a time; returns, for each
     it got to, True, or what stopped it (recorded on the store, which the next sweep tries
     again). Unless `wait`, a store another run is on is left to the next sweep. The
-    provisioning worker runs it when an organisation is deleted (for its store, waiting for a
+    routine worker runs it when an organisation is deleted (for its store, waiting for a
     provisioning run still on it), and every `aios.worker.DELETE_STORES_EVERY`.
 
     `store_ids` limits it to those stores (tests use it to leave other stores alone)."""
@@ -752,7 +752,7 @@ def _finish(which: ColumnElement[bool], wait: bool = True) -> dict[uuid.UUID, st
             if revision is not None:
                 outcome[store_id] = revision
         except SoftTimeLimitExceeded:
-            # The provisioning worker's time limit, for the whole run: not this store's failure.
+            # The routine worker's time limit, for the whole run: not this store's failure.
             raise
         except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
             log.exception("Provisioning data store %s failed", store_id)
@@ -813,10 +813,10 @@ def retry_unfinished(
     """Try once more to provision the stores whose provisioning gave up, or hasn't finished
     (`UNFINISHED_AFTER`), and bring ready stores behind the tree's head to it (the release
     before this one made them after the deploy migrated stores, or migrating them failed); the
-    provisioning worker runs it every few minutes (`aios.worker.RETRY_UNFINISHED_EVERY`).
+    routine worker runs it every few minutes (`aios.worker.RETRY_UNFINISHED_EVERY`).
     Returns the revision each reached, or what stopped it. A store another run is on (a
     deploy's migrate-all, say) is left to it: new stores' provisioning waits behind this, on
-    the one provisioning worker."""
+    the one routine worker."""
     only = _only(store_ids)
     outcome = _finish(
         and_(

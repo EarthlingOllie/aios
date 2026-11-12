@@ -35,7 +35,7 @@ schedule's run records its schedule rather than a member.
 - Schedules are in each organisation's store (`aios.triggers`). The platform keeps a thin index
   of what's due (`schedule_due`: store, trigger, organisation and next run time; `aios.schedules`),
   written whenever a schedule is saved (created, edited, paused, archived with its target,
-  deleted), once the store has committed it. The repair sweep (the provisioning worker's
+  deleted), once the store has committed it. The repair sweep (the routine worker's
   `aios.repair_stores`, with the people mirror's) rebuilds it from every ready store's triggers
   and logs what it fixed: rows added (lost), updated (stale) and removed.
 - The scheduler runs on the run service (`aios.scheduler`, see [Run service](run-service.md)):

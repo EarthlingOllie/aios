@@ -28,7 +28,7 @@ def names_for(store_id: uuid.UUID) -> tuple[str, str]:
 
 
 def enqueue_provisioning(store_id: uuid.UUID) -> None:
-    """Queue the store's provisioning on the provisioning worker."""
+    """Queue the store's provisioning on the routine worker."""
     from aios.worker import provision_data_store_task
 
     provision_data_store_task.delay(str(store_id))

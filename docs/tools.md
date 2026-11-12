@@ -138,7 +138,7 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
   marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding
   or cancelling the request marks its notifications read
   (`schema_changes.clear_notifications`). Users only ever see their own.
-- An approved request is applied on the provisioning worker (`aios.apply_schema_change`), as
+- An approved request is applied on the urgent worker (`aios.apply_schema_change`), as
   the provisioner `SET ROLE` to the store's owner, in one transaction under
   `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the
   store's data schema revision; if the revision moved on since the request was made, the spec
@@ -156,7 +156,7 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
   run page shows the waiting node with the request's card, and the pins that are no longer
   current.
 - A request nobody decides within `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` (7) expires: the
-  provisioning worker's beat (`aios.expire_schema_change_requests`, every
+  urgent worker's beat (`aios.expire_schema_change_requests`, every
   `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour) marks it `expired`, which counts as a
   rejection, and the chat or workflow run that asked resumes with it.
 - Deleting a chat run, or a workflow run that waits, marks its pending request `cancelled`

@@ -323,7 +323,7 @@ def _record(conn: psycopg.Connection, summary: str, statements: list[sql.Composa
 
 def restore(data_store_id: uuid.UUID, dropped_id: int) -> str | None:
     """Rename a dropped table or column back, give the login roles their access to it again,
-    and record it in `aios.schema_history`; on the provisioning worker, as the store's owner.
+    and record it in `aios.schema_history`; on the urgent worker, as the store's owner.
     Returns why it was refused (also recorded on it, for the Dropped section), or None: done,
     or there's nothing to restore (already restored, or purged)."""
     from aios.datastores.provision import StoreNames, as_owner, provisioner_locked
@@ -405,7 +405,7 @@ def _purge_sql(item: Dropped) -> tuple[list[sql.Composable], str, str | None]:
 def purge(data_store_id: uuid.UUID, wait: bool = True) -> list[str]:
     """Drop for good the store's tables and columns dropped longer ago than
     `DATA_STORE_DROPPED_RETENTION_DAYS`, each in a transaction of its own, recorded in
-    `aios.schema_history`; on the provisioning worker, as the store's owner. Returns what it
+    `aios.schema_history`; on the urgent worker, as the store's owner. Returns what it
     purged. Unless `wait`, does nothing if another run (a migration, say) is on the store."""
     from aios.datastores.provision import StoreNames, as_owner, provisioner_locked
 

@@ -6,7 +6,7 @@ store (every member of its organisation) see it; to anyone else it doesn't exist
 Deciding one takes a role that may (editors and admins, `aios.permissions`), and at least the
 role its operations need (`aios.approval_rules`): each request says which (`needs_role`), and
 whether the user may (`can_decide`). Each decision is audited (`aios.audit`).
-Approving queues the change to be applied on the provisioning worker, which then resumes the
+Approving queues the change to be applied on the urgent worker, which then resumes the
 run that asked; rejecting resumes it straight away.
 """
 

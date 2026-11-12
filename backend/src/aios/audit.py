@@ -14,7 +14,7 @@ Two ways in:
 - **Platform-side actions** (roles, memberships, invitations, renames, settings, deletion
   scheduling) `enqueue` one in the platform's outbox (`aios.models.AuditOutbox`), in the
   platform transaction that acts. `drain` delivers the outbox into each store, every
-  `audit_drain_seconds` on the provisioning worker's beat, idempotently by outbox id (the
+  `audit_drain_seconds` on the routine worker's beat, idempotently by outbox id (the
   store's `outbox_id` is unique): a store that's briefly unavailable gets its entries once it's
   back, each exactly once.
 

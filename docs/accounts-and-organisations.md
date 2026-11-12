@@ -54,7 +54,7 @@ sign-in, and no emails are sent (no verification, no password reset).
 
 **Upgrading a database from GitHub sign-in.** Migration `0052` deletes the users who signed in
 with GitHub (they have no password), and, as nobody is then left in any organisation, every
-organisation with everything in it. Their stores go `deleting`, for the provisioning worker's
+organisation with everything in it. Their stores go `deleting`, for the routine worker's
 sweep to drop their databases, roles and files (see [Stores](stores.md#data-stores)). On a development database it's as simple to start again:
 `docker compose down -v` (which also empties RustFS), or drop and recreate the `aios` database,
 then run the setup steps again (`aios.db_roles`, `alembic upgrade head`: see
@@ -207,7 +207,7 @@ During the grace period the organisation works as before, but its invitation lin
 The creator can **cancel** (`DELETE .../organisation/deletion`, a 409 if none is scheduled):
 nothing is touched, the links open again until they expire, and every member is notified again.
 
-The provisioning worker's beat looks for organisations whose grace period is over every
+The routine worker's beat looks for organisations whose grace period is over every
 `ORGANISATION_DELETION_CHECK_SECONDS` (10 minutes by default; `aios.delete_due_organisations`,
 `aios.organisations.delete_due`). For each, in one transaction, it records the deletion in
 `organisation_deletions` (the name, slug, who scheduled it, when, when it went, and its store),

@@ -1,7 +1,8 @@
 """A run service process: one event loop running many items at once (`Executor`).
 
-- It runs up to `run_service_concurrency` items at once, of which background ones may take all
-  but `run_service_interactive_reserve`: those slots are kept for people waiting in chat.
+- It runs up to `run_service_concurrency` items at once, of which background and sources ones
+  may take all but `run_service_interactive_reserve`: those slots are kept for people waiting
+  in chat. Sources ones (phase 4's syncs) take at most `run_service_sources_limit` of them.
 - It claims when it has room: woken by a Redis channel per lane as work is enqueued
   (`aios.run_service.queue.wake`), and every `run_service_idle_poll_seconds` regardless.
 - It extends its items' leases every third of a lease, so only a dead process's lapse.
@@ -49,9 +50,9 @@ RETRY_SECONDS = 10.0
 SWEEP_SECONDS = 30.0
 
 
-def _claim(limit: int, background_limit: int) -> list[queue.Claimed]:
+def _claim(limit: int, background_limit: int, sources_limit: int) -> list[queue.Claimed]:
     with SessionLocal() as db:
-        return queue.claim(db, limit, background_limit)
+        return queue.claim(db, limit, background_limit, sources_limit)
 
 
 # How many times completing an item is tried when the database picks it to break a deadlock:
@@ -88,27 +89,39 @@ def _extend(items: list[queue.Claimed]) -> None:
 class Executor:
     """One process's items in flight, and its room for more."""
 
-    def __init__(self, concurrency: int | None = None, reserve: int | None = None) -> None:
+    def __init__(
+        self,
+        concurrency: int | None = None,
+        reserve: int | None = None,
+        sources_limit: int | None = None,
+    ) -> None:
         settings = get_settings()
         self.concurrency = concurrency or settings.run_service_concurrency
         reserve = settings.run_service_interactive_reserve if reserve is None else reserve
         self.reserve = min(reserve, self.concurrency)
+        if sources_limit is None:
+            sources_limit = settings.run_service_sources_limit
+        self.sources_limit = sources_limit
         self.running: dict[int, tuple[queue.Claimed, asyncio.Task]] = {}
         # Set when an item finishes, so the claim loop looks for more.
         self.changed = asyncio.Event()
 
-    def room(self) -> tuple[int, int]:
-        """How many more items it may claim, and how many of those may be background ones."""
+    def room(self) -> tuple[int, int, int]:
+        """How many more items it may claim, how many of those may be background or sources
+        ones, and how many of those sources ones."""
         free = self.concurrency - len(self.running)
-        background = sum(item.lane == WorkLane.background for item, _ in self.running.values())
-        return free, max(0, min(free, self.concurrency - self.reserve - background))
+        lanes = [item.lane for item, _ in self.running.values()]
+        shared = sum(lane != WorkLane.interactive for lane in lanes)
+        background = max(0, min(free, self.concurrency - self.reserve - shared))
+        sources = max(0, min(background, self.sources_limit - lanes.count(WorkLane.sources)))
+        return free, background, sources
 
     async def claim(self) -> list[asyncio.Task]:
         """Claim what there's room for, and start each in a task of its own."""
-        free, background = self.room()
+        free, background, sources = self.room()
         if free <= 0:
             return []
-        items = await run_in_threadpool(_claim, free, background)
+        items = await run_in_threadpool(_claim, free, background, sources)
         return [self._start(item) for item in items]
 
     def _start(self, item: queue.Claimed) -> asyncio.Task:
@@ -167,10 +180,12 @@ class Executor:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def drain_once(concurrency: int | None = None, reserve: int | None = None) -> None:
+async def drain_once(
+    concurrency: int | None = None, reserve: int | None = None, sources_limit: int | None = None
+) -> None:
     """Run every ready item to completion in this process, and what they enqueue as they finish,
     until nothing ready is left. Items handed back for later aren't waited for."""
-    executor = Executor(concurrency, reserve)
+    executor = Executor(concurrency, reserve, sources_limit)
     extending = asyncio.create_task(executor.extend_forever())
     try:
         while True:

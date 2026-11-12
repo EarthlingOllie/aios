@@ -49,7 +49,7 @@ RUN docling-tools models download -o "$DOCLING_ARTIFACTS_PATH" \
     && chmod -R a+rX /opt/hf /opt/docling-models
 ENV HF_HUB_OFFLINE=1
 USER app
-CMD ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=2"]
+CMD ["celery", "-A", "aios.worker", "worker", "-Q", "ingest", "--loglevel=INFO", "--concurrency=2"]
 
 # ---------- sandbox ----------
 # Runs agent-written code. Only the runner and the pinned libraries in sandbox/requirements.txt:
