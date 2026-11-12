@@ -1223,6 +1223,49 @@ class SourceStatus(enum.StrEnum):
 UPLOADS_NAME = "Uploads"
 
 
+class ConnectorStatus(enum.StrEnum):
+    active = "active"
+    # Its access failed for good (a final authorisation failure): an admin must reconnect it.
+    needs_reauth = "needs_reauth"
+    # Being removed: it no longer syncs, and its content is being deleted or kept.
+    removing = "removing"
+
+
+class Connector(StoreBase):
+    """A connection to an external system (`aios.connectors`): one per provider. Its scope is
+    what an admin chose to sync; its sync is a source of kind `connector` pointing at it. Its
+    credentials are in the platform database, never here."""
+
+    __tablename__ = "connectors"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(
+        String(64), comment="slack, google_drive, github or test."
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    scope: Mapped[list] = mapped_column(
+        JSONB,
+        server_default=sql_text("'[]'::jsonb"),
+        comment="What it syncs: the channels, folders or repositories picked, each as"
+        " {id, name, restricted}.",
+    )
+    status: Mapped[ConnectorStatus] = mapped_column(
+        Enum(ConnectorStatus, name="connector_status"),
+        server_default=ConnectorStatus.active.value,
+    )
+    # The admin who connected it, by platform user id.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("provider", name="uq_connectors_provider"),
+        {"comment": "Connections to external systems, one per provider"},
+    )
+
+
 class Source(StoreBase):
     """Something that brings content into the store (`aios.sources`). Every store has exactly
     one upload source, Uploads, made with the store (the store tree's 0011): every uploaded
@@ -1248,6 +1291,11 @@ class Source(StoreBase):
         DateTime(timezone=True),
         comment="When it's next due to sync: its interval after the last, or a slow retry while"
         " failing. Null for Uploads, and for a source not synced yet (due at once).",
+    )
+    connector_id: Mapped[int | None] = mapped_column(
+        ForeignKey("connectors.id", ondelete="CASCADE"),
+        unique=True,
+        comment="The connector it syncs (kind connector, made from one).",
     )
     # The member who added it, by platform user id; null for Uploads.
     created_by: Mapped[int | None] = mapped_column(Integer)

@@ -6,19 +6,41 @@ A feed is a change log: putting or deleting an item adds a change, and a cursor 
 changes have been read. A test can also delete an item without the change feed saying
 (`delete(..., silently=True)`), so only a full listing catches it; make fetching fail after so
 many items (`fail_after`), or for good (`broken`); or take its access away (`revoked`).
+
+**As a connector**, every feed is a channel an admin can pick (`scope_options`; a feed marked
+`restricted` is private at its source), and a connector's source syncs the feeds in its scope,
+its items' external ids prefixed with their feed's name. Connecting needs no third party: the
+authorisation "page" sends the browser straight back to the callback with a code, exchanged for a
+fresh token. Each sync makes the calls its feeds list (`calls`) through `aios.outbound`, so they
+reach only the provider's allowed hosts (served in-process, never sent); a feed notes the tokens it
+was called with (`tokens`), and revoked tokens are noted in `REVOKED`. A removed connector's
+message items are kept as one Markdown document per feed (channel) per month.
 """
 
 import hashlib
+import json
+import secrets
+from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from urllib.parse import urlencode
 
-from aios.datastores.models import SyncedItemKind
+import httpx
+
+from aios import outbound
+from aios.datastores.models import SyncedItem, SyncedItemKind
 from aios.source_providers import (
+    TEST,
     Changes,
     Content,
+    Grant,
     Item,
+    KeptDocument,
     NeedsReconnecting,
+    Provider,
     ScopeOption,
     SourceView,
+    _test_unavailable,
 )
 
 
@@ -43,6 +65,11 @@ class Feed:
     broken: bool = False
     revoked: bool = False
     fetched: list[str] = field(default_factory=list)
+    # Private at its source: picking it needs an acknowledgement.
+    restricted: bool = False
+    # URLs each sync of it calls (through `aios.outbound`), and the tokens it was called with.
+    calls: list[str] = field(default_factory=list)
+    tokens: list[str] = field(default_factory=list)
 
     def message(self, external_id: str, text: str, title: str | None = None, **extra) -> Item:
         """Put a message item (new or changed)."""
@@ -126,46 +153,189 @@ def _feed_of(source: SourceView) -> Feed:
     return feed(name)
 
 
+# The tokens revoked at the test provider (a removed connector's).
+REVOKED: list[str] = []
+
+# Calls to the test provider's own host are answered here: nothing is sent.
+_SERVED = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+
+
+def _scoped(source: SourceView) -> list[Feed] | None:
+    """A connector's source: the feeds in its scope (None for a source on one feed)."""
+    scope = source.settings.get("scope")
+    if scope is None:
+        return None
+    return [FEEDS[name] for name in scope if name in FEEDS]
+
+
+def _prefixed(f: Feed, item: Item) -> Item:
+    parent = item.parent_external_id
+    return Item(
+        external_id=f"{f.name}/{item.external_id}",
+        kind=item.kind,
+        title=item.title,
+        content_hash=item.content_hash,
+        url=item.url,
+        author_name=item.author_name,
+        updated_at=item.updated_at,
+        parent_external_id=None if parent is None else f"{f.name}/{parent}",
+        content_type=item.content_type,
+    )
+
+
+def _changes_in(f: Feed, start: int) -> Changes:
+    changed: dict[str, Item] = {}
+    removed: set[str] = set()
+    for external_id, gone in f.log[start:]:
+        if gone or external_id not in f.items:
+            changed.pop(external_id, None)
+            removed.add(external_id)
+        else:
+            removed.discard(external_id)
+            changed[external_id] = f.items[external_id].item
+    return Changes(list(changed.values()), sorted(removed), str(len(f.log)))
+
+
+def _call(f: Feed, source: SourceView) -> None:
+    """Make the feed's calls, as a provider's API calls, through the allowlist."""
+    if not f.calls:
+        return
+    if source.credential is not None:
+        f.tokens.append(source.credential)
+    headers = {"Authorization": f"Bearer {source.credential}"} if source.credential else {}
+    with outbound.client(TEST, transport=_SERVED, headers=headers) as http:
+        for url in f.calls:
+            http.get(url)
+
+
 class TestProvider:
-    """The adapter (`aios.source_providers.Adapter`) over a test feed."""
+    """The adapter (`aios.source_providers.Adapter`) over a test feed, or (a connector's source)
+    the feeds in its scope."""
 
     __test__ = False  # not a test class, whatever pytest makes of its name
 
-    def _check(self, f: Feed) -> None:
+    def _check(self, f: Feed, source: SourceView, *, read: bool = True) -> None:
+        """Refuse as the feed's provider would; then, reading its changes or listing, make its
+        calls."""
         if f.revoked:
             raise NeedsReconnecting("The test feed's access was revoked.")
         if f.broken:
             raise FeedBroken("The test feed is down.")
+        if read:
+            _call(f, source)
 
     def changes(self, source: SourceView, cursor: str | None) -> Changes:
-        f = _feed_of(source)
-        self._check(f)
-        start = int(cursor or 0)
-        changed: dict[str, Item] = {}
-        removed: set[str] = set()
-        for external_id, gone in f.log[start:]:
-            if gone or external_id not in f.items:
-                changed.pop(external_id, None)
-                removed.add(external_id)
-            else:
-                removed.discard(external_id)
-                changed[external_id] = f.items[external_id].item
-        return Changes(list(changed.values()), sorted(removed), str(len(f.log)))
+        feeds = _scoped(source)
+        if feeds is None:
+            f = _feed_of(source)
+            self._check(f, source)
+            return _changes_in(f, int(cursor or 0))
+        at = json.loads(cursor) if cursor else {}
+        changed: list[Item] = []
+        removed: list[str] = []
+        for f in feeds:
+            self._check(f, source)
+            some = _changes_in(f, int(at.get(f.name, 0)))
+            changed += [_prefixed(f, i) for i in some.changed]
+            removed += [f"{f.name}/{r}" for r in some.removed]
+            at[f.name] = len(f.log)
+        return Changes(changed, removed, json.dumps(at, sort_keys=True))
 
     def listing(self, source: SourceView) -> Changes:
-        f = _feed_of(source)
-        self._check(f)
-        return Changes([e.item for e in f.items.values()], [], str(len(f.log)))
+        feeds = _scoped(source)
+        if feeds is None:
+            f = _feed_of(source)
+            self._check(f, source)
+            return Changes([e.item for e in f.items.values()], [], str(len(f.log)))
+        listed: list[Item] = []
+        for f in feeds:
+            self._check(f, source)
+            listed += [_prefixed(f, e.item) for e in f.items.values()]
+        return Changes(listed, [], json.dumps({f.name: len(f.log) for f in feeds}, sort_keys=True))
 
     def fetch(self, source: SourceView, item: Item) -> Content:
-        f = _feed_of(source)
-        self._check(f)
+        if _scoped(source) is None:
+            f, external_id = _feed_of(source), item.external_id
+        else:
+            name, external_id = item.external_id.split("/", 1)
+            f = feed(name)
+        self._check(f, source, read=False)
         if f.fail_after is not None:
             if f.fail_after <= 0:
                 raise FeedBroken(f"The test feed failed fetching {item.external_id}.")
             f.fail_after -= 1
-        f.fetched.append(item.external_id)
-        return f.items[item.external_id].content
+        f.fetched.append(external_id)
+        return f.items[external_id].content
 
     def scope_options(self, source: SourceView) -> list[ScopeOption]:
-        return [ScopeOption(name, name) for name in sorted(FEEDS)]
+        return [ScopeOption(name, name, FEEDS[name].restricted) for name in sorted(FEEDS)]
+
+
+# --- As a connector -----------------------------------------------------------------------------
+
+# The code the test provider's authorisation "page" sends back.
+CODE = "test-code"
+
+
+def _authorise_url(state: str) -> str:
+    return "/api/connectors/callback?" + urlencode({"code": CODE, "state": state})
+
+
+def _exchange(code: str) -> Grant:
+    if code != CODE:
+        raise ValueError("The test provider didn't recognise that code.")
+    return Grant(secret=f"test-token-{secrets.token_urlsafe(24)}", scopes="read")
+
+
+def _revoke(secret: str) -> None:
+    REVOKED.append(secret)
+
+
+def _when(row: SyncedItem):
+    return row.source_updated_at or row.created_at
+
+
+def _keep_groups(rows: Iterable[SyncedItem]) -> list[KeptDocument]:
+    """One Markdown document per feed (channel) per month, its messages in time order, each
+    reply under its thread's first message."""
+    rows = list(rows)
+    replies: dict[int, list[SyncedItem]] = defaultdict(list)
+    for r in rows:
+        if r.parent_id is not None:
+            replies[r.parent_id].append(r)
+    ids = {r.id for r in rows}
+    groups: dict[tuple[str, str], list[SyncedItem]] = defaultdict(list)
+    for r in rows:
+        if r.parent_id is None or r.parent_id not in ids:
+            channel = r.external_id.split("/", 1)[0] if "/" in r.external_id else "test"
+            groups[(channel, _when(r).strftime("%Y-%m"))].append(r)
+    kept = []
+    for (channel, month), tops in sorted(groups.items()):
+        lines = [f"# {channel}, {month}", ""]
+        for top in sorted(tops, key=_when):
+            lines += _message_lines(top, "")
+            for reply in sorted(replies.get(top.id, []), key=_when):
+                lines += _message_lines(reply, "> ")
+        kept.append(KeptDocument(f"{channel} {month}.md", "\n".join(lines).rstrip() + "\n"))
+    return kept
+
+
+def _message_lines(row: SyncedItem, quote: str) -> list[str]:
+    who = row.author_name or "Someone"
+    head = f"**{who}**, {_when(row):%Y-%m-%d %H:%M} UTC"
+    if row.url:
+        head += f" ([link]({row.url}))"
+    body = [quote + line if line else quote.rstrip() for line in (row.text or "").splitlines()]
+    return [quote + head, quote.rstrip(), *body, ""]
+
+
+PROVIDER = Provider(
+    TEST,
+    "Test",
+    _test_unavailable,
+    adapter=TestProvider,
+    authorise_url=_authorise_url,
+    exchange=_exchange,
+    revoke=_revoke,
+    keep_groups=_keep_groups,
+)

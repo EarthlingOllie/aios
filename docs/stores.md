@@ -314,6 +314,43 @@ checks them again (the sync record counts those still waiting). A released item 
 goes back to `awaiting_check`, and admins are told (`released_item_changed`). A synced document's
 document ingested event waits until it's found clean; releasing fires nothing.
 
+**Connectors** (`aios.connectors`, `aios.api.connectors`, store revision `0029`, platform
+revision `0078`). A connector is a connection to Slack, Google Drive, GitHub or (in development)
+the test provider: one per provider per organisation (`aios.connectors`, unique by provider).
+The providers list says which this deployment offers and why any aren't: a provider not in
+`CONNECTOR_ENABLED_PROVIDERS` is switched off (taking one out stops its connectors' syncs at
+once, and leaves their content searchable), and one without its app settings is unavailable.
+
+- **Connecting** (admins only) is an OAuth-style flow: the state is signed, bound to the admin's
+  session, the organisation and the provider, and expires after `CONNECTOR_STATE_TTL_SECONDS`.
+  The provider sends the browser back to one route outside the organisation's path,
+  `/api/connectors/callback`, which refuses a bad or expired state (400) and one from another
+  session or person (403), and lands on the connector's page. A second connector to the same
+  provider is refused (409).
+- **Credentials** live in the platform database (`connector_credentials`), encrypted with a key
+  derived from `CONNECTOR_CREDENTIALS_KEY` (apart from the stores' passwords' key; required in a
+  production-like configuration), never in the store; only `aios.connectors.credential` reads
+  them, and the API never returns them. A final authorisation failure marks the connector as
+  needing reconnection and stops its syncs; Reconnect runs the flow again, and syncing carries
+  on from the stored cursor.
+- **Choosing what syncs.** Admins pick channels, folders or repositories from the provider's
+  searchable options; something restricted at its source needs accepting that everyone in the
+  organisation will be able to search it (422 otherwise). The first scope makes the connector's
+  source (kind `connector`, `sources.connector_id`), which syncs; a changed scope makes its next
+  sync a full one, which removes what left the scope.
+- **Calls** go through `aios.outbound`, which reaches only the provider's
+  `CONNECTOR_ALLOWED_HOSTS`; a call anywhere else is refused before it's sent, and the sync fails
+  with that recorded on it.
+- **Removing** a connector stops it at once, deletes its credentials (revoked at the provider
+  where it can), and then deletes its content or keeps it: file items' documents move to Uploads,
+  and message items become Markdown documents in Uploads, grouped as the provider says
+  (`Provider.keep_groups`: the test provider's are one per channel per month, as Slack's will be;
+  GitHub's will be one per issue or pull request with its comments). A
+  removal that stopped part way is finished by the run service's sync sweep. A connector's source
+  is removed only with its connector (409).
+
+Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
+
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so

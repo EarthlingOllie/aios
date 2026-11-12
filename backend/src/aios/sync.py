@@ -67,6 +67,7 @@ from aios.source_providers import (
     NeedsReconnecting,
     SourceView,
     adapter_for,
+    why_unavailable,
 )
 
 log = logging.getLogger(__name__)
@@ -84,8 +85,16 @@ NEEDS_RECONNECTING = "needs_reconnecting"
 DOCUMENT_IDS = func.pg_get_serial_sequence(Document.__table__.fullname, "id")
 
 
-def view(source: Source) -> SourceView:
-    return SourceView(source.id, source.name, dict(source.settings or {}))
+def view(source: Source, credential: str | None = None) -> SourceView:
+    return SourceView(source.id, source.name, dict(source.settings or {}), credential)
+
+
+def _provider_on(source: Source | None) -> bool:
+    """Whether the source's provider may sync here (a connector's provider can be switched
+    off for the whole deployment at once). Other kinds have no provider to switch off."""
+    if source is None or source.kind != SourceKind.connector:
+        return True
+    return why_unavailable((source.settings or {}).get("provider")) is None
 
 
 def interval(source: Source) -> int:
@@ -127,7 +136,12 @@ def running(store: Session, source_id: int) -> bool:
 def _start(store: Session, source_id: int, kind: SyncKind) -> SourceSync | None:
     """Record a sync of the source running (committed); None, with nothing recorded, if one is
     running already or the source doesn't sync now (Uploads, paused, being removed, gone)."""
-    source = store.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    source = store.scalar(
+        select(Source)
+        .where(Source.id == source_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if (
         source is None
         or source.kind == SourceKind.upload
@@ -181,12 +195,19 @@ class _Batch:
 
 
 class _Sync:
-    def __init__(self, store: Session, store_id: uuid.UUID, source: Source, adapter: Adapter):
+    def __init__(
+        self,
+        store: Session,
+        store_id: uuid.UUID,
+        source: Source,
+        adapter: Adapter,
+        credential: str | None = None,
+    ):
         self.store = store
         self.store_id = store_id
         self.source_id = source.id
         self.label = f"source:{source.name}"
-        self.view = view(source)
+        self.view = view(source, credential)
         self.adapter = adapter
         self.counts = Counts()
 
@@ -331,14 +352,7 @@ class _Sync:
     # --- Removing ---
 
     def _remove(self, row: SyncedItem) -> None:
-        """Remove an item, with its document (its file first), chunks and search entries."""
-        doc = self.store.execute(
-            select(Document.id, Document.s3_key).where(Document.synced_item_id == row.id)
-        ).one_or_none()
-        if doc is not None:
-            files.delete(doc.s3_key)
-            self.store.execute(delete(Document).where(Document.id == doc.id))
-        self.store.execute(delete(SyncedItem).where(SyncedItem.id == row.id))
+        _remove_item(self.store, row.id)
 
     def remove_all(self, external_ids: set[str]) -> None:
         ids = sorted(external_ids)
@@ -402,6 +416,33 @@ class _Sync:
         )
 
 
+def _remove_item(store: Session, item_id: int) -> None:
+    """Remove an item, with its document (its file first), chunks and search entries."""
+    doc = store.execute(
+        select(Document.id, Document.s3_key).where(Document.synced_item_id == item_id)
+    ).one_or_none()
+    if doc is not None:
+        files.delete(doc.s3_key)
+        store.execute(delete(Document).where(Document.id == doc.id))
+    store.execute(delete(SyncedItem).where(SyncedItem.id == item_id))
+
+
+def remove_items(store: Session, source_id: int) -> None:
+    """Remove every item of the source, with their documents, chunks and search entries,
+    `sync_batch_items` per transaction."""
+    size = get_settings().sync_batch_items
+    while ids := store.scalars(
+        select(SyncedItem.id).where(SyncedItem.source_id == source_id).limit(size)
+    ).all():
+        for item_id in ids:
+            _remove_item(store, item_id)
+        store.commit()
+
+
+def queue_ingest(store_id: uuid.UUID, document_ids: list[int]) -> None:
+    _ingest(store_id, document_ids)
+
+
 def _ingest(store_id: uuid.UUID, document_ids: list[int]) -> None:
     """Queue the documents for ingestion. One that can't be queued is left pending: the next
     change to its item queues it again."""
@@ -433,6 +474,9 @@ def run_sync(
     skipped (another is running, or the source doesn't sync now). Syncs aren't reachable over
     HTTP: the run service runs this, and so do tests."""
     with store_session(data_store_id, "rw") as store:
+        if not _provider_on(store.get(Source, source_id)):
+            # Switched off in this deployment: it doesn't sync, and its content stays.
+            return None
         sync = _start(store, source_id, kind)
         if sync is None:
             return None
@@ -446,7 +490,13 @@ def run_sync(
             store.commit()
         run = None
         try:
-            run = _Sync(store, data_store_id, source, adapter_for(source.settings or {}))
+            adapter = adapter_for(source.settings or {})
+            credential = None
+            if source.connector_id is not None:
+                from aios import connectors
+
+                credential = connectors.credential(data_store_id, source.connector_id)
+            run = _Sync(store, data_store_id, source, adapter, credential)
             adapter = run.adapter
             changes = (
                 adapter.listing(run.view) if full else adapter.changes(run.view, source.cursor)
@@ -540,6 +590,10 @@ def _failed(
     source.failure_count += 1
     if isinstance(exc, NeedsReconnecting):
         source.status = SourceStatus.needs_reauth
+        if source.connector_id is not None:
+            from aios import connectors
+
+            connectors.needs_reconnecting(store, store_id, source.connector_id)
     elif (
         source.failure_count >= settings.sync_failures_before_failing
         and source.status == SourceStatus.active
@@ -606,10 +660,12 @@ def health(source: Source, last: SourceSync | None, last_success: datetime | Non
 
 
 def due(store: Session) -> list[int]:
-    """The store's sources due to sync: active or failing, and past their next sync."""
-    return list(
-        store.scalars(
-            select(Source.id)
+    """The store's sources due to sync: active or failing, past their next sync, and with their
+    provider on."""
+    return [
+        source.id
+        for source in store.scalars(
+            select(Source)
             .where(
                 Source.kind != SourceKind.upload,
                 Source.status.in_([SourceStatus.active, SourceStatus.failing]),
@@ -617,4 +673,5 @@ def due(store: Session) -> list[int]:
             )
             .order_by(Source.id)
         )
-    )
+        if _provider_on(source)
+    ]

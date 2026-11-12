@@ -159,7 +159,7 @@ locals {
   ]
 
   backend_secrets = concat(
-    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET", "DATA_STORE_CREDENTIALS_KEY"] :
+    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET", "DATA_STORE_CREDENTIALS_KEY", "CONNECTOR_CREDENTIALS_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
     [for k in ["ANTHROPIC_API_KEY", "VOYAGE_API_KEY", "JEV_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],

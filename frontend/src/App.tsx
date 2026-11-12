@@ -61,6 +61,7 @@ import {
 import { LoginPage, RegisterPage } from "@/pages/Auth";
 import { DataPage } from "@/pages/Data";
 import { SourcePage } from "@/pages/SourcePage";
+import { ConnectorPage } from "@/pages/ConnectorPage";
 import { InviteRoute } from "@/pages/Invite";
 import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
@@ -282,6 +283,7 @@ export default function App({ organisation = null }: { organisation?: string | n
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data/sources/:sourceId" element={<SourcePage />} />
+        <Route path="data/connectors/:connectorId" element={<ConnectorPage />} />
         <Route path="data/:tab?" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="organisation/:tab?" element={<OrganisationPage />} />

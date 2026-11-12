@@ -26,6 +26,10 @@ from aios.models.chats import (
     InvocationCause,
     InvocationStatus,
 )
+from aios.models.connectors import (
+    ConnectorCredential,
+    CredentialKind,
+)
 from aios.models.identity import (
     Organisation,
     OrganisationDeletion,
@@ -78,6 +82,8 @@ __all__ = [
     "DataStoreStatus",
     "DataStore",
     "AgentStoreRole",
+    "ConnectorCredential",
+    "CredentialKind",
     "AgentRunStatus",
     "WorkflowNodeKind",
     "WorkflowRunStatus",

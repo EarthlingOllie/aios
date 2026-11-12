@@ -11,6 +11,11 @@ def libpq_conninfo(url: str, **parts: str) -> str:
     return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
 
 
+# The development value of CONNECTOR_CREDENTIALS_KEY, which a production-like configuration
+# (COOKIE_SECURE) refuses to start with.
+DEV_CONNECTOR_CREDENTIALS_KEY = "dev-insecure-connectors-change-me"
+
+
 class ModelRateLimit(BaseModel):
     """A model provider's rate limit on one model (`aios.model_rate_limit`): requests and tokens
     (input and output) a minute, across every run service process. Unset: no limit on it."""
@@ -313,6 +318,31 @@ class Settings(BaseSettings):
     # The test provider (`aios.source_providers.test`): a source fed from in-process feeds, for
     # development and tests only. Compose turns it on; production never does.
     sources_test_provider_enabled: bool = False
+
+    # Connectors (`aios.connectors`): connections to Slack, Google Drive, GitHub (and, where the
+    # test provider is on, the test provider). Their credentials are kept in the platform
+    # database, encrypted with a key derived from `connector_credentials_key` (apart from the
+    # stores' passwords' key, so either can be rotated alone; required in production). A connect
+    # flow's signed state lasts `connector_state_ttl_seconds`. Only the providers in
+    # `connector_enabled_providers` are offered: taking one out stops its connectors at once
+    # (their content stays). Each provider's calls may reach only its `connector_allowed_hosts`.
+    # A provider without its app settings is unavailable.
+    connector_credentials_key: SecretStr = SecretStr(DEV_CONNECTOR_CREDENTIALS_KEY)
+    connector_state_ttl_seconds: int = Field(default=10 * 60, ge=1)
+    connector_enabled_providers: list[str] = ["slack", "google_drive", "github", "test"]
+    connector_allowed_hosts: dict[str, list[str]] = {
+        "slack": ["slack.com", "api.slack.com", "files.slack.com"],
+        "google_drive": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"],
+        "github": ["github.com", "api.github.com"],
+        "test": ["test.invalid"],
+    }
+    slack_client_id: str = ""
+    slack_client_secret: SecretStr = SecretStr("")
+    google_client_id: str = ""
+    google_client_secret: SecretStr = SecretStr("")
+    github_app_id: str = ""
+    github_app_private_key: SecretStr = SecretStr("")
+    github_app_slug: str = ""
 
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.
