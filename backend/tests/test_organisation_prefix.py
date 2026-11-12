@@ -104,6 +104,8 @@ UNSCOPED = {
     ("GET", "/api/tools"),
     ("GET", "/api/triggers/timezones"),
     ("GET", "/api/connectors/callback"),
+    # Webhook triggers' public endpoint: callers outside, keyed by the token.
+    ("POST", "/api/webhooks/{token}"),
 }
 DEV = {("GET", "/api/dev/users"), ("POST", "/api/dev/session")}
 

@@ -1256,10 +1256,33 @@ export type TriggerTargetKind = "agent" | "workflow";
 export type TriggerStatus = "running" | "succeeded" | "failed" | "refused" | "rate_limited";
 export type TriggerKind = "schedule" | "event";
 /** What happened in the store, as its outbox records it. */
-export type EventType = "document_ingested" | "table_written" | "schema_change_applied" | "chat_message";
-/** What an event trigger's event must match: document ingested triggers filter by source ids and
- * content types (`text/*` matches every text type). Each field left out matches anything. */
-export type TriggerFilter = { sources?: number[]; content_types?: string[] };
+export type EventType =
+  | "document_ingested"
+  | "table_written"
+  | "schema_change_applied"
+  | "chat_message"
+  | "webhook_received";
+/** Who wrote a chat message. */
+export type AuthorKind = "user" | "agent" | "workflow" | "system";
+/** A data table write's operation. */
+export type WriteOperation = "insert" | "upsert" | "update" | "delete";
+/** What an event trigger's event must match. Each field left out matches anything; a list
+ * matches any of its values.
+ * - document ingested: source ids and content types (`text/*` matches every text type);
+ * - table written: tables (without `data.`) and operations; schema change applied: tables;
+ * - chat message: the chat it listens to (required), author kinds, mentions ("agent:3") and
+ *   keywords (whole words, any case);
+ * - webhook received: none. */
+export type TriggerFilter = {
+  sources?: number[];
+  content_types?: string[];
+  tables?: string[];
+  operations?: WriteOperation[];
+  chat_id?: number;
+  author_kinds?: AuthorKind[];
+  mentions?: string[];
+  keywords?: string[];
+};
 
 /** Starts an agent or a workflow by itself: on a schedule (cron), or on an event in the store. */
 export type Trigger = Provenance & {
@@ -1281,6 +1304,12 @@ export type Trigger = Provenance & {
   event_type: EventType | null;
   filter: TriggerFilter;
   fire_on_own_events: boolean;
+  /** Event triggers: gather the matches of this many seconds into one run; null fires on each. */
+  debounce_seconds: number | null;
+  /** Webhook triggers: the endpoint to call. Its signing secret only in the answer that made or
+   * rotated it (rotating changes the URL too). */
+  webhook_url: string | null;
+  webhook_secret?: string | null;
   /** Why the platform turned it off, if it did. */
   disabled_reason: string | null;
   /** Null while disabled, and for event triggers. */
@@ -1320,6 +1349,7 @@ export type TriggerInput = {
   event_type?: EventType | null;
   filter?: TriggerFilter;
   fire_on_own_events?: boolean;
+  debounce_seconds?: number | null;
   /** The chat its runs' results are delivered to (any that isn't archived); null for none. */
   deliver_to?: number | null;
 };
@@ -1968,6 +1998,9 @@ export const api = {
   updateTrigger: (id: number, body: TriggerInput) =>
     request<Trigger>(`${organisationApi()}/triggers/${id}`, json("PUT", body)),
   deleteTrigger: (id: number) => request<void>(`${organisationApi()}/triggers/${id}`, { method: "DELETE" }),
+  /** A webhook trigger's new secret (and URL), shown only in this answer. */
+  rotateWebhookSecret: (id: number) =>
+    request<Trigger>(`${organisationApi()}/triggers/${id}/webhook-secret`, { method: "POST" }),
   previewSchedule: (cron: string, timezone: string) =>
     request<SchedulePreview>(`${organisationApi()}/triggers/preview`, json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),

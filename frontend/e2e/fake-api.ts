@@ -753,11 +753,19 @@ const ACKNOWLEDGEMENT = "Reading the chat…";
 const CHAT_NAME_TAKEN = "The organisation already has a chat with that name.";
 const ARCHIVED = "This chat is archived, so it's read-only. An admin can unarchive it.";
 
-/** An event trigger's filter as the API normalises it: lower-case content types, empty fields left out. */
-function normalisedFilter(filter: Record<string, unknown[]> = {}): Record<string, unknown[]> {
-  const out: Record<string, unknown[]> = {};
+/** An event trigger's filter as the API normalises it: lower-case strings (tables without
+ * `data.`), empty fields left out; `chat_id` a single value. */
+function normalisedFilter(filter: Record<string, unknown> = {}): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const [key, values] of Object.entries(filter)) {
-    const kept = values.map((v) => (typeof v === "string" ? v.trim().toLowerCase() : v)).filter((v) => v !== "");
+    if (!Array.isArray(values)) {
+      if (values !== undefined && values !== null) out[key] = values;
+      continue;
+    }
+    const kept = values
+      .map((v) => (typeof v === "string" ? v.trim().toLowerCase() : v))
+      .map((v) => (key === "tables" && typeof v === "string" ? v.replace(/^data\./, "") : v))
+      .filter((v) => v !== "");
     if (kept.length) out[key] = kept;
   }
   return out;
@@ -800,6 +808,25 @@ export function emptyInsights(): InsightsData {
     sources: { shown: false, sources: [] },
   };
 }
+/** The filter fields each event type's triggers take (`aios.outbox.FILTERS`). */
+const FILTER_FIELDS: Record<string, string[]> = {
+  document_ingested: ["sources", "content_types"],
+  table_written: ["tables", "operations"],
+  schema_change_applied: ["tables"],
+  chat_message: ["chat_id", "author_kinds", "mentions", "keywords"],
+  webhook_received: [],
+};
+
+/** What an event trigger fires on, as the API describes it. */
+const EVENT_DESCRIPTIONS: Record<string, string> = {
+  document_ingested: "When a document is ingested",
+  table_written: "When a data table is written",
+  schema_change_applied: "When a schema change is applied",
+  chat_message: "When a message is posted in a chat",
+  webhook_received: "When its webhook is called",
+};
+
+export const WEBHOOK_URL = "http://localhost:5173/api/webhooks/";
 
 export class FakeApi {
   private nextId = 100;
@@ -1669,6 +1696,21 @@ export class FakeApi {
     return trigger;
   }
 
+  /** Webhook triggers' rotations so far, by trigger id. */
+  webhookRotations = new Map<number, number>();
+
+  /** A chat message trigger's agent or workflow, added to the chat it listens to (as the API
+   * does), whether or not `me` is in it. */
+  private addListener(trigger: Record<string, unknown>) {
+    const chatId = (trigger.filter as { chat_id?: number }).chat_id;
+    const chat = chatId ? this.chats.get(chatId) : undefined;
+    if (!chat || trigger.event_type !== "chat_message") return;
+    const kind = trigger.target_kind as Kind;
+    const id = trigger.target_id as number;
+    if (!chat.members.some((m) => m.kind === kind && "target_id" in m && m.target_id === id))
+      this.addChatTarget(chat, kind, { id });
+  }
+
   /** A trigger as the API returns it, from what a form sent (`TriggerInput`). */
   private triggerOut(body: Record<string, unknown>, id = this.id()): Record<string, unknown> {
     const target = this.chatTarget(body.target_kind as Kind, Number(body.target_id));
@@ -1682,11 +1724,13 @@ export class FakeApi {
       enabled: body.enabled,
       input: body.input ?? "",
       cron: isEvent ? null : body.cron,
-      description: isEvent ? "When a document is ingested" : `At "${body.cron}"`,
+      description: isEvent ? EVENT_DESCRIPTIONS[body.event_type as string] : `At "${body.cron}"`,
       timezone: isEvent ? null : body.timezone,
       event_type: isEvent ? body.event_type : null,
-      filter: isEvent ? normalisedFilter(body.filter as Record<string, unknown[]>) : {},
+      filter: isEvent ? normalisedFilter(body.filter as Record<string, unknown>) : {},
       fire_on_own_events: isEvent ? !!body.fire_on_own_events : false,
+      debounce_seconds: isEvent ? ((body.debounce_seconds as number | null | undefined) ?? null) : null,
+      webhook_url: isEvent && body.event_type === "webhook_received" ? `${WEBHOOK_URL}token-${id}` : null,
       disabled_reason: null,
       next_run_at: isEvent || !body.enabled ? null : NOW,
       last_fired_at: null,
@@ -4057,14 +4101,32 @@ export class FakeApi {
       const refused = this.refuseUnlessBuilder();
       if (refused) return fail(403, refused);
       if (body.kind === "event") {
-        const unknown = Object.keys(body.filter ?? {}).find((k) => !["sources", "content_types"].includes(k));
-        if (unknown) return fail(422, `Unknown filter field '${unknown}' (known: content_types, sources).`);
+        const known = FILTER_FIELDS[body.event_type as string] ?? [];
+        const unknown = Object.keys(body.filter ?? {}).find((k) => !known.includes(k));
+        if (unknown) return fail(422, `Unknown filter field '${unknown}' (known: ${known.sort().join(", ") || "none"}).`);
+        if (body.event_type === "chat_message" && !body.filter?.chat_id)
+          return fail(422, "Filter field 'chat_id' is required.");
       }
       const archived = this.archivedDestination(body.deliver_to);
       if (archived) return fail(409, archived);
       const trigger = this.triggerOut(body);
       this.schedules.push(trigger);
-      return reply(201, trigger);
+      this.addListener(trigger);
+      // A webhook trigger's secret is in the answer that made it, and only there.
+      const secret = trigger.webhook_url ? { webhook_secret: `whsec_${trigger.id}_1` } : {};
+      return reply(201, { ...trigger, ...secret });
+    }
+    if ((m = path.match(/^\/api\/triggers\/(\d+)\/webhook-secret$/)) && method === "POST") {
+      const at = this.schedules.findIndex((t) => t.id === Number(m![1]));
+      if (at < 0) return fail(404, "Not Found");
+      const refused = this.refuseUnlessBuilder();
+      if (refused) return fail(403, refused);
+      const old = this.schedules[at];
+      if (!old.webhook_url) return fail(409, "This trigger has no webhook.");
+      const rotations = (this.webhookRotations.get(old.id as number) ?? 1) + 1;
+      this.webhookRotations.set(old.id as number, rotations);
+      this.schedules[at] = { ...old, webhook_url: `${WEBHOOK_URL}token-${old.id}-${rotations}` };
+      return reply(200, { ...this.schedules[at], webhook_secret: `whsec_${old.id}_${rotations}` });
     }
     if ((m = path.match(/^\/api\/triggers\/(\d+)$/)) && method !== "GET") {
       const at = this.schedules.findIndex((t) => t.id === Number(m![1]));
@@ -4079,7 +4141,16 @@ export class FakeApi {
       const chosen = (old.deliver_to as { id: number } | null)?.id;
       const archived = body.deliver_to !== chosen && this.archivedDestination(body.deliver_to);
       if (archived) return fail(409, archived);
-      this.schedules[at] = { ...old, ...this.triggerOut(body, old.id as number), last_fired_at: old.last_fired_at, last_status: old.last_status, last_error: old.last_error };
+      this.schedules[at] = {
+        ...old,
+        ...this.triggerOut(body, old.id as number),
+        // A webhook trigger keeps its URL as it's edited.
+        ...(old.webhook_url && body.event_type === "webhook_received" ? { webhook_url: old.webhook_url } : {}),
+        last_fired_at: old.last_fired_at,
+        last_status: old.last_status,
+        last_error: old.last_error,
+      };
+      this.addListener(this.schedules[at]);
       return reply(200, this.schedules[at]);
     }
     if (path === "/api/triggers/timezones") return reply(200, this.timezones);

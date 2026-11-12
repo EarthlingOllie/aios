@@ -17,7 +17,7 @@ from test_chats import add, make_chat, messages
 from test_data_tools import as_owner, provisioned
 from test_schema_change_requests import run_queued
 
-from aios import embeddings, handoff, llm, tracing
+from aios import dispatcher, embeddings, handoff, llm, tracing
 from aios.config import get_settings
 from aios.main import create_app
 from aios.models import DataStore
@@ -126,6 +126,62 @@ def test_a_chat_turn_runs_the_core_loop_on_its_scenario_with_no_provider_called(
     [invocation] = messages(api, chat, after=card["id"])["invocations"]
     assert invocation["status"] == "succeeded"
     assert invocation["agent_run"]["waiting"] is False
+
+
+def test_a_table_written_trigger_fires_once_and_its_echo_is_refused(
+    api, store, notes_agent, scripted, queued
+):
+    """The full-stack test's table written story, here: once the core loop has its notes table,
+    shared with an agent that appends to it, a trigger on the table runs that agent once when
+    the core loop notes something again; the agent's own note is its echo, which its trigger
+    refuses."""
+    chat = make_chat(api, "Notes")
+    add(api, chat, "agent", notes_agent)
+    mention = f"@[Notes](agent:{notes_agent['id']})"
+    say(api, chat, f"{mention} buy milk", ("agent", notes_agent))
+    [request] = api.get("/api/approvals").json()
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 200
+    run_queued(queued)
+    assert notes(store) == ["@Notes buy milk"]
+    # Its events dispatched (in the stack, within moments), before there's a trigger.
+    dispatcher.drain_once(store.id)
+
+    appender = api.post(
+        "/api/agents", json={"name": "Appender", "base_prompt": scenarios.APPEND, "tools": TOOLS}
+    ).json()
+    # The notes table is the core loop's agent's: shared, so the appending agent may write it.
+    shared = api.post("/api/data/tables/notes/shares", json={"agent_id": appender["id"]})
+    assert shared.status_code == 201, shared.text
+    trigger = api.post(
+        "/api/triggers",
+        json={
+            "kind": "event",
+            "event_type": "table_written",
+            "target_kind": "agent",
+            "target_id": appender["id"],
+            "filter": {"tables": ["notes"]},
+        },
+    )
+    assert trigger.status_code == 201, trigger.text
+
+    def dispatch() -> None:
+        dispatcher.drain_once(store.id)
+        asyncio.run(executor.drain_once())
+
+    say(api, chat, f"{mention} {scenarios.AGAIN}: buy eggs", ("agent", notes_agent))
+    # The core loop's note fires the trigger, once: its agent appends a note of its own.
+    dispatch()
+    assert notes(store) == [
+        "@Notes buy milk",
+        f"@Notes {scenarios.AGAIN}: buy eggs",
+        scenarios.APPENDED_NOTE,
+    ]
+    # That note is its echo: its own trigger refuses it.
+    dispatch()
+    after = api.get(f"/api/triggers/{trigger.json()['id']}").json()
+    assert after["last_status"] == "refused" and "own target" in after["last_error"]
+    assert len(api.get(f"/api/agents/{appender['id']}/runs").json()) == 1
+    assert len(notes(store)) == 3
 
 
 def test_a_turn_waiting_on_its_request_isnt_failed_or_requeued(

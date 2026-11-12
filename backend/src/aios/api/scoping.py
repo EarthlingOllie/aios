@@ -58,6 +58,9 @@ UNSCOPED: set[tuple[str, str]] = {
     # Where a provider sends the browser back from connecting: a fixed address, so not under any
     # organisation's path. Its signed state names the organisation (`aios.api.connectors`).
     ("GET", "/api/connectors/callback"),
+    # Webhook triggers' public endpoint: no one signs in; the token leads to the organisation
+    # (`aios.api.webhooks`).
+    ("POST", "/api/webhooks/{token}"),
 }
 
 

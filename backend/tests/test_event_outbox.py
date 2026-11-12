@@ -182,6 +182,7 @@ def test_a_posted_message_writes_its_event(api, user):
         "author_kind": "user",
         "author_id": user.id,
         "mentions": [],
+        "text": "Hello",
     }
     assert event.invocation_id is None and event.chain == []
     assert pending_at(store_id) is not None

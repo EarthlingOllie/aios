@@ -10,7 +10,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,8 @@ class EventType(enum.StrEnum):
     table_written = "table_written"
     schema_change_applied = "schema_change_applied"
     chat_message = "chat_message"
+    # The trigger's public endpoint accepted a call (`aios.api.webhooks`).
+    webhook_received = "webhook_received"
 
 
 class TriggerTargetKind(enum.StrEnum):
@@ -69,3 +71,23 @@ class ScheduleDue(Base):
         # What the scheduler polls for.
         Index("ix_schedule_due_next_run_at", "next_run_at"),
     )
+
+
+class WebhookToken(Base):
+    """Where a webhook trigger's token leads: the store and trigger it belongs to, by the
+    token's hash (the token itself isn't kept). The public endpoint (`aios.api.webhooks`) is
+    keyed by the token alone, so this is how it finds the organisation. Written before the store
+    commits the trigger's hash, and removed after it drops it: a row whose trigger no longer has
+    that hash leads nowhere (the store, which the endpoint checks too, is the source of truth)."""
+
+    __tablename__ = "webhook_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="CASCADE"), index=True
+    )
+    trigger_id: Mapped[int] = mapped_column(Integer)
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

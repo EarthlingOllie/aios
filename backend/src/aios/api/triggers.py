@@ -9,8 +9,14 @@ current version). Two kinds:
   their `filter` (`aios.outbox`). The agent's run gets `input` (if any) and the event; the
   workflow's input is `input` as a template rendered with the event, or the event as JSON.
   `aios.dispatcher` fires them, under the loop rules; a firing they refuse is the trigger's
-  last outcome (`refused`, or `rate_limited`). So far only document ingested triggers can be
-  made (`outbox.TRIGGERABLE`).
+  last outcome (`refused`, or `rate_limited`). With a debounce window, the matches of that
+  many seconds gather into one firing.
+- **Chat message triggers** listen to one chat (`filter.chat_id`), any of the organisation's,
+  whether or not whoever saves the trigger is in it; saving one adds its agent or workflow to
+  that chat, as delivery does to the chat it delivers to.
+- **Webhook triggers** fire on calls to their own public endpoint (`aios.api.webhooks`). Made,
+  they're given its URL and signing secret, the secret only then and when it's rotated
+  (`rotate_webhook_secret`), which changes the URL too (`aios.webhooks`).
 
 A trigger is its organisation's, like its target, and is in its store beside it: every member
 sees, changes and deletes every one, and each says which member made it and which last changed
@@ -27,6 +33,7 @@ is notified.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -36,7 +43,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import audit, cron, outbox, schedules, streams
+from aios import audit, cron, outbox, schedules, streams, webhooks
 from aios.api.provenance import Provenance, UserOut, built_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
@@ -73,7 +80,7 @@ class TriggerIn(BaseModel):
     enabled: bool = True
     # Schedules: the message an agent run starts with, or a workflow run's input; required.
     # Event triggers: what an agent's run is told besides the event, or the template a
-    # workflow run's input is rendered from (`aios.dispatcher.workflow_input`); optional.
+    # workflow run's input is rendered from (`aios.dispatcher.render_input`); optional.
     input: str = Field("", max_length=100_000)
     # Schedules only.
     cron: str | None = Field(None, max_length=255)
@@ -83,6 +90,9 @@ class TriggerIn(BaseModel):
     event_type: EventType | None = None
     filter: dict = Field(default_factory=dict)
     fire_on_own_events: bool = False
+    # Event triggers only: gather the matches of this many seconds into one firing; null fires
+    # on each.
+    debounce_seconds: int | None = Field(None, ge=1, le=24 * 60 * 60)
     # The chat its runs' results are delivered to; null for none.
     deliver_to: DbId | None = None
 
@@ -112,6 +122,11 @@ class TriggerOut(Provenance):
     event_type: EventType | None
     filter: dict
     fire_on_own_events: bool
+    debounce_seconds: int | None
+    # Webhook triggers: the endpoint to call; else null. Its signing secret only in the answer
+    # that made or rotated it.
+    webhook_url: str | None
+    webhook_secret: str | None = None
     # Why the platform turned it off, if it did.
     disabled_reason: str | None
     next_run_at: datetime | None
@@ -273,6 +288,10 @@ def trigger_out(
         event_type=trigger.event_type,
         filter=trigger.filter or {},
         fire_on_own_events=trigger.fire_on_own_events,
+        debounce_seconds=trigger.debounce_seconds,
+        webhook_url=webhooks.url(webhooks.decrypt(trigger.webhook_secret))
+        if trigger.webhook_secret
+        else None,
         disabled_reason=trigger.disabled_reason,
         next_run_at=trigger.next_run_at,
         last_fired_at=trigger.last_fired_at,
@@ -314,10 +333,21 @@ def checked_schedule(expr: str, tz: str) -> tuple[str, str]:
     return expr, tz
 
 
-def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
+@dataclass
+class Applied:
+    """What saving a trigger left to do: a webhook trigger's new secret, to show once (its
+    token's hash to index before the store commits), and the token hash it no longer has, to
+    forget after."""
+
+    secret: str | None = None
+    dropped_hash: str | None = None
+
+
+def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> Applied:
     """Set the trigger from the request (made by `user_id`), checked, and schedule its next run.
     Its target must be one of the organisation's, in its store, `store`, whose share lock on the
     target is held until the caller ends `store`'s transaction."""
+    listened = (trigger.filter or {}).get("chat_id") if trigger.event_type else None
     if body.kind == TriggerKind.event:
         expr = tz = None
         event_type, event_filter = checked_event(body)
@@ -360,12 +390,49 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> No
     trigger.event_type = event_type
     trigger.filter = event_filter
     trigger.fire_on_own_events = body.fire_on_own_events and event_type is not None
+    trigger.debounce_seconds = body.debounce_seconds if event_type is not None else None
     trigger.disabled_reason = None
     trigger.updated_by = user_id
     trigger.next_run_at = (
         cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled and expr is not None else None
     )
     deliver_to(store, user_id, trigger, body.deliver_to)
+    if event_type == EventType.chat_message:
+        listen_to(store, user_id, trigger, event_filter["chat_id"], listened)
+    applied = Applied()
+    if event_type == EventType.webhook_received:
+        if trigger.webhook_secret is None:
+            applied.secret = new_webhook_secret(trigger)
+    elif trigger.webhook_token_hash is not None:
+        applied.dropped_hash = trigger.webhook_token_hash
+        trigger.webhook_token_hash = trigger.webhook_secret = None
+    return applied
+
+
+def new_webhook_secret(trigger: Trigger) -> str:
+    """Give the webhook trigger a new secret (and so a new token): the secret, to show once."""
+    secret = webhooks.new_secret()
+    trigger.webhook_secret = webhooks.encrypt(secret)
+    trigger.webhook_token_hash = webhooks.token_hash(webhooks.token(secret))
+    return secret
+
+
+def listen_to(
+    store: Session, user_id: int, trigger: Trigger, chat_id: int, listened: int | None
+) -> None:
+    """A chat message trigger listens to the chat: any of the organisation's that isn't archived
+    (a 422 for one it hasn't, a 409 for an archived one, unless it `listened` to it already),
+    whether or not `user_id` is in it. Its agent or workflow is added to the chat."""
+    chat = store.get(Chat, chat_id)
+    if chat is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown chat")
+    if chat.archived_at is not None:
+        if listened == chat_id:
+            return
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"{chat.name} is archived, so there's nothing to listen to."
+        )
+    _include(store, user_id, chat, trigger)
 
 
 ARCHIVED_DESTINATION = (
@@ -495,6 +562,7 @@ def _described(trigger: Trigger) -> dict:
             "event_type": trigger.event_type.value,
             "filter": trigger.filter,
             "fire_on_own_events": trigger.fire_on_own_events,
+            "debounce_seconds": trigger.debounce_seconds,
             "enabled": trigger.enabled,
             "deliver_to": trigger.destination_chat_id,
         }
@@ -561,12 +629,28 @@ def create_trigger(
     body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
     trigger = Trigger(**built_by(user.id))
-    apply(store, user.id, trigger, body)
+    applied = apply(store, user.id, trigger, body)
     store.add(trigger)
     audit.configured(store, user.id, _audited(trigger), trigger, "created", **_described(trigger))
+    return _committed(db, store, org.id, trigger, applied)
+
+
+def _committed(
+    db: Session, store: Session, organisation_id: int, trigger: Trigger, applied: Applied
+) -> TriggerOut:
+    """Commit the saved trigger, with the indexes around it: a new webhook token's before the
+    store commits it, the schedule due index and a dropped token's after. Its new webhook
+    secret, if it has one, is in the answer."""
+    store.flush()
+    if applied.secret is not None:
+        webhooks.index(store_id_of(store), organisation_id, trigger.id, trigger.webhook_token_hash)
     store.commit()
     reindex(store, [trigger])
-    return trigger_out(db, store, org.id, load(store, trigger.id))
+    if applied.dropped_hash is not None:
+        webhooks.unindex([applied.dropped_hash])
+    out = trigger_out(db, store, organisation_id, load(store, trigger.id))
+    out.webhook_secret = applied.secret
+    return out
 
 
 @router.post("/triggers/preview", response_model=PreviewOut, dependencies=[allow(Action.read)])
@@ -603,13 +687,32 @@ def update_trigger(
     # Its target's lock (`apply`), then its own (writing it), as the scheduler takes them
     # (`aios.scheduler._claimed`).
     trigger = get_org_trigger(store, trigger_id)
-    apply(store, user.id, trigger, body)
+    applied = apply(store, user.id, trigger, body)
     store.flush()
     cancel_unstarted_firing(store, Trigger.id == trigger.id)
     audit.configured(store, user.id, _audited(trigger), trigger, "updated", **_described(trigger))
-    store.commit()
-    reindex(store, [trigger])
-    return trigger_out(db, store, org.id, load(store, trigger.id))
+    return _committed(db, store, org.id, trigger, applied)
+
+
+@router.post(
+    "/triggers/{trigger_id}/webhook-secret",
+    response_model=TriggerOut,
+    dependencies=[allow(Action.build)],
+)
+def rotate_webhook_secret(
+    trigger_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    """Replace a webhook trigger's signing secret, and so its URL: the old ones stop working at
+    once. The new secret is in the answer, and only there. A 409 for a trigger that isn't a
+    webhook's."""
+    trigger = get_org_trigger(store, trigger_id, lock=True)
+    if trigger.event_type != EventType.webhook_received or trigger.webhook_secret is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This trigger has no webhook.")
+    applied = Applied(dropped_hash=trigger.webhook_token_hash)
+    applied.secret = new_webhook_secret(trigger)
+    trigger.updated_by = user.id
+    audit.configured(store, user.id, "trigger", trigger, "webhook_secret_rotated")
+    return _committed(db, store, org.id, trigger, applied)
 
 
 @router.delete(
@@ -624,6 +727,9 @@ def delete_trigger(
     clears it, leaving their `updated_at`, which listings sort by)."""
     trigger = get_org_trigger(store, trigger_id, lock=True)
     audit.configured(store, user.id, _audited(trigger), trigger, "deleted", **_described(trigger))
+    token_hash = trigger.webhook_token_hash
     store.delete(trigger)
     store.commit()
     unindex(store, [trigger_id])
+    if token_hash is not None:
+        webhooks.unindex([token_hash])

@@ -8,9 +8,17 @@
   it again. `drain_once` is the same pass, run once, for tests and tools.
 - **Draining a store.** In order, it claims undispatched events (`event_dispatch_batch` at a
   time, skipping those another process holds), matches each against the store's enabled event
-  triggers of its type and their filters (`outbox.matches`), applies the loop rules to each
-  match, fires those that pass, and marks the events dispatched: all in one transaction, so an
-  event is dispatched exactly when its firings and refusals are recorded.
+  triggers of its type and their filters (`outbox.matches`; a webhook's only its own trigger),
+  applies the loop rules to each match, fires those that pass (or gathers them, `_gather`), and
+  marks the events dispatched: all in one transaction, so an event is dispatched exactly when
+  its firings and refusals are recorded.
+- **Debounce.** A trigger with `debounce_seconds` doesn't fire on each match: the match joins
+  the trigger's open batch (`EventBatch`, opened by its first match, closing that many seconds
+  later), up to `event_batch_cap` events, the rest counted as dropped. Draining a store then
+  fires each batch that has closed, once, with its events and dropped count
+  (`outbox.batch_document`), caused by its last event, and deletes it (`_close_due`). A store
+  with an open batch is stamped for when the next one closes, and claiming takes only stamps
+  that are due.
 - **The loop rules**, in order, stop automation feeding itself:
   1. **Own events:** not on an event its immediate cause (the invocation whose run caused it)
      is a run of the trigger's own target, unless the trigger has `fire_on_own_events`.
@@ -30,14 +38,15 @@
     it went on the trigger, as a schedule's does (`aios.run_service.work`);
   - a workflow's: a run of its current version, whose input is the trigger's `input` as a
     template rendered with the event (`{{payload.name}}`, ...), or else the event as JSON
-    (`workflow_input`), its first advance enqueued on the run service once the store has
-    committed. The trigger then shows how the run goes. Workflows have no input schema yet to
-    check it against.
+    (`render_input`), its first advance enqueued on the run service once the store has
+    committed. The trigger then shows how the run goes. An input that doesn't fit the workflow's
+    input schema fails the firing. A webhook's default input is its body.
 
   One that can't start (its target archived, say) is recorded as failed, without a run.
 - **The sweep** (`sweep`, on the worker's beat every `event_sweep_interval_seconds`) stamps any
-  store with undispatched events whose stamp was lost, and prunes events dispatched more than
-  `event_retention_days` ago.
+  store with undispatched events or open batches whose stamp was lost, prunes events dispatched
+  more than `event_retention_days` ago, and webhook delivery ids older than
+  `webhook_dedupe_hours`.
 """
 
 import asyncio
@@ -62,11 +71,21 @@ from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
 from aios.datastores import ready_stores, store_id_of, store_session
-from aios.datastores.models import Agent, Event, Invocation, Trigger, Workflow, WorkflowRun
+from aios.datastores.models import (
+    Agent,
+    Event,
+    EventBatch,
+    Invocation,
+    Trigger,
+    WebhookDelivery,
+    Workflow,
+    WorkflowRun,
+)
 from aios.db import SessionLocal
 from aios.models import (
     DataStore,
     DataStoreStatus,
+    EventType,
     InvocationCause,
     TriggerKind,
     TriggerStatus,
@@ -102,19 +121,19 @@ def _lookup(document: Any, path: str) -> Any:
     return document
 
 
-def workflow_input(trigger: Trigger, event: Event) -> str:
-    """An event trigger's workflow run's input: the trigger's `input` as a template, each
-    `{{path}}` replaced by that field of the event (`outbox.event_document`: `{{payload.name}}`;
-    objects as JSON, missing fields empty), or else the event as JSON."""
-    document = outbox.event_document(event)
-    if not trigger.input.strip():
-        return json.dumps(document)
+def render_input(template: str, document: dict[str, Any]) -> str:
+    """A workflow run's input for an event (`outbox.event_document`) or a debounce batch's
+    (`outbox.batch_document`): the trigger's `input` as a template, each `{{path}}` replaced
+    by that field of it (`{{payload.name}}`; objects as JSON, missing fields empty), or else
+    the default (`outbox.default_input`: a webhook's body, or the whole as JSON)."""
+    if not template.strip():
+        return outbox.default_input(document)
 
     def value(found: re.Match) -> str:
         v = _lookup(document, found.group(1))
         return v if isinstance(v, str) else json.dumps(v)
 
-    return _PLACEHOLDER.sub(value, trigger.input)
+    return _PLACEHOLDER.sub(value, template)
 
 
 @dataclass(frozen=True)
@@ -199,9 +218,12 @@ def _fire(
     event: Event,
     fired_at: datetime,
     after: _After,
+    batch: dict[str, Any] | None = None,
 ) -> None:
-    """Start the trigger's run for the event, in a savepoint: one that can't start is recorded
-    as failed, without a run."""
+    """Start the trigger's run for the event (or for a debounce `batch`, `outbox.batch_document`,
+    whose last event is `event`), in a savepoint: one that can't start is recorded as failed,
+    without a run."""
+    document = batch if batch is not None else outbox.event_document(event)
     data_store_id = store_id_of(store)
     try:
         with store.begin_nested():
@@ -219,7 +241,7 @@ def _fire(
                     select(Invocation.id).where(Invocation.agent_run_id == run.id)
                 )
                 trigger.last_run_id, trigger.last_workflow_run_id = run.id, None
-                message = outbox.agent_message(trigger, event)
+                message = outbox.agent_message(trigger, document)
                 after.works.append(
                     turn_work(
                         organisation_id,
@@ -234,7 +256,7 @@ def _fire(
                     store,
                     organisation_id,
                     workflow,
-                    workflow_input(trigger, event),
+                    render_input(trigger.input, document),
                     created_by=None,
                     trigger_id=trigger.id,
                     event=event,
@@ -265,6 +287,88 @@ def _organisation(data_store_id: uuid.UUID) -> int | None:
         )
 
 
+def _matches(trigger: Trigger, event: Event) -> bool:
+    """Whether the event is one the trigger fires on: of its type, passing its filter, and a
+    webhook's only if it came to its own endpoint."""
+    if trigger.event_type != event.type:
+        return False
+    if event.type == EventType.webhook_received and event.payload.get("trigger_id") != trigger.id:
+        return False
+    return outbox.matches(event.type, trigger.filter or {}, event.payload)
+
+
+def _gather(store: Session, trigger: Trigger, event: Event) -> None:
+    """Add the event to the trigger's open debounce batch, opening one that closes in its window
+    if it has none; past `event_batch_cap` events it's only counted, as dropped."""
+    cap = get_settings().event_batch_cap
+    batch = store.scalar(
+        select(EventBatch).where(EventBatch.trigger_id == trigger.id).with_for_update()
+    )
+    if batch is None:
+        batch = EventBatch(
+            trigger_id=trigger.id,
+            closes_at=func.now() + timedelta(seconds=trigger.debounce_seconds),
+            event_ids=[],
+            dropped=0,
+        )
+        store.add(batch)
+    if len(batch.event_ids) < cap:
+        batch.event_ids = [*batch.event_ids, event.id]
+    else:
+        batch.dropped += 1
+    store.flush()
+
+
+def _close_due(data_store_id: uuid.UUID, organisation_id: int) -> _After:
+    """Fire each debounce batch whose window has closed, once, with its events and dropped
+    count, and delete it; what to do once committed. One whose trigger is disabled meanwhile is
+    dropped, firing nothing."""
+    after = _After()
+    with store_session(data_store_id) as store:
+        batches = store.scalars(
+            select(EventBatch)
+            .where(EventBatch.closes_at <= func.now())
+            .order_by(EventBatch.closes_at)
+            .with_for_update(skip_locked=True)
+        ).all()
+        if not batches:
+            return after
+        for batch in batches:
+            trigger = store.get(Trigger, batch.trigger_id)
+            events = store.scalars(
+                select(Event).where(Event.id.in_(batch.event_ids)).order_by(Event.id)
+            ).all()
+            if trigger is not None and trigger.enabled and events:
+                document = outbox.batch_document(events, batch.dropped)
+                _fire(
+                    store, organisation_id, trigger, events[-1], datetime.now(UTC), after, document
+                )
+            store.delete(batch)
+        store.commit()
+        for trigger_id, fired_at, run_id in after.workflow_runs:
+            _send_workflow_run(store, organisation_id, trigger_id, fired_at, run_id)
+    return after
+
+
+def _next_close(data_store_id: uuid.UUID) -> datetime | None:
+    with store_session(data_store_id) as store:
+        return store.scalar(select(func.min(EventBatch.closes_at)))
+
+
+def _stamp_at(data_store_id: uuid.UUID, at: datetime) -> None:
+    """Stamp the store to be claimed again at `at` (when a debounce batch closes), unless it's
+    stamped sooner."""
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == data_store_id)
+            .values(
+                events_pending_at=func.least(func.coalesce(DataStore.events_pending_at, at), at)
+            )
+        )
+        db.commit()
+
+
 def _drain_batch(data_store_id: uuid.UUID, organisation_id: int) -> tuple[int, _After]:
     """Dispatch the store's next batch of undispatched events; how many there were, and what to
     do once committed."""
@@ -291,15 +395,16 @@ def _drain_batch(data_store_id: uuid.UUID, organisation_id: int) -> tuple[int, _
         ).all()
         for event in events:
             for trigger in triggers:
-                if trigger.event_type != event.type or not outbox.matches(
-                    event.type, trigger.filter or {}, event.payload
-                ):
+                if not _matches(trigger, event):
                     continue
                 refusal = _refusal(store, trigger, event)
                 if refusal is not None:
                     _refuse(store, trigger, event, refusal, datetime.now(UTC))
                     continue
-                _fire(store, organisation_id, trigger, event, datetime.now(UTC), after)
+                if trigger.debounce_seconds:
+                    _gather(store, trigger, event)
+                else:
+                    _fire(store, organisation_id, trigger, event, datetime.now(UTC), after)
             event.dispatched_at = func.now()
         store.commit()
         for trigger_id, fired_at, run_id in after.workflow_runs:
@@ -349,17 +454,22 @@ def drain_store(data_store_id: uuid.UUID) -> int:
         _enqueue(after.works)
         total += count
         if count == 0:
-            return total
+            break
+    _enqueue(_close_due(data_store_id, organisation_id).works)
+    if (closes := _next_close(data_store_id)) is not None:
+        _stamp_at(data_store_id, closes)
+    return total
 
 
 def claim_pending(limit: int = 50) -> list[uuid.UUID]:
-    """Claim up to `limit` stores stamped as having events pending, clearing their stamps."""
+    """Claim up to `limit` stores stamped as having events pending (or a debounce batch closing)
+    by now, clearing their stamps."""
     with SessionLocal() as db:
         ids = list(
             db.scalars(
                 text(
                     "UPDATE data_stores SET events_pending_at = NULL WHERE id IN ("
-                    " SELECT id FROM data_stores WHERE events_pending_at IS NOT NULL"
+                    " SELECT id FROM data_stores WHERE events_pending_at <= now()"
                     " AND status = :ready ORDER BY events_pending_at LIMIT :limit"
                     " FOR UPDATE SKIP LOCKED) RETURNING id"
                 ),
@@ -441,16 +551,25 @@ def sweep(now: datetime | None = None) -> Swept:
         try:
             with store_session(store_id) as store:
                 waiting = store.scalar(select(exists().where(Event.dispatched_at.is_(None))))
+                closes = store.scalar(select(func.min(EventBatch.closes_at)))
                 pruned = store.execute(
                     delete(Event).where(
                         Event.dispatched_at.is_not(None), Event.dispatched_at < cutoff
                     )
                 ).rowcount
+                store.execute(
+                    delete(WebhookDelivery).where(
+                        WebhookDelivery.received_at
+                        < func.now() - timedelta(hours=settings.webhook_dedupe_hours)
+                    )
+                )
                 store.commit()
         except Exception:
             log.exception("couldn't sweep data store %s's events", store_id)
             continue
         swept.pruned += pruned
+        if closes is not None and not waiting:
+            _stamp_at(store_id, closes)
         if waiting:
             with SessionLocal() as db:
                 stamped = db.execute(

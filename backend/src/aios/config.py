@@ -393,6 +393,19 @@ class Settings(BaseSettings):
     event_retention_days: int = Field(default=14, ge=1)
     event_trigger_rate_per_minute: int = Field(default=60, ge=1)
     chain_max_depth: int = Field(default=8, ge=1)
+    # A debounced trigger fires once with at most `event_batch_cap` of the events it gathered,
+    # counting the rest as dropped.
+    event_batch_cap: int = Field(default=500, ge=1)
+    # Webhook triggers' public endpoint (`aios.api.webhooks`): a signature's timestamp may be
+    # at most `webhook_tolerance_seconds` off, a body at most `webhook_body_limit_bytes`; a
+    # delivery id is remembered for `webhook_dedupe_hours`; each token takes `webhook_rate` (a
+    # `limits` string). A body Jev can't check is a 503, to retry after
+    # `webhook_retry_after_seconds`.
+    webhook_tolerance_seconds: int = Field(default=300, ge=1)
+    webhook_body_limit_bytes: int = Field(default=1024 * 1024, ge=1)
+    webhook_dedupe_hours: int = Field(default=24, ge=1)
+    webhook_rate: str = "120/minute"
+    webhook_retry_after_seconds: int = Field(default=30, ge=1)
 
     # The run service (`aios.run_service`): each process runs up to `run_service_concurrency`
     # items at once, `run_service_interactive_reserve` of them kept for people waiting in chat.

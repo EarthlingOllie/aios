@@ -7,8 +7,14 @@
   - a `write_data` call (`aios.tools.write_data`): table written;
   - an approved schema change applied (`aios.datastores.schema_changes.apply`): schema change
     applied;
-  - a message posted in a chat, by a person or as a run's result (`aios.api.chats.messages`,
-    `aios.invocations`): chat message.
+  - a message posted in a chat, by a person, by the post-message tool or as a run's result
+    (`aios.api.chats.messages`, `aios.tools.post_message`, `aios.invocations`): chat message,
+    with its text, for keyword filters;
+  - a call a webhook trigger's endpoint accepted (`aios.api.webhooks`): webhook received, for
+    that trigger alone.
+- **Filters.** Each event type's triggers filter on its fields (`FILTERS`, checked by
+  `checked_filter`, matched by `matches`): tables by name without `data.`, keywords as whole
+  words ignoring case (`keyword_pattern`).
 - **Its causes.** An event names the invocation whose run caused it, if one did, and carries
   that invocation's chain of causes, root first, then the invocation: what the loop rules look
   at (`aios.dispatcher`). A person's own action has none.
@@ -21,7 +27,9 @@
 
 import json
 import logging
+import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg
@@ -119,6 +127,7 @@ def message_posted(
             or message.author_agent_id
             or message.author_workflow_id,
             "mentions": [{"kind": m["kind"], "id": m["id"]} for m in message.mentions or []],
+            "text": message.body,
         },
         invocation_id=invocation_id,
     )
@@ -174,19 +183,69 @@ def event_document(event: Event) -> dict[str, Any]:
     }
 
 
-def agent_message(trigger: Trigger, event: Event) -> str:
-    """What an event trigger's agent run is told: the trigger's `input`, if any, then the event,
-    wrapped as untrusted (it names what people and agents made)."""
-    wrapped = jev.wrap(json.dumps(event_document(event), indent=2), "event")
+def batch_document(events: list[Event], dropped: int) -> dict[str, Any]:
+    """A debounce batch as a run is given it: its events (`event_document`), in order, and how
+    many more matched past the cap."""
+    return {
+        "type": events[-1].type.value,
+        "events": [event_document(e) for e in events],
+        "count": len(events),
+        "dropped": dropped,
+    }
+
+
+def default_input(document: dict[str, Any]) -> str:
+    """A workflow run's input for an event's document with no template: a webhook's body, as
+    the caller sent it (which the workflow's input schema checks), else the whole as JSON."""
+    if document.get("type") == EventType.webhook_received.value and "payload" in document:
+        return json.dumps(document["payload"].get("body"))
+    return json.dumps(document)
+
+
+def agent_message(trigger: Trigger, document: dict[str, Any]) -> str:
+    """What an event trigger's agent run is told: the trigger's `input`, if any, then the event
+    (`event_document`) or debounce batch (`batch_document`), wrapped as untrusted (it names
+    what people, agents and callers outside made)."""
+    wrapped = jev.wrap(json.dumps(document, indent=2), "event")
     return f"{trigger.input.strip()}\n\n{wrapped}" if trigger.input.strip() else wrapped
 
 
-# What each event type's triggers may filter on: filter field -> the type of its value.
-FILTERS: dict[EventType, dict[str, type]] = {
-    EventType.document_ingested: {"sources": int, "content_types": str},
-    EventType.table_written: {},
-    EventType.schema_change_applied: {},
-    EventType.chat_message: {},
+@dataclass(frozen=True)
+class FilterField:
+    """A field an event type's triggers may filter on: a list of values of `kind` (any of which
+    matches), or with `single` one value; strings trimmed and lower-cased, and with `choices`
+    one of those; `required` for every trigger of the type."""
+
+    kind: type
+    choices: tuple[str, ...] | None = None
+    single: bool = False
+    required: bool = False
+    pattern: str | None = None
+
+
+MENTION = r"(user|agent|workflow):[1-9][0-9]*"
+
+# What each event type's triggers may filter on, by filter field.
+FILTERS: dict[EventType, dict[str, FilterField]] = {
+    EventType.document_ingested: {
+        "sources": FilterField(int),
+        "content_types": FilterField(str),
+    },
+    # Tables by name, with or without `data.`.
+    EventType.table_written: {
+        "tables": FilterField(str),
+        "operations": FilterField(str, choices=("insert", "upsert", "update", "delete")),
+    },
+    EventType.schema_change_applied: {"tables": FilterField(str)},
+    # The chat it listens to (any of the organisation's); who wrote it; whom it mentions
+    # ("agent:3"); and words in it, matched whole and ignoring case.
+    EventType.chat_message: {
+        "chat_id": FilterField(int, single=True, required=True),
+        "author_kinds": FilterField(str, choices=("user", "agent", "workflow", "system")),
+        "mentions": FilterField(str, pattern=MENTION),
+        "keywords": FilterField(str),
+    },
+    EventType.webhook_received: {},
 }
 
 # What an event trigger fires on, in plain English.
@@ -195,35 +254,67 @@ DESCRIPTIONS: dict[EventType, str] = {
     EventType.table_written: "When a data table is written",
     EventType.schema_change_applied: "When a schema change is applied",
     EventType.chat_message: "When a message is posted in a chat",
+    EventType.webhook_received: "When its webhook is called",
 }
 
-# The event types a trigger may be made for so far.
-TRIGGERABLE = (EventType.document_ingested,)
+# The event types a trigger may be made for.
+TRIGGERABLE = tuple(EventType)
 
 
 class BadFilter(ValueError):
     pass
 
 
-def checked_filter(type: EventType, given: dict[str, Any]) -> dict[str, list]:
+def _checked_value(key: str, field: FilterField, value: Any) -> Any:
+    if not isinstance(value, field.kind) or isinstance(value, bool):
+        raise BadFilter(f"Filter field {key!r} takes {field.kind.__name__}s.")
+    if field.kind is str:
+        value = value.strip().lower()
+        if key == "tables":
+            value = table_name(value)
+        if value and field.choices and value not in field.choices:
+            raise BadFilter(f"Filter field {key!r} takes one of: {', '.join(field.choices)}.")
+        if value and field.pattern and not re.fullmatch(field.pattern, value):
+            raise BadFilter(f"Filter field {key!r} has a bad value {value!r}.")
+    return value
+
+
+def checked_filter(type: EventType, given: dict[str, Any]) -> dict[str, Any]:
     """The filter for an event type's trigger: each field a list of values of its type, unique,
-    in order; empty lists left out. Raises `BadFilter` for an unknown field or a wrong value."""
+    in order (or one value, for a `single` field); empty lists left out. Raises `BadFilter` for
+    an unknown field, a wrong value, or a required field missing."""
     fields = FILTERS[type]
-    out: dict[str, list] = {}
+    out: dict[str, Any] = {}
     for key, values in given.items():
         if key not in fields:
             known = ", ".join(sorted(fields)) or "none"
             raise BadFilter(f"Unknown filter field {key!r} (known: {known}).")
-        kind = fields[key]
-        if not isinstance(values, list) or not all(
-            isinstance(v, kind) and not isinstance(v, bool) for v in values
-        ):
-            raise BadFilter(f"Filter field {key!r} takes a list of {kind.__name__}s.")
-        if kind is str:
-            values = [v.strip().lower() for v in values if v.strip()]
-        if values:
-            out[key] = list(dict.fromkeys(values))
+        field = fields[key]
+        if field.single:
+            if values is not None:
+                out[key] = _checked_value(key, field, values)
+            continue
+        if not isinstance(values, list):
+            raise BadFilter(f"Filter field {key!r} takes a list of {field.kind.__name__}s.")
+        checked = [_checked_value(key, field, v) for v in values]
+        checked = [v for v in checked if v != ""]
+        if checked:
+            out[key] = list(dict.fromkeys(checked))
+    for key, field in fields.items():
+        if field.required and key not in out:
+            raise BadFilter(f"Filter field {key!r} is required.")
     return out
+
+
+def table_name(name: str) -> str:
+    """A data table's name as filters compare it: without `data.`, lower case."""
+    return name.strip().lower().removeprefix("data.")
+
+
+def keyword_pattern(keyword: str) -> re.Pattern:
+    """A keyword as a whole word (or phrase), ignoring case: "outage" doesn't match
+    "outages"."""
+    return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.IGNORECASE)
 
 
 def _content_type_matches(pattern: str, content_type: str | None) -> bool:
@@ -238,7 +329,33 @@ def _content_type_matches(pattern: str, content_type: str | None) -> bool:
 def matches(type: EventType, filter: dict[str, list], payload: dict[str, Any]) -> bool:
     """Whether an event of this type, with this payload, passes a trigger's filter: every field
     given, any of its values."""
-    if type == EventType.document_ingested:
+    if type in (EventType.table_written, EventType.schema_change_applied):
+        tables = filter.get("tables")
+        written = (
+            [payload.get("table") or ""]
+            if type == EventType.table_written
+            else payload.get("tables") or []
+        )
+        if tables and not {table_name(t) for t in written} & set(tables):
+            return False
+        operations = filter.get("operations")
+        if operations and payload.get("operation") not in operations:
+            return False
+    elif type == EventType.chat_message:
+        if filter.get("chat_id") is not None and payload.get("chat_id") != filter["chat_id"]:
+            return False
+        kinds = filter.get("author_kinds")
+        if kinds and payload.get("author_kind") not in kinds:
+            return False
+        mentions = filter.get("mentions")
+        mentioned = {f"{m.get('kind')}:{m.get('id')}" for m in payload.get("mentions") or []}
+        if mentions and not mentioned & set(mentions):
+            return False
+        keywords = filter.get("keywords")
+        text = payload.get("text") or ""
+        if keywords and not any(keyword_pattern(k).search(text) for k in keywords):
+            return False
+    elif type == EventType.document_ingested:
         sources = filter.get("sources")
         if sources and payload.get("source_id") not in sources:
             return False

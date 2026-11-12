@@ -811,7 +811,11 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
         if invocation.event_id is not None:
             # An event trigger's: told the event too (`aios.outbox.agent_message`).
             event = store.get(Event, invocation.event_id)
-            message = outbox.agent_message(trigger, event) if event else trigger.input
+            message = (
+                outbox.agent_message(trigger, outbox.event_document(event))
+                if event
+                else trigger.input
+            )
         schedule = Schedule(trigger.id, fired_at, message)
         out.append((invocation.id, turn_work(organisation_id, store_id, invocation.id, schedule)))
     for invocation_id in handing_back:

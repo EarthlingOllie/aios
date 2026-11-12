@@ -163,6 +163,7 @@ ROUTES = {
     ("GET", "/triggers/{trigger_id}"): READ,
     ("PUT", "/triggers/{trigger_id}"): BUILD,
     ("DELETE", "/triggers/{trigger_id}"): BUILD,
+    ("POST", "/triggers/{trigger_id}/webhook-secret"): BUILD,
     ("GET", "/workflows"): READ,
     ("POST", "/workflows"): BUILD,
     ("GET", "/workflows/{workflow_id}"): READ,
