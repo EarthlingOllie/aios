@@ -1,5 +1,6 @@
-"""A run's chat stream: one turn of the agent, as the chat endpoint, a schedule, a chat's
-mention and a resumed run each run it."""
+"""One turn of an agent run (`turn_stream`), as the run service runs it for a chat's mention, a
+schedule, a workflow's agent node and a resumed run (`aios.run_service`). Web servers run no
+turns: run pages are read-only, and people talk to agents by mentioning them in chats."""
 
 import asyncio
 import logging
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from anyio import CancelScope
-from fastapi import APIRouter, HTTPException, status
+from fastapi import HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
@@ -30,18 +31,16 @@ from aios import (
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
-from aios.api.agents.common import refuse_if_archived
 from aios.api.agents.runs import build_version_tools
 from aios.api.schema_changes import of_run, waiting_on
-from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import data_store_for, schema_changes, store_session
-from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest
-from aios.db import DB, DbId, SessionLocal
+from aios.datastores import schema_changes, store_session
+from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest, Turn
+from aios.db import SessionLocal
 from aios.models import (
+    AgentRunStatus,
     DataStore,
     SchemaChangeStatus,
 )
-from aios.permissions import Action, allow
 from aios.runner import build_agent, run_title
 from aios.sandbox.sessions import (
     SandboxNotConfigured,
@@ -55,8 +54,6 @@ from aios.tools import (
 )
 
 log = logging.getLogger(__package__)
-
-router = APIRouter(prefix="/api")
 
 
 def trace_metadata(
@@ -95,13 +92,13 @@ class ChatContext:
 
 
 def load_chat_context(
-    db: Session, data_store_id: uuid.UUID, agent_id: int, run_id: int, *, by_hand: bool = False
+    db: Session, data_store_id: uuid.UUID, agent_id: int, run_id: int
 ) -> ChatContext:
     """What a turn of the store's run needs (the agent's id is checked against the run's: a 404
     otherwise). The turn executes for the agent's organisation, whoever asks for it: its store
-    is the organisation's, and its trace and tools are told who started the run. `by_hand` for a
-    new turn a member asks for, which an archived agent doesn't start; the scheduler, a chat's
-    mention and a resumed run are let in by what started them.
+    is the organisation's, and its trace and tools are told who started the run. An archived
+    agent's turns aren't refused here: what started its runs (a mention, a schedule, a workflow)
+    checked when it started them, and they finish as already going.
 
     `db` is the caller's platform session, committed (and closed) here, so it holds no
     connection while the store is read."""
@@ -119,10 +116,6 @@ def load_chat_context(
             raise HTTPException(status.HTTP_404_NOT_FOUND)
         agent = store.get_one(Agent, run.agent_id)
         version = store.get_one(AgentVersion, run.agent_version_id)
-        if by_hand:
-            # What started the other turns checked when it started their runs, and they finish
-            # as already going.
-            refuse_if_archived(agent)
         tools = build_version_tools(version, ToolOrganisation(organisation_id, store))
         # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
         # token carries the domains the tool expects.
@@ -151,19 +144,15 @@ def load_chat_context(
     )
 
 
-def _start_turn(
-    data_store_id: uuid.UUID, run_id: int, prompt: str, *, heartbeat: bool = False
-) -> int | None:
+def _start_turn(data_store_id: uuid.UUID, run_id: int, prompt: str) -> int | None:
     """Begin a turn of the store's run (`aios.turns.begin`), and title the run after its first
-    message; the turn's id (None if the run is gone). Clears the run's old heartbeat, unless
-    `heartbeat`."""
+    message; the turn's id (None if the run is gone)."""
     with store_session(data_store_id) as store:
         store.execute(
             update(AgentRun)
             .where(AgentRun.id == run_id)
             .values(
                 title=func.coalesce(AgentRun.title, run_title(prompt)),
-                heartbeat_at=func.now() if heartbeat else None,
                 updated_at=func.now(),
             )
         )
@@ -432,7 +421,7 @@ async def turn_stream(
     begins one once it has the run and something to run (a resume with nothing decided to give
     the run isn't a turn).
 
-    Shared by the chat endpoint, the run service (`aios.run_service`) and `resume_run`."""
+    Shared by the run service's turns (`aios.run_service.work`) and `resume_run`."""
     config = {
         **checkpoints.thread_config(run_id),
         "callbacks": tracing.callbacks(),
@@ -458,6 +447,13 @@ async def turn_stream(
                 graph_input = await _resume_command(agent, config, store_id, run_id, turn)
                 if graph_input is None:
                     graph_input = _NOTHING
+                    # Given its outcomes by an earlier attempt that was handed back part way
+                    # (its process stopping): that turn carries on from the last checkpoint.
+                    underway = await run_in_threadpool(_turn_underway, store_id, run_id)
+                    if underway is not None:
+                        carry_on = await _continue_input(agent, config, Continue(HumanMessage("")))
+                        if carry_on is None:
+                            graph_input, turn_id = None, underway
             elif isinstance(turn, Continue):
                 graph_input = await _continue_input(agent, config, turn)
             else:
@@ -552,6 +548,9 @@ async def _run_turn(
     lease.on_stop = producer.cancel
     if lease.stopped:
         producer.cancel()
+    # Set when the turn is cancelled from outside: its run service process is stopping
+    # (`aios.run_service.executor`), and hands its item back to the queue.
+    handed_back = False
     try:
         while (item := await queue.get()) is not done:
             mode, data = item
@@ -562,6 +561,9 @@ async def _run_turn(
         if (exc := producer.exception()) is not None:
             raise exc
         error = None
+    except asyncio.CancelledError:
+        handed_back = True
+        raise
     except Exception as exc:
         if not isinstance(exc, _Stopped):
             log.exception("agent run %s failed", run_id)
@@ -569,21 +571,38 @@ async def _run_turn(
         for chunk in ui.error(exc):
             yield chunk
     finally:
-        # Also when the client stops the turn, which cancels this task (or closes this stream
-        # at a `yield`): the graph's task is cancelled and waited for before the turn is
-        # recorded.
+        # The graph's task is cancelled and waited for before the turn is recorded. A turn
+        # handed back isn't recorded: it stays underway, and whoever claims its item next
+        # carries it on from its last checkpoint (`Continue`), its message already saved.
         with CancelScope(shield=True):
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-            await package._record_turn(
-                agent,
-                config,
-                ctx.data_store_id,
-                run_id,
-                turn_id=turn_id,
-                error=error,
-                partial=ui.partial_reply(),
-            )
+        if not handed_back:
+            with CancelScope(shield=True):
+                await package._record_turn(
+                    agent,
+                    config,
+                    ctx.data_store_id,
+                    run_id,
+                    turn_id=turn_id,
+                    error=error,
+                    partial=ui.partial_reply(),
+                )
+
+
+def _turn_underway(data_store_id: uuid.UUID, run_id: int) -> int | None:
+    """The store's run's latest turn, if it's still marked running (begun by an attempt that
+    never finished it)."""
+    with store_session(data_store_id, "ro") as store:
+        latest = store.execute(
+            select(Turn.id, Turn.status)
+            .where(Turn.agent_run_id == run_id)
+            .order_by(Turn.id.desc())
+            .limit(1)
+        ).one_or_none()
+    if latest is None or latest.status != AgentRunStatus.running:
+        return None
+    return latest.id
 
 
 def _begin_turn(data_store_id: uuid.UUID, run_id: int) -> int | None:
@@ -665,54 +684,3 @@ def _finish_invocation(data_store_id: uuid.UUID, run_id: int, error: str | None)
     with store_session(data_store_id) as store:
         invocations.finish_resumed(store, run_id, error)
         store.commit()
-
-
-@router.post("/agents/{agent_id}/runs/{run_id}/chat", dependencies=[allow(Action.post)])
-async def run_chat(
-    agent_id: DbId,
-    run_id: DbId,
-    body: dict,
-    user: CurrentUser,
-    db: DB,
-    org: CurrentOrganisation,
-):
-    """Continue a run. The client sends only its new message; history comes from the run's
-    LangGraph thread.
-
-    The user's message is checkpointed before the model is called, and whatever the reply got
-    to is kept when the turn ends, whether it completes, fails, or is stopped (the client
-    disconnecting), so the stored history, which is all the next turn sees, always matches
-    what the user saw.
-    """
-    request = ui_stream.parse_request(body)
-    # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
-    # session is closed, and its connection returned to the pool, before the response streams;
-    # the saves use sessions of their own.
-    store_id = await run_in_threadpool(data_store_for, org.id)
-    ctx = await run_in_threadpool(
-        package.load_chat_context, db, store_id, agent_id, run_id, by_hand=True
-    )
-    message = request.messages[-1]
-    if message.role != "user":
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")
-    prompt = ui_stream.human_message(message)
-    try:
-        await run_in_threadpool(_check_not_waiting, store_id, run_id)
-    except RunWaiting as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
-    # The run's turn lease, before the response starts, so a run that stays busy past the wait
-    # (another tab's turn, a schedule's) can still be answered 409.
-    try:
-        lease = await turn_lease.acquire(store_id, run_id)
-    except turn_lease.RunBusy as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, turn_lease.BUSY) from exc
-    except turn_lease.RunGone as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND) from exc
-    try:
-        turn_id = await run_in_threadpool(package._start_turn, store_id, run_id, prompt.text)
-    except BaseException:
-        with CancelScope(shield=True):
-            await turn_lease.release(lease)
-        raise
-
-    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt, lease, turn_id=turn_id))

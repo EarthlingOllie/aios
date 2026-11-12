@@ -6,10 +6,10 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from conftest import user_store
+from conftest import take_turn, user_store
 from pydantic import ValidationError
 from sqlalchemy import select, update
-from test_agents import agent_body, chat_body, make_agent, spy_run
+from test_agents import agent_body, make_agent, spy_run
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
@@ -117,8 +117,7 @@ def python_agent(api, name: str = "Coder", **config) -> tuple[dict, dict]:
 def chat(api, agent, run, code: str) -> dict:
     fake, seen = run_code(code)
     with use_model(fake):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("run it")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "run it")
     return seen
 
 
@@ -389,8 +388,7 @@ def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend, in_store):
         yield "no code needed"
 
     with use_model(model(script)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("hello")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "hello")
     assert [s.session_key for s in backend.specs] == [
         f"agent-run-{in_store.store_id.hex}-{run['id']}"
     ]
@@ -416,8 +414,7 @@ def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, user,
     monkeypatch.setattr(sessions.manager, "ensure", ensure)
     fake, _ = run_code("print(1)")
     with use_model(fake):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("run it")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "run it")
     assert prewarmed == [["api.example.com"]]
 
 
@@ -433,8 +430,7 @@ def test_later_turns_prewarm_only_while_the_run_uses_its_sandbox(
 
     def reply(run):
         with use_model(replies("no code needed")):
-            url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-            assert api.post(url, json=chat_body("hello")).status_code == 200
+            take_turn(api, agent["id"], run["id"], "hello")
 
     agent, run = python_agent(api)
     # The first turn pre-warms; a later one doesn't if the run hasn't used its sandbox.

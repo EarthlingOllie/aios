@@ -176,7 +176,7 @@ export function AgentArchiveDialog({ item, onClose, onArchived }: DialogProps<Ag
     <ArchiveDialog<Agent, AgentUsedBy>
       kind="agent"
       name={item.name}
-      about="It starts nothing new: no runs by hand, by schedule, by mention or in a workflow. What's already going finishes, and nothing is lost. You can unarchive it at any time."
+      about="It starts nothing new: no runs by schedule, by mention or in a workflow. What's already going finishes, and nothing is lost. You can unarchive it at any time."
       loadUsedBy={() => api.getAgentUsedBy(item.id)}
       usedBy={(u) => (
         <>

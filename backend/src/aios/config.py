@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -9,6 +9,14 @@ def libpq_conninfo(url: str, **parts: str) -> str:
     """A database URL (written for SQLAlchemy, like DATABASE_URL) as plain libpq connection info
     for psycopg, with any `parts` (e.g. `database`) replaced."""
     return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
+
+
+class ModelRateLimit(BaseModel):
+    """A model provider's rate limit on one model (`aios.model_rate_limit`): requests and tokens
+    (input and output) a minute, across every run service process. Unset: no limit on it."""
+
+    requests_per_minute: int | None = Field(default=None, ge=1)
+    tokens_per_minute: int | None = Field(default=None, ge=1)
 
 
 class Settings(BaseSettings):
@@ -311,6 +319,12 @@ class Settings(BaseSettings):
     run_service_sources_limit: int = Field(default=20, ge=0)
     run_service_idle_poll_seconds: float = Field(default=5, gt=0)
     run_service_shutdown_grace_seconds: float = Field(default=25, ge=0)
+    # Each model's provider rate limit, shared by every run service process (a token bucket per
+    # model in Redis, `aios.model_rate_limit`), as a JSON object of "provider:model" (as
+    # `llm_model` names it) to its limits, e.g. {"anthropic:claude-sonnet-5-5":
+    # {"requests_per_minute": 4000, "tokens_per_minute": 2000000}}. A model not in it, the
+    # default for every model, isn't paced. Calls waiting are served people in chat first.
+    model_rate_limits: dict[str, ModelRateLimit] = {}
     # The queue: a claimed item's lease lasts `queue_lease_seconds`, extended while it runs; an
     # item whose lease lapses (its process died) is claimed again, and after
     # `queue_max_attempts` claims it fails. An organisation has at most `queue_in_flight_cap`
@@ -331,8 +345,8 @@ class Settings(BaseSettings):
     # A run's turns take turns through a lease on the run (`aios.turn_lease`): a turn holds it
     # for this long (seconds) at a time, refreshed by its heartbeat while it runs, so a process
     # that dies mid-turn frees its runs once this passes. A turn waits up to `turn_wait_seconds`
-    # for the run's previous turn to end; past it, a run-page post answers 409 "This run is
-    # busy".
+    # for the run's previous turn to end; past it, the run service hands the turn back to the
+    # queue, to be tried again a little later.
     turn_lease_seconds: float = Field(default=90, gt=0)
     turn_wait_seconds: float = Field(default=120, ge=0)
 

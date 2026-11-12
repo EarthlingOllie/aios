@@ -1538,8 +1538,6 @@ export const api = {
   listRuns: (agentId: number) => request<RunSummary[]>(`${organisationApi()}/agents/${agentId}/runs`),
   getRun: (agentId: number, runId: number) =>
     request<Run>(`${organisationApi()}/agents/${agentId}/runs/${runId}`),
-  createRun: (agentId: number) =>
-    request<RunSummary>(`${organisationApi()}/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`${organisationApi()}/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
   listMemories: (agentId: number) =>

@@ -1,7 +1,8 @@
 # Full-stack tests
 
-Browser tests against the real stack: the API, the ingest, workflow and provisioning workers,
-Postgres, Redis, RustFS and the web front end, from Compose's `fullstack` profile. The model is
+Browser tests against the real stack: the API, the run service (every turn and workflow node),
+the ingest, urgent and routine workers, Postgres through PgBouncer, Redis, RustFS and the web
+front end, from Compose's `fullstack` profile. The model is
 scripted (`backend/src/aios/testing/scenarios.py`), with fake embeddings, so nothing calls a
 model, embedding or tracing provider and no API keys are needed.
 
@@ -22,6 +23,9 @@ the dev stack first, or give one a different project name (`docker compose -p ..
 - A scenario is a script of the model's turns: add one to `SCENARIOS` for each new story, and a
   test here that tells it, rather than a new harness. The backend tests script the same model
   (`aios.testing.fake_model`).
+- One test restarts the run service mid-turn, with `docker compose ... restart
+  fullstack-run-service` from `frontend/`; `FULLSTACK_RESTART_RUN_SERVICE` names another command
+  for a stack run some other way.
 - A step that never comes (a worker stopped, say) fails the test within its timeout
   (`playwright.fullstack.config.ts`). CI runs the tests in shards (default 1), each on its own
   machine with its own stack, and keeps the merged report and each failing shard's stack logs.

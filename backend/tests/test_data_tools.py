@@ -5,22 +5,22 @@ These run against real, provisioned stores. Nothing can change a store's `data` 
 owner role.
 """
 
+import asyncio
 import json
 import threading
 import time
 import tracemalloc
 import uuid
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import psycopg
 import pytest
 from anyio import to_thread
-from conftest import store_of
+from conftest import run_turn, store_of, take_turn
 from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_provisioning import login_url, store_row
 
 from aios.auth import current_user
@@ -169,8 +169,7 @@ def run_tools(api, agent: dict, *calls: ToolCall, as_turn_starts=None) -> list:
 
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(script)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("go")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "go")
     return outputs
 
 
@@ -765,11 +764,11 @@ def test_a_query_cant_hold_a_lock_past_its_call(api, store, data_agent):
         assert conn.execute("SELECT pg_try_advisory_lock(42)").fetchone() == (True,)
 
 
-def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent, monkeypatch):
+def test_slow_queries_dont_starve_the_run_services_other_work(api, store, data_agent, monkeypatch):
     """A query holds a worker thread while it runs, or while it waits for one of the store's
-    few connections, and the API's sync endpoints run on the same threads. So a model asking
-    for many slow queries at once mustn't take them all. (The thread pool is shrunk from its 40
-    to keep the test quick.)"""
+    few connections, and the rest of a run service process's work (its other items' database
+    calls) runs on the same threads. So a model asking for many slow queries at once mustn't
+    take them all. (The thread pool is shrunk from its 40 to keep the test quick.)"""
     monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
     sql = "SELECT pg_sleep(0.5)"
     threads = 16
@@ -786,63 +785,71 @@ def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent
             query = "SELECT count(*) FROM pg_stat_activity WHERE query = %s"
             return conn.execute(query, (sql,)).fetchone()[0]
 
-    def shrink() -> None:
+    run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
+
+    async def turn_and_other_work() -> float:
         to_thread.current_default_thread_limiter().total_tokens = threads
+        turn = asyncio.create_task(run_turn(store.id, data_agent["id"], run["id"], "go"))
+        while not await asyncio.to_thread(sleeping):
+            await asyncio.sleep(0.01)
+        start = time.monotonic()
+        await to_thread.run_sync(lambda: None)
+        waited = time.monotonic() - start
+        assert (await turn).error is None
+        return waited
 
-    with api, use_model(model(script)):
-        api.portal.call(shrink)
-        run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
-        url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"
-        with ThreadPoolExecutor(1) as pool:
-            turn = pool.submit(api.post, url, json=chat_body("go"))
-            while not sleeping():
-                time.sleep(0.01)
-            start = time.monotonic()
-            assert api.get("/api/tools").status_code == 200
-            waited = time.monotonic() - start
-            assert turn.result().status_code == 200
-
-    assert waited < 0.25
+    with use_model(model(script)):
+        assert asyncio.run(turn_and_other_work()) < 0.25
 
 
 def test_one_users_slow_queries_dont_hold_up_another_users_tools(
     api, store, other_store, data_agent, monkeypatch
 ):
-    """Each store gets no more of the tools' threads than it has connections to use them."""
+    """Each store gets no more of a run service process's threads than it has connections to
+    use them: one organisation's turn asking for many slow queries at once leaves room for
+    another's tools, in the same process."""
     monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
     sql = "SELECT pg_sleep(1)"
+    described = []
 
-    async def many_slow_queries(messages, info):
-        if last_tool_results(messages):
+    async def script(messages, info):
+        results = last_tool_results(messages)
+        if results:
+            described.extend(tool_output(m) for m in results if m.name == "describe_data")
             yield "done"
-        else:
+        elif "slow" in messages[-1].text:
             for _ in range(12):
                 yield ToolCall("query_data", {"sql": sql})
+        else:
+            yield ToolCall("describe_data", {})
 
     def sleeping() -> int:
         with psycopg.connect(login_url(store, "ro")) as conn:
             query = "SELECT count(*) FROM pg_stat_activity WHERE query = %s"
             return conn.execute(query, (sql,)).fetchone()[0]
 
+    run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
     with SessionLocal() as session:
         other_user = session.get(Organisation, other_store.owner_organisation_id).creator
-    with api, use_model(model(many_slow_queries)):
-        run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
-        url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"
-        with ThreadPoolExecutor(1) as pool:
-            turn = pool.submit(api.post, url, json=chat_body("go"))
-            while not sleeping():
-                time.sleep(0.01)
-            app.dependency_overrides[current_user] = lambda: other_user
-            their_agent = make_agent(api, "Theirs")
-            their_agent = api.put(
-                f"/api/agents/{their_agent['id']}",
-                json=agent_body(their_agent, tools=DATA_TOOLS),
-            ).json()
-            start = time.monotonic()
-            described = describe(api, their_agent)
-            waited = time.monotonic() - start
-            assert turn.result().status_code == 200
+    app.dependency_overrides[current_user] = lambda: other_user
+    their_agent = make_agent(api, "Theirs")
+    their_agent = api.put(
+        f"/api/agents/{their_agent['id']}", json=agent_body(their_agent, tools=DATA_TOOLS)
+    ).json()
+    theirs = api.post(f"/api/agents/{their_agent['id']}/runs").json()
 
-    assert "error" not in described
+    async def both() -> float:
+        slow = asyncio.create_task(run_turn(store.id, data_agent["id"], run["id"], "go slow"))
+        while not await asyncio.to_thread(sleeping):
+            await asyncio.sleep(0.01)
+        start = time.monotonic()
+        await run_turn(other_store.id, their_agent["id"], theirs["id"], "describe")
+        waited = time.monotonic() - start
+        await slow
+        return waited
+
+    with use_model(model(script)):
+        waited = asyncio.run(both())
+
+    assert described and "error" not in described[0]
     assert waited < 0.5

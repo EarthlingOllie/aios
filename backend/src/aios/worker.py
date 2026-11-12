@@ -70,13 +70,11 @@ celery_app.conf.update(
         "aios.sweep_events": {"queue": ROUTINE},
         "aios.publish_queue_metrics": {"queue": ROUTINE},
         "aios.check_stored_content_sweep": {"queue": ROUTINE},
-        "aios.embed_pending_search": {"queue": ROUTINE},
         "aios.check_jev_health": {"queue": ROUTINE},
         # Ingest: documents, and the per-store work the routine sweeps queue for it.
         "aios.ingest_document": {"queue": INGEST},
         "aios.check_document": {"queue": INGEST},
         "aios.check_stored_content": {"queue": INGEST},
-        "aios.embed_search_items": {"queue": INGEST},
     },
 )
 
@@ -126,13 +124,6 @@ celery_app.conf.beat_schedule = {
         "task": "aios.expire_schema_change_requests",
         "schedule": settings.schema_change_expiry_check_seconds,
         "options": {"expires": settings.schema_change_expiry_check_seconds},
-    },
-    # Every ready store's search items still waiting for an embedding; the embedding goes to
-    # the app workers, as ingest does (it writes as the store's `rw` role).
-    "embed-pending-search": {
-        "task": "aios.embed_pending_search",
-        "schedule": settings.search_embed_interval_seconds,
-        "options": {"expires": settings.search_embed_interval_seconds},
     },
     "repair-stores": {
         "task": "aios.repair_stores",
@@ -369,20 +360,6 @@ def measure_data_store_usage_task() -> None:
     quota.measure_all()
 
 
-@celery_app.task(name="aios.embed_search_items")
-def embed_search_items_task(data_store_id: str) -> None:
-    """Embed the store's search items waiting for an embedding, for up to the store's budget
-    (`aios.search_index.embed_pending`); what's left waits for the next sweep. Safe to run
-    again, or at once with another for the store."""
-    from aios import search_index
-
-    try:
-        search_index.embed_pending(uuid.UUID(data_store_id))
-    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
-        # Gone, going, behind or busy: the next sweep tries it again, if it's still there.
-        return
-
-
 @celery_app.task(
     name="aios.repair_stores",
     soft_time_limit=REPAIR_STORES_EVERY,
@@ -406,17 +383,6 @@ def drain_audit_outbox_task() -> None:
     from aios import audit
 
     audit.drain()
-
-
-@celery_app.task(name="aios.embed_pending_search")
-def embed_pending_search_task() -> None:
-    """Queue embedding the search items of every ready store (`embed_search_items_task`), each
-    dropped if it hasn't started by the next sweep."""
-    from aios.datastores import ready_stores
-
-    every = settings.search_embed_interval_seconds
-    for store_id, _ in ready_stores():
-        embed_search_items_task.apply_async(args=[str(store_id)], expires=every)
 
 
 # Applying a schema change takes seconds, but waits on locks (each up to its lock timeout).

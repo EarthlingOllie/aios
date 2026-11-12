@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from aios import invocations, jev, llm, tracing, usage
+from aios import invocations, jev, llm, model_rate_limit, tracing, usage
 from aios.config import get_settings
 from aios.datastores import people, store_session
 from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
@@ -225,12 +225,17 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
 async def _ask(request: Request) -> tuple[Handoff | None, AIMessage | None]:
     """The handoff, and the model's response it came in (for its usage)."""
     structured = model().with_structured_output(Handoff, include_raw=True)
+    # Paced by the model's rate limit, as a turn's calls are (`aios.model_rate_limit`).
+    name = llm.model_name(get_settings().handoff_model or None)
+    await model_rate_limit.acquire(name)
     answer = await structured.ainvoke(
         [SystemMessage(request.system), HumanMessage(request.chat)],
         {"callbacks": tracing.callbacks(), "run_name": "handoff", "metadata": request.metadata},
     )
     raw = answer.get("raw")
-    return answer.get("parsed"), raw if isinstance(raw, AIMessage) else None
+    raw = raw if isinstance(raw, AIMessage) else None
+    await model_rate_limit.spend(name, model_rate_limit.tokens_of(raw))
+    return answer.get("parsed"), raw
 
 
 def _record(

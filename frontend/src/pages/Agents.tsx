@@ -8,7 +8,6 @@ import {
   MessageSquare,
   MessagesSquare,
   Pencil,
-  Play,
   Trash2,
 } from "lucide-react";
 
@@ -264,7 +263,6 @@ function VersionConfig({ version }: { version: AgentVersion }) {
 
 export function AgentDetail() {
   const id = Number(useParams().agentId);
-  const navigate = useNavigate();
   const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
@@ -303,13 +301,6 @@ export function AgentDetail() {
     act(async () => {
       await api.unarchiveAgent(id);
       await Promise.all([agent.reload(), reloadList()]);
-    });
-
-  const onNewRun = () =>
-    act(async () => {
-      const run = await api.createRun(id);
-      reloadList();
-      navigate(listHref(`/agents/${id}/runs/${run.id}`));
     });
 
   const onUpdateSkill = (skill: AgentSkill) => {
@@ -363,17 +354,10 @@ export function AgentDetail() {
       }
       actions={
         <>
-          {a.archived_at ? (
-            !buildRefusal && (
-              <Button size="sm" onClick={onUnarchive} disabled={busy}>
-                <ArchiveRestore />
-                Unarchive
-              </Button>
-            )
-          ) : (
-            <Button size="sm" onClick={onNewRun} disabled={busy}>
-              <Play />
-              New run
+          {a.archived_at && !buildRefusal && (
+            <Button size="sm" onClick={onUnarchive} disabled={busy}>
+              <ArchiveRestore />
+              Unarchive
             </Button>
           )}
           {!buildRefusal && <ExportLink href={api.agentExportUrl(id)} />}
@@ -468,7 +452,7 @@ export function AgentDetail() {
                 {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
                 {runs.data?.length === 0 && (
                   <p className="text-muted-foreground text-sm">
-                    No runs yet. Start one to chat with this agent.
+                    No runs yet. Mention this agent in a chat to start one.
                   </p>
                 )}
                 {!!runs.data?.length && (

@@ -1,9 +1,9 @@
 """The Vercel AI SDK UI message stream protocol, for LangGraph agents.
 
-The frontend's `useChat` sends `UIMessage`s and reads a stream of chunks back (server-sent
-events, https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol). This module converts between those
-and LangChain messages, and turns a LangGraph agent's `astream(stream_mode=["messages",
-"updates"])` output into chunks.
+A run's stored history is shown on its read-only page as `UIMessage`s (`to_ui_messages`), and a
+turn reports what it does as chunks of the stream protocol
+(https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol): a LangGraph agent's
+`astream(stream_mode=["messages", "updates"])` output, turned into chunks (`UIStream`).
 
 Content arrives either as a plain string or as Anthropic content blocks (text, thinking, server
 tool use and results). Tool calls the agent runs come from `tool_call_chunks`, which every
@@ -12,14 +12,12 @@ provider fills in.
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, Literal
+from collections.abc import Iterator
+from typing import Any
 from uuid import uuid4
 
 import psycopg
 import sqlalchemy.exc
-from fastapi import HTTPException, status
-from fastapi.responses import StreamingResponse
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -27,138 +25,12 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from aios import jev
 
 log = logging.getLogger(__name__)
 
 Chunk = dict[str, Any]
-
-HEADERS = {
-    "x-vercel-ai-ui-message-stream": "v1",
-    "cache-control": "no-cache",
-    "x-accel-buffering": "no",
-}
-
-
-# --- Requests -----------------------------------------------------------------------------------
-
-
-class UIPart(BaseModel):
-    """A `UIMessage` part. Only the fields the conversion reads; the rest are ignored."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    type: str
-    text: str | None = None
-    tool_call_id: str | None = Field(None, alias="toolCallId")
-    tool_name: str | None = Field(None, alias="toolName")
-    state: str | None = None
-    input: Any = None
-    output: Any = None
-    error_text: str | None = Field(None, alias="errorText")
-    provider_executed: bool | None = Field(None, alias="providerExecuted")
-
-
-class UIMessage(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str = ""
-    role: Literal["system", "user", "assistant"]
-    parts: list[UIPart] = []
-
-
-class ChatRequest(BaseModel):
-    """The body `useChat` posts (`DefaultChatTransport`)."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    id: str = ""
-    trigger: str = "submit-message"
-    messages: list[UIMessage] = Field(min_length=1)
-
-
-def parse_request(body: Any) -> ChatRequest:
-    try:
-        return ChatRequest.model_validate(body)
-    except ValidationError as exc:
-        detail = json.loads(exc.json(include_input=False, include_url=False))
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail) from exc
-
-
-def _text(message: UIMessage) -> str:
-    return "".join(p.text or "" for p in message.parts if p.type == "text")
-
-
-def human_message(message: UIMessage) -> HumanMessage:
-    """A user's message, as text: files and other parts aren't accepted from clients.
-
-    It gets a new id: in a LangGraph thread, a message with an id already there replaces that
-    message, and the client's id mustn't be able to rewrite history.
-
-    Rejected when blank: the model provider would refuse it, and a run's thread would keep it.
-    """
-    text = _text(message)
-    if not text.strip():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a message with text")
-    return HumanMessage(text, id=str(uuid4()))
-
-
-def to_langchain(messages: list[UIMessage]) -> list[BaseMessage]:
-    """A conversation the client holds, for an agent that doesn't keep history itself.
-
-    Each step of an assistant message becomes a model response with its tool calls, followed by
-    the calls' results. Provider-run tools (e.g. web search) are left out: their results can only
-    be replayed in the provider's own format.
-    """
-    out: list[BaseMessage] = []
-    for message in messages:
-        if message.role == "user":
-            out.append(human_message(message))
-        elif message.role == "assistant":
-            steps: list[list[UIPart]] = [[]]
-            for part in message.parts:
-                if part.type == "step-start":
-                    steps.append([])
-                else:
-                    steps[-1].append(part)
-            for step in steps:
-                out.extend(_assistant_step(step))
-    return out
-
-
-def _assistant_step(parts: list[UIPart]) -> list[BaseMessage]:
-    text = "".join(p.text or "" for p in parts if p.type == "text")
-    calls, results = [], []
-    for part in parts:
-        if not (part.type.startswith("tool-") or part.type == "dynamic-tool"):
-            continue
-        if part.provider_executed or not part.tool_call_id:
-            continue
-        name = part.tool_name or part.type.removeprefix("tool-")
-        if part.state == "output-available":
-            # Back in the untrusted block the model always gets tool results in.
-            content = part.output if isinstance(part.output, str) else json.dumps(part.output)
-            content = jev.wrap(content, f"tool:{name}")
-            results.append(ToolMessage(content, tool_call_id=part.tool_call_id, name=name))
-        elif part.state == "output-error":
-            results.append(
-                ToolMessage(
-                    jev.wrap(part.error_text or "Error", f"tool:{name}"),
-                    tool_call_id=part.tool_call_id,
-                    name=name,
-                    status="error",
-                )
-            )
-        else:
-            continue  # never ran, so it can't be replayed
-        args = part.input if isinstance(part.input, dict) else {}
-        calls.append({"name": name, "args": args, "id": part.tool_call_id, "type": "tool_call"})
-    if not text and not calls:
-        return []
-    return [AIMessage(text, tool_calls=calls), *results]
-
 
 # --- Stored history -> UIMessages ---------------------------------------------------------------
 
@@ -460,16 +332,3 @@ class UIStream:
                 "toolCallId": message.tool_call_id,
                 "output": _tool_output(message.content),
             }
-
-
-def encode(chunk: Chunk) -> str:
-    return f"data: {json.dumps(chunk, separators=(',', ':'), default=str)}\n\n"
-
-
-def streaming_response(chunks: AsyncIterator[Chunk]) -> StreamingResponse:
-    async def body() -> AsyncIterator[str]:
-        async for chunk in chunks:
-            yield encode(chunk)
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(body(), media_type="text/event-stream", headers=HEADERS)

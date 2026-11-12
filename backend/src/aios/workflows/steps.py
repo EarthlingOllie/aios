@@ -345,8 +345,8 @@ async def _run_agent(
                         await asyncio.to_thread(
                             _mark_resumed, store_id, agent_run_id, resume.dealt_with
                         )
-                    # The message count for listings, and, if the turn failed, a thread the user
-                    # can carry on from on the run's page (see `_keep_unfinished_turn`).
+                    # The message count for listings, and, if the turn failed, a thread that
+                    # shows what it got to (see `_keep_unfinished_turn`).
                     if not cancelled:
                         await _record_turn(
                             graph,

@@ -3,6 +3,9 @@ claiming across organisations, the in-flight cap and its admin override, the int
 reserve, leases, retries and the attempt limit, and schedules firing once across processes."""
 
 import asyncio
+import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -277,6 +280,57 @@ def test_a_turn_whose_process_dies_mid_turn_carries_on_elsewhere_from_its_last_c
     assert invocation["agent_run"]["status"] == "succeeded"
 
 
+def test_a_turn_handed_back_by_a_stopping_process_resumes_from_its_last_checkpoint(
+    api, in_store, run_service
+):
+    """A deploy: the process is told to stop mid-turn, its grace runs out, and the turn is
+    handed back to the queue without counting an attempt; the next process carries it on from
+    its last checkpoint, and the chat gets the reply, not "The service stopped mid-run"."""
+    agent = make_agent(api, "Bot")
+    chat = make_chat(api, "Design")
+    add(api, chat, "agent", agent)
+    run_service.auto = False
+    say(api, chat, "Go", ("agent", agent))
+    calls, hung = [], threading.Event()
+
+    async def script(msgs, info):
+        calls.append([m.type for m in msgs if m.type != "system"])
+        if len(calls) == 1:
+            hung.set()
+            await asyncio.sleep(60)  # mid-call when the process stops
+        yield "Resumed."
+
+    async def stopping_mid_turn() -> None:
+        process = executor.Executor()
+        while not hung.is_set():
+            await process.claim()
+            await asyncio.sleep(0.02)
+        await process.stop(grace=0)
+
+    with use_model(model(script)):
+        asyncio.run(stopping_mid_turn())
+        with SessionLocal() as s:
+            [handed_back] = s.scalars(select(WorkItem)).all()
+            assert (handed_back.kind, handed_back.attempts, handed_back.lease_token) == (
+                WorkKind.agent_turn,
+                0,
+                None,
+            )
+        # Nothing was posted to the chat meanwhile.
+        assert replies_from(api, chat) == []
+        run_service.drain()
+
+    [invocation] = messages(api, chat)["invocations"]
+    assert (invocation["status"], invocation["error"]) == ("succeeded", None)
+    assert replies_from(api, chat) == [("Bot", "Resumed.")]
+    history = checkpoints.history(in_store.store_id, invocation["agent_run_id"])
+    assert [m.type for m in history] == ["human", "ai"]
+    # Carried on from the user's saved message, not given it again.
+    assert calls[1] == ["human"]
+    turns = api.get(f"/api/agents/{agent['id']}/runs/{invocation['agent_run_id']}").json()["turns"]
+    assert [(t["status"], t["error"]) for t in turns] == [("succeeded", None)]
+
+
 def test_a_run_busy_with_another_turn_is_handed_back_without_counting_an_attempt(
     api, run_service, monkeypatch
 ):
@@ -405,3 +459,46 @@ def test_the_watchdog_exits_a_process_whose_event_loop_is_stuck():
     assert not exited.is_set()
     asyncio.run(go(stuck=True))
     assert exited.is_set()
+
+
+STUCK_PROCESS = """
+import asyncio, time
+from aios.run_service import executor, work
+from aios.models import WorkKind
+
+async def holds_the_loop(item):
+    time.sleep(60)  # a blocking call: nothing else in the process can move
+
+work.HANDLERS[WorkKind.invocation_start] = holds_the_loop
+
+async def main():
+    executor.Watchdog(0.5, interval=0.1)
+    process = executor.Executor()
+    await process.claim()
+    await asyncio.sleep(60)
+
+asyncio.run(main())
+"""
+
+
+def test_a_process_whose_loop_stalls_exits_and_its_work_is_retried_elsewhere(db, user, recorder):
+    enqueue(items(org_and_store(db, user), WorkLane.interactive, 1, "stuck"))
+    env = {
+        **os.environ,
+        "DATABASE_URL": get_settings().database_url,
+        "REDIS_URL": get_settings().redis_url,
+    }
+    started = time.monotonic()
+    stuck = subprocess.run(
+        [sys.executable, "-c", STUCK_PROCESS], env=env, capture_output=True, timeout=60
+    )
+    # Exited by its watchdog, well before its handler would have let go.
+    assert stuck.returncode == 1, stuck.stderr
+    assert time.monotonic() - started < 30
+    with SessionLocal() as s:
+        [left] = s.scalars(select(WorkItem)).all()
+        assert (left.attempts, left.lease_token is not None) == (1, True)
+    # Its lease lapses, and another process runs the item.
+    die([left])
+    asyncio.run(executor.drain_once())
+    assert len(recorder.started["stuck"]) == 1

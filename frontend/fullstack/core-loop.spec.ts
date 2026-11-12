@@ -1,12 +1,19 @@
+import { execSync } from "node:child_process";
+
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 /**
- * The core loop against the real stack (Compose's `fullstack` profile): a person mentions an
- * agent in a chat; the agent, on the scripted model's `core-loop` scenario
- * (backend/src/aios/testing/scenarios.py), asks for a `notes` table and its card shows the run
- * waiting; the person approves on the Data page; the provisioning worker applies the change, the
- * run service resumes the run, which writes a row and replies "Saved." in the chat; and each
- * of its model calls wrote a row of the usage ledger.
+ * The core loop against the real stack (Compose's `fullstack` profile), every turn on the run
+ * service and every store reached through the pooler: a person mentions an agent in a chat; the
+ * agent, on the scripted model's `core-loop` scenario (backend/src/aios/testing/scenarios.py),
+ * asks for a `notes` table and its card shows the run waiting; the person approves on the Data
+ * page, which takes an editor; the urgent worker applies the change, the run service resumes the
+ * run, which writes a row and replies "Saved." in the chat; each of its model calls wrote a row of
+ * the usage ledger; and the audit log recorded the decision.
+ *
+ * A second story restarts the run service mid-turn (a deploy): the turn is handed back to the
+ * queue and carries on in the new process, and the chat gets its reply, never "The service
+ * stopped mid-run."
  *
  * Later steps add their stories here, each a scenario of the scripted model.
  */
@@ -26,13 +33,13 @@ async function created<T>(request: APIRequestContext, url: string, data: object)
   return (await response.json()) as T;
 }
 
-test("a mention asks for a table, waits for approval on the Data page, then saves and replies", async ({
-  page,
-}) => {
+/** Registers a new person, who creates an organisation (its store provisioned by the routine
+ * worker), an agent that may ask for tables and write to them, and a chat it's in. */
+async function setUp(page: Page) {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
-  // 1. Register, which makes nothing, then create an organisation on the welcome page: its store
-  // is provisioned by the provisioning worker.
+  // Register, which makes nothing, then create an organisation on the welcome page: its store is
+  // provisioned by the routine worker.
   await page.goto("/register");
   await page.getByLabel("First name").fill("Core");
   await page.getByLabel("Last name").fill("Loop");
@@ -69,18 +76,30 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   const agent = await created<{ id: number }>(page.request, api("/agents"), { name: "Notes", tools: NOTES_TOOLS });
   const chat = await created<{ id: number }>(page.request, api("/chats"), { name: `Notes ${suffix}` });
   await created(page.request, api(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id });
+  return { api, link, agent, chat };
+}
 
-  // 2. Mention the agent.
-  await page.goto(link(`/chats/${chat.id}`));
+/** Mentions the agent in the chat, with `text` after the mention. */
+async function mention(page: Page, text: string) {
   await composer(page).pressSequentially("@Not");
   await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: "Notes agent" }).click();
-  await composer(page).pressSequentially(" buy milk");
+  await composer(page).pressSequentially(` ${text}`);
   await composer(page).press("Enter");
+}
 
-  // 3. It asks for a notes table, and its card shows the run waiting.
+test("a mention asks for a table, waits for approval on the Data page, then saves and replies", async ({
+  page,
+}) => {
+  const { api, link, agent, chat } = await setUp(page);
+
+  // Mention the agent.
+  await page.goto(link(`/chats/${chat.id}`));
+  await mention(page, "buy milk");
+
+  // It asks for a notes table, and its card shows the run waiting.
   await expect(cardStatus(page)).toHaveText("Waiting for you", { timeout: 60_000 });
 
-  // 4. Approve on the Data page.
+  // Approve on the Data page.
   await page.getByRole("link", { name: "Data" }).first().click();
   await page.getByRole("tab", { name: /Changes/ }).click();
   const request = page
@@ -91,7 +110,7 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   await expect(page.getByRole("region", { name: "Change history" })).toContainText("Create table data.notes");
   await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("/data/changes")}`));
 
-  // 5. The run resumes, writes its row and replies in the chat.
+  // The run resumes, writes its row and replies in the chat.
   await page.goto(link(`/chats/${chat.id}`));
   const reply = messageList(page).getByRole("article").filter({ hasText: "Saved." });
   await expect(reply).toBeVisible({ timeout: 60_000 });
@@ -105,7 +124,7 @@ test("a mention asks for a table, waits for approval on the Data page, then save
     /1\s*@Notes\s+buy milk/,
   ]);
 
-  // 6. Every model call of its turns wrote a usage row, charged to the agent, and so did the
+  // Every model call of its turns wrote a usage row, charged to the agent, and so did the
   // handoff's one call.
   const runs = (await (await page.request.get(api(`/agents/${agent.id}/runs`))).json()) as { id: number }[];
   let modelCalls = 0;
@@ -121,4 +140,49 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   const totals = (await usage.json()) as { currency: string; totals: { key: number; model_calls: number }[] };
   expect(totals.currency).toBe("GBP");
   expect(totals.totals.find((t) => t.key === agent.id)?.model_calls).toBe(modelCalls + 1);
+
+  // The approval took an editor (creating tables does, by default), and the audit log recorded
+  // who decided it.
+  const audit = await page.request.get(api("/audit-log?action=approval"));
+  expect(audit.status(), await audit.text()).toBe(200);
+  const { entries } = (await audit.json()) as {
+    entries: { action: string; actor: { user: { name: string } | null }; details: Record<string, string> }[];
+  };
+  const decided = entries.filter((e) => e.action === "approval.decided");
+  expect(decided).toHaveLength(1);
+  expect(decided[0].details).toMatchObject({
+    decision: "approved",
+    summary: "Create table data.notes",
+    needs_role: "editor",
+  });
+  expect(decided[0].actor.user?.name).toBe("Core Loop");
+});
+
+/** Restarts the run service as a deploy would: a termination signal, its grace, then a new
+ * process. Compose's by default; FULLSTACK_RESTART_RUN_SERVICE names another command (a stack
+ * run another way). */
+function restartRunService() {
+  const command =
+    process.env.FULLSTACK_RESTART_RUN_SERVICE ||
+    "docker compose -f ../docker-compose.yml --profile fullstack restart fullstack-run-service";
+  execSync(command, { stdio: "inherit", timeout: 90_000 });
+}
+
+test("restarting the run service mid-turn hands the turn back, and it carries on to its reply", async ({
+  page,
+}) => {
+  const { link, chat } = await setUp(page);
+  await page.goto(link(`/chats/${chat.id}`));
+
+  // The scripted model takes its time over a message asking it to (longer than the run
+  // service's shutdown grace in the stack), and then replies.
+  await mention(page, "write this slowly");
+  await expect(cardStatus(page)).toHaveText("Running", { timeout: 60_000 });
+  restartRunService();
+
+  const reply = messageList(page).getByRole("article").filter({ hasText: "Written, slowly." });
+  await expect(reply).toBeVisible({ timeout: 90_000 });
+  await expect(cardStatus(page)).toHaveText("Succeeded");
+  await expect(messageList(page)).not.toContainText("The service stopped mid-run.");
+  await expect(messageList(page)).not.toContainText("The turn was stopped.");
 });

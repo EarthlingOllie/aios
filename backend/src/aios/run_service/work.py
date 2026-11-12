@@ -3,7 +3,7 @@
 - **Invocation start**, a mention's: runs the handoff (`aios.handoff`), then enqueues the
   agent's first turn, or starts the workflow's run and enqueues its first advance.
 - **Agent turn**: starts the mentioned agent's run, if it hasn't one yet, and runs one turn of
-  it under the run's turn lease, through the turn code the chat endpoint uses
+  it under the run's turn lease, through the turn code every turn shares
   (`aios.api.agents.turn_stream`); a schedule's run was started when the schedule fired
   (`aios.scheduler`). The reply, or why it failed, goes back to the chat, or onto the schedule.
 - **Workflow advance** and **workflow node**: a workflow run moving on node by node
@@ -11,6 +11,9 @@
 - **Resume turn**: a standalone agent run waiting on schema change requests, carried on once
   one is decided (`aios.api.agents.resume_run`). A decision, or an expiry, enqueues it, or an
   advance of the workflow run whose node made the request (`enqueue_resume`).
+- **Embedding sweep**: a store's search items waiting for an embedding, embedded under a time
+  budget (`aios.search_index.embed_pending`); every process enqueues one per ready store each
+  `search_embed_interval_seconds` (`aios.run_service.sweep.enqueue_embedding`).
 
 Every handler can be run again for the same item: its process may have died part way, and the
 item is then claimed again (`aios.run_service.queue`). So each reads where its invocation got
@@ -20,6 +23,7 @@ isn't started twice, and a turn already begun carries on from the run's last che
 be tried fails its invocation (`fail`): "The service stopped mid-run."
 """
 
+import contextlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -31,10 +35,16 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import handoff, invocations, jev, outbox, turn_lease, turns, workflows
+from aios import handoff, invocations, jev, outbox, search_index, turn_lease, turns, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
-from aios.datastores import store_id_of, store_session
+from aios.datastores import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_id_of,
+    store_session,
+)
 from aios.datastores.models import (
     Agent,
     AgentRun,
@@ -504,6 +514,9 @@ def _fail(item: Claimed) -> None:
 
 async def fail(item: Claimed) -> Outcome:
     """Give up on the item, its attempts used up (see each kind's)."""
+    if item.kind == WorkKind.embedding_sweep:
+        # Nothing waits on it: the next sweep embeds what's left.
+        return Done()
     if item.kind in (WorkKind.workflow_advance, WorkKind.workflow_node):
         return Done(await run_in_threadpool(_fail_workflow, item))
     if item.kind == WorkKind.resume_turn:
@@ -591,12 +604,44 @@ def enqueue_resume(data_store_id: uuid.UUID, request_id: uuid.UUID) -> None:
     queue.wake(work.lane)
 
 
+def embedding_key(data_store_id: uuid.UUID) -> str:
+    return f"embedding-sweep:{data_store_id}"
+
+
+def embedding_work(organisation_id: int, data_store_id: uuid.UUID) -> Work:
+    """Embedding the store's search items waiting for an embedding: background work, so it never
+    takes the slots kept for people waiting in chat; one queued per store at a time."""
+    return Work(
+        organisation_id,
+        data_store_id,
+        WorkLane.background,
+        WorkKind.embedding_sweep,
+        {},
+        dedup_key=embedding_key(data_store_id),
+    )
+
+
+def _embed(data_store_id: uuid.UUID) -> None:
+    # Gone, going, behind or busy: the next sweep tries it again, if it's still there.
+    with contextlib.suppress(DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        search_index.embed_pending(data_store_id)
+
+
+async def embedding_sweep(item: Claimed) -> Outcome:
+    """Embed the store's search items waiting for an embedding, for up to the store's budget
+    (`aios.search_index.embed_pending`); what's left waits for the next sweep, and is found by
+    keyword meanwhile. An attempt cut off part way loses nothing: it's tried again."""
+    await run_in_threadpool(_embed, item.data_store_id)
+    return Done()
+
+
 HANDLERS = {
     WorkKind.invocation_start: start_invocation,
     WorkKind.agent_turn: agent_turn,
     WorkKind.workflow_advance: workflow_advance,
     WorkKind.workflow_node: workflow_node,
     WorkKind.resume_turn: resume_turn,
+    WorkKind.embedding_sweep: embedding_sweep,
 }
 
 

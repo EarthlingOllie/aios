@@ -2,16 +2,16 @@
 
 `POST /api/agents/{id}/archive` and `/unarchive` put it away and bring it back, never refused.
 `GET /api/agents/{id}/used-by` is what the archive confirmation shows. An archived agent starts
-no new turn by hand, by schedule, by mention or as part of a workflow, while what's already going
-finishes; its schedules pause and stay paused after unarchiving; its name stays reserved.
+no new run by hand, nor a turn by schedule, by mention or as part of a workflow, while what's
+already going finishes; its schedules pause and stay paused after unarchiving; its name stays
+reserved.
 """
 
 import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import drain_run
-from test_agents import chat_body
+from conftest import drain_run, take_turn
 from test_chat_agent_invocations import say
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member, outsider  # noqa: F401 (fixtures)
@@ -97,16 +97,11 @@ def test_an_archived_agents_name_stays_reserved(api):
     assert unarchive(api, agent)["name"] == "Reviewer"
 
 
-def test_a_turn_by_hand_is_refused_naming_the_agent(api):
+def test_a_new_run_by_hand_is_refused_naming_the_agent(api):
     agent = make_agent(api, "Reviewer")
-    run = api.post(f"/api/agents/{agent['id']}/runs").json()
     archive(api, agent)
 
-    # Neither a new run nor a new turn in a run it already has.
     refused_as_archived(api.post(f"/api/agents/{agent['id']}/runs"), "Reviewer")
-    with use_model(replies("never")):
-        turn = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
-    refused_as_archived(turn, "Reviewer")
 
 
 def test_a_turn_already_going_finishes(api):
@@ -119,8 +114,7 @@ def test_a_turn_already_going_finishes(api):
         yield "Done anyway."
 
     with use_model(model(script)):
-        resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
-    assert resp.status_code == 200, resp.text
+        resp = take_turn(api, agent["id"], run["id"], "hi")
     assert "Done anyway." in resp.text
     out = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
     assert out["status"] == "succeeded"
@@ -257,7 +251,6 @@ def test_used_by_lists_what_uses_it_and_archiving_is_never_refused(
     api.post(f"/api/agents/{agent['id']}/runs")
 
     resp = api.get(f"/api/agents/{agent['id']}/used-by")
-
     assert resp.status_code == 200, resp.text
     used = resp.json()
     assert [(w["id"], w["name"], w["direct"]) for w in used["workflows"]] == [

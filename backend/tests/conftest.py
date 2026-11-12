@@ -15,11 +15,12 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
+from langchain_core.messages import HumanMessage
 from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import jev, organisations, ratelimits
+from aios import jev, organisations, ratelimits, turn_lease
 from aios import run_service as run_service_package
 from aios.api import provenance
 from aios.auth import current_user
@@ -215,6 +216,50 @@ def run_service(monkeypatch) -> RunService:
     service = RunService()
     monkeypatch.setattr(run_service_package, "wake", service.woken)
     return service
+
+
+class TurnStream:
+    """What a turn of a run streamed (`take_turn`): its chunks, and as the server-sent events
+    they'd be sent as (`text`)."""
+
+    def __init__(self, chunks: list[dict]) -> None:
+        self.chunks = chunks
+        self.text = "".join(
+            f"data: {json.dumps(c, separators=(',', ':'), default=str)}\n\n" for c in chunks
+        )
+
+    def text_deltas(self) -> str:
+        return "".join(c["delta"] for c in self.chunks if c["type"] == "text-delta")
+
+    @property
+    def error(self) -> str | None:
+        return next((c["errorText"] for c in self.chunks if c["type"] == "error"), None)
+
+
+async def run_turn(store_id: uuid.UUID, agent_id: int, run_id: int, text: str) -> TurnStream:
+    """One turn of the store's run with `text` as the user's message, run here as the run
+    service runs a turn (`aios.run_service.work`): under the run's turn lease, through the turn
+    code every turn shares (`aios.api.agents.turn_stream`). Run pages are read-only, and people
+    talk to agents by mentioning them in chats; this is how tests give an existing run another
+    turn. Raises `HTTPException` as loading the run would (404 if it's not the agent's)."""
+    from aios.api import agents as agents_api
+
+    with SessionLocal() as db:
+        ctx = await asyncio.to_thread(agents_api.load_chat_context, db, store_id, agent_id, run_id)
+    lease = await turn_lease.acquire(store_id, run_id)
+    try:
+        turn_id = await asyncio.to_thread(agents_api._start_turn, store_id, run_id, text)
+    except BaseException:
+        await turn_lease.release(lease)
+        raise
+    message = HumanMessage(text, id=str(uuid.uuid4()))
+    chunks = agents_api.turn_stream(ctx, run_id, message, lease, turn_id=turn_id)
+    return TurnStream([chunk async for chunk in chunks])
+
+
+def take_turn(api, agent_id: int, run_id: int, text: str) -> TurnStream:
+    """`run_turn` in the store of the organisation `api` acts in, here and now."""
+    return asyncio.run(run_turn(signed_in_store(), agent_id, run_id, text))
 
 
 def enqueue_advance(store_id: uuid.UUID, run_id: int) -> None:

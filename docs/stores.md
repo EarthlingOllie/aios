@@ -495,9 +495,9 @@ Items carry their chat, agent, run and author for filters, and no visibility: ev
 organisation can find everything.
 
 Embedding happens in the background: an item is written with no embedding, and found by keyword
-until the store's sweep embeds it (`aios.embed_search_items`, queued for every ready store by
-the routine worker's beat every `SEARCH_EMBED_INTERVAL_SECONDS`, on the `ingest` queue),
-for at most `SEARCH_EMBED_BUDGET_SECONDS` per store per sweep. An item is embedded by its first
+until the store's sweep embeds it (an embedding sweep on the [run service](run-service.md),
+background work enqueued for every ready store every `SEARCH_EMBED_INTERVAL_SECONDS`), for at
+most `SEARCH_EMBED_BUDGET_SECONDS` per store per sweep. An item is embedded by its first
 `EMBED_MAX_CHARS` characters, and never while a store session is held. Its `text_hash` keeps
 unchanged text from being embedded again: an item written again with the same text keeps its
 embedding, and one whose text is already embedded elsewhere in the store takes that embedding.

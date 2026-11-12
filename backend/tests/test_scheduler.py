@@ -10,10 +10,10 @@ from conftest import (
     drain_run,
     home_organisation,
     signed_in_store,
+    take_turn,
     user_store,
 )
 from sqlalchemy import func, select, update
-from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
@@ -428,10 +428,10 @@ def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db, in_sto
         tick(now)
         scheduled = load(db, t["id"]).last_run_id
         chatted = api.post(runs_url).json()["id"]
-        api.post(f"{runs_url}/{chatted}/chat", json=chat_body("What happened today?"))
-        # The user can continue a scheduled run from the UI, as any other.
+        take_turn(api, agent["id"], chatted, "What happened today?")
+        # A scheduled run takes another turn as any other.
         for run_id in (scheduled, chatted):
-            assert api.post(f"{runs_url}/{run_id}/chat", json=chat_body("More?")).status_code == 200
+            take_turn(api, agent["id"], run_id, "More?")
 
     def stored(run_id):
         detail = api.get(f"{runs_url}/{run_id}").json()
@@ -447,17 +447,17 @@ def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db, in_sto
 
 
 def age(db, trigger_id: int) -> None:
-    """Make the trigger's heartbeat older than a live process would let it get."""
+    """Make the trigger's claim older than a live process would let it get."""
     with store_session(signed_in_store()) as store:
         store.execute(
             update(Trigger)
             .where(Trigger.id == trigger_id)
-            .values(heartbeat_at=func.now() - scheduler.STALE_AFTER - timedelta(seconds=1))
+            .values(claimed_at=func.now() - scheduler.STALE_AFTER - timedelta(seconds=1))
         )
         store.commit()
 
 
-def test_a_claim_whose_process_died_is_failed_once_its_heartbeat_stops(api, db):
+def test_a_claim_whose_process_died_is_failed_once_it_goes_stale(api, db):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
     now = datetime.now(UTC)

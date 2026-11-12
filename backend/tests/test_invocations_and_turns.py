@@ -8,10 +8,10 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import test_workflow_runs as workflow_runs
-from conftest import drain_run
+from conftest import drain_run, take_turn
 from sqlalchemy import func, select
 from test_agent_run_counters import searching_agent
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_chat_agent_invocations import say
 from test_chats import add, make_chat
 from test_data_tools import data_agent, run_tools, store  # noqa: F401 (fixtures)
@@ -42,7 +42,7 @@ def test_a_run_started_by_hand_has_one_manual_invocation_by_whoever_started_it(a
     assert [i.id for i in run_invocations(in_store, run["id"])] == [invocation["id"]]
 
     with use_model(replies("hi")):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hello"))
+        take_turn(api, agent["id"], run["id"], "hello")
     # Talking to it more doesn't make it another.
     assert len(run_invocations(in_store, run["id"])) == 1
 
@@ -153,13 +153,13 @@ def test_each_turn_is_recorded_with_its_version_outcome_and_counters(api, monkey
         raise RuntimeError("model overloaded")
 
     with use_model(model(searches)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("first"))
+        take_turn(api, agent["id"], run_id, "first")
     # A new version since: the run stays on the one it pinned, and so do its turns.
     current = api.get(f"/api/agents/{agent['id']}").json()
     edited = api.put(f"/api/agents/{agent['id']}", json=agent_body(current, base_prompt="New."))
     assert edited.json()["current_version"]["id"] != pinned[0]
     with use_model(model(breaks)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("second"))
+        take_turn(api, agent["id"], run_id, "second")
 
     run = api.get(f"{runs_url}/{run_id}").json()
     first, second = run["turns"]
@@ -204,7 +204,7 @@ def test_agents_read_runs_and_turns_from_reporting_views_without_any_text(
             yield Usage(20, 2)
 
     with use_model(model(script)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body(secret))
+        take_turn(api, bot["id"], run_id, secret)
 
     described, runs, turns = run_tools(
         api,

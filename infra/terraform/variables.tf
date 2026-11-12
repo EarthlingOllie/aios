@@ -144,6 +144,12 @@ variable "run_service" {
   }
 }
 
+variable "model_rate_limits" {
+  description = "Each model's provider rate limit, shared by every run service task (aios.model_rate_limit): \"provider:model\" to its requests and tokens per minute (either may be null). A model not listed isn't paced."
+  type        = map(object({ requests_per_minute = optional(number), tokens_per_minute = optional(number) }))
+  default     = {}
+}
+
 variable "ingest_worker" {
   description = "Document ingest (the ingest queue). Docling is CPU/RAM hungry; give workers room. Scaled on the ingest queue's depth."
   type        = object({ cpu = number, memory = number, min = number, max = number, concurrency = number })

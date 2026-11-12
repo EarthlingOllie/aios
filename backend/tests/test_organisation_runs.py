@@ -18,9 +18,10 @@ from conftest import (
     make_user,
     provisioned_user,
     store_of,
+    take_turn,
 )
 from langchain_core.callbacks import BaseCallbackHandler
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_chats import add, make_chat, messages, signed_in_as
 from test_scheduler import make_due, tick
 from test_search import add_chunks, unit
@@ -144,8 +145,7 @@ def test_a_run_started_by_hand_searches_the_organisations_store_and_says_who_sta
     run = ok(api.post(f"/api/agents/{agent['id']}/runs"), 201)
     assert run["created_by"] == person(user)
     with use_model(fake):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("find the minutes")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "find the minutes")
     # The member's document, in the store the run's tools were given.
     assert found == [["minutes.md"]]
     assert agent_run(api, agent, run["id"])["created_by"] == person(user)
@@ -155,8 +155,7 @@ def test_a_run_started_by_hand_searches_the_organisations_store_and_says_who_sta
     with signed_in_as(member):
         theirs = ok(api.post(f"/api/agents/{agent['id']}/runs"), 201)
         with use_model(fake):
-            url = f"/api/agents/{agent['id']}/runs/{theirs['id']}/chat"
-            assert api.post(url, json=chat_body("and again")).status_code == 200
+            take_turn(api, agent["id"], theirs["id"], "and again")
     assert found == [["minutes.md"], ["minutes.md"]]
     assert listed(api, agent)[theirs["id"]]["created_by"] == person(member)
 
@@ -352,8 +351,7 @@ def test_traces_carry_the_organisation_and_who_started_the_run(
     with use_model(fake):
         with signed_in_as(member):
             run = ok(api.post(f"/api/agents/{agent['id']}/runs"), 201)
-            url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-            assert api.post(url, json=chat_body("hi")).status_code == 200
+            take_turn(api, agent["id"], run["id"], "hi")
         assert seen("agent:Bot", agent_run_id=run["id"]) == {(org, member.id, str(member.id))}
 
         fired = fire(api, db, "agent", agent)

@@ -295,9 +295,10 @@ resource "aws_ecs_task_definition" "ingest_worker" {
   }])
 }
 
-# The run service (aios.run_service): mentioned agents' turns, the handoff before every mention,
-# schedules, events, workflow nodes and syncs, claimed from the work queue's lanes in the
-# platform database. API image. ECS sends
+# The run service (aios.run_service): every agent turn (the web servers run none), the handoff
+# before every mention, schedules, events, workflow nodes, the search index's embedding sweeps
+# and syncs, claimed from the work queue's lanes in the platform database, each model's calls
+# within its rate limit (var.model_rate_limits). API image. ECS sends
 # SIGTERM, and SIGKILL stopTimeout seconds later: it lets its items finish for up to
 # RUN_SERVICE_SHUTDOWN_GRACE_SECONDS (25) first, then hands the rest back to the queue.
 resource "aws_ecs_task_definition" "run_service" {
@@ -322,6 +323,7 @@ resource "aws_ecs_task_definition" "run_service" {
     stopTimeout = 30
     environment = concat(local.backend_env, [
       { name = "RUN_SERVICE_CONCURRENCY", value = tostring(var.run_service.concurrency) },
+      { name = "MODEL_RATE_LIMITS", value = jsonencode(var.model_rate_limits) },
     ])
     secrets          = local.backend_secrets
     logConfiguration = local.log_config["run-service"]

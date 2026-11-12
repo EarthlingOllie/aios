@@ -518,10 +518,6 @@ class AgentRun(StoreBase):
     created_by: Mapped[int | None] = mapped_column(Integer)
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
-    # No longer set: turns outside a request run on the run service (`aios.run_service`), whose
-    # leases and retries replace it. Cleared by a request's turn; goes with the old heartbeat
-    # columns.
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The turn lease (`aios.turn_lease`): the token of the turn that holds the run, and when its
     # hold lapses unless refreshed. Both null while no turn holds it; an expired one is free.
     lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
@@ -534,12 +530,6 @@ class AgentRun(StoreBase):
     __table_args__ = (
         Index("ix_agent_runs_agent_id", "agent_id"),
         Index("ix_agent_runs_agent_version_id", "agent_version_id"),
-        # What the stall sweep looks at.
-        Index(
-            "ix_agent_runs_heartbeat",
-            "heartbeat_at",
-            postgresql_where=sql_text("heartbeat_at IS NOT NULL"),
-        ),
         {"comment": "Conversations with agents: each run's history is its checkpointer thread"},
     )
 
@@ -637,9 +627,6 @@ class WorkflowRun(StoreBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # No longer written: runs on the run service hold no process, so beat no heartbeat. Dropped
-    # with the other heartbeat columns.
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # While it's waiting, since when; and how long it has waited in all before that. Waiting
     # doesn't count towards the run's time limit.
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -753,7 +740,7 @@ class Trigger(StoreBase):
     last_error: Mapped[str | None] = mapped_column(Text)
     # When it was claimed, while `last_status` is running: one claimed long ago that never
     # started its run lost its process, and is failed (`aios.scheduler.fail_stalled`).
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The agent run, or workflow run, it last started; cleared when that run is deleted. A
     # workflow run's status is the schedule's (`api.triggers.trigger_out`), since a worker runs
     # it after the schedule has fired.
@@ -798,7 +785,7 @@ class Trigger(StoreBase):
         # What the stall sweep looks at.
         Index(
             "ix_triggers_running",
-            "heartbeat_at",
+            "claimed_at",
             postgresql_where=sql_text("last_status = 'running'"),
         ),
         {"comment": "Schedules: what starts the organisation's agents and workflows by itself"},
@@ -1011,9 +998,6 @@ class Invocation(StoreBase):
     # When its run started (null if it never did), and when it finished.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # No longer set: an agent invocation's turn runs on the run service (`aios.run_service`),
-    # whose leases and retries replace it. Goes with the old heartbeat columns.
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(

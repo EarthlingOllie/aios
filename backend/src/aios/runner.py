@@ -7,6 +7,7 @@ from aios import llm
 from aios.agent import ChatDeps
 from aios.datastores.models import AgentVersion
 from aios.jev import UNTRUSTED_RULE
+from aios.model_rate_limit import RateLimitMiddleware
 from aios.tool_checks import ToolResultChecks
 from aios.tools import AgentTool, ToolOrganisation, build_tool
 from aios.tools.web_search import WEB_SEARCH
@@ -60,8 +61,13 @@ def build_agent(
         server_tools(tools, model),
         system_prompt=f"{instructions}\n\n{UNTRUSTED_RULE}" if instructions else UNTRUSTED_RULE,
         # Each tool result checked by Jev and wrapped as untrusted (`aios.tool_checks`).
-        # And each model call charged to the turn and checked against its caps (`aios.usage`).
-        middleware=[ToolResultChecks(), UsageMiddleware(llm.model_name(model))],
+        # And each model call charged to the turn and checked against its caps (`aios.usage`),
+        # then paced by its model's rate limit (`aios.model_rate_limit`).
+        middleware=[
+            ToolResultChecks(),
+            UsageMiddleware(llm.model_name(model)),
+            RateLimitMiddleware(llm.model_name(model)),
+        ],
         context_schema=ChatDeps,
         checkpointer=checkpointer,
         response_format=response_format,

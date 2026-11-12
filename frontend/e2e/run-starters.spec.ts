@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { fakeApi, inOrg } from "./fake-api";
 
 /** Runs are the organisation's: each says which member started it, or that a schedule did, on
- * its list and its page, and every member can open, continue and delete any of them. */
+ * its list and its page, and every member can open (read-only) and delete any of them. */
 
 const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
@@ -23,10 +23,10 @@ test("an agent's runs say who started each, or that a schedule did", async ({ pa
   await expect(row("Sam's question").getByTestId("started-by").locator("img")).toHaveCount(0);
   await expect(row("My question").getByTestId("started-by")).toHaveText("Started by you");
 
-  // Another member's run opens like any other: to read, continue and delete.
+  // Another member's run opens like any other: to read and delete.
   await page.goto(inOrg(`/agents/${agent.id}/runs/${theirs.id}`));
   await expect(page.getByTestId("started-by")).toHaveText("Started by Sam Jones");
-  await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
+  await expect(page.getByRole("log", { name: "Conversation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Delete run" })).toBeVisible();
   await expect(page.getByText(/Researcher · v1/).getByRole("link", { name: "v1" })).toBeVisible();
 

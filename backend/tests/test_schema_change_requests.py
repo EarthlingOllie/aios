@@ -6,18 +6,24 @@ The queued tasks (applying on the urgent worker, resuming the run on the workflo
 are run here by hand, in order, standing in for the workers."""
 
 import asyncio
-import contextlib
 import uuid
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import RESUME, capture_resumes, delete_user, org_of, provisioned_user, store_of
+from conftest import (
+    RESUME,
+    capture_resumes,
+    delete_user,
+    provisioned_user,
+    store_of,
+    take_turn,
+)
 from psycopg import OperationalError
 from sqlalchemy import event, func, update
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned
 
-from aios import checkpoints, ui_stream, worker
+from aios import checkpoints, worker
 from aios.api import agents as agents_api
 from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
@@ -26,9 +32,9 @@ from aios.datastores.schema_changes import SchemaChange
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User, WorkItem
-from aios.run_service import executor, work
+from aios.run_service import executor, queue, work
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
-from aios.tools import build_tool, hybrid_search
+from aios.tools import build_tool
 
 TOOLS = [
     {"key": "request_schema_change", "config": {}},
@@ -97,8 +103,7 @@ def start(api, agent: dict, script: Script) -> tuple[dict, dict]:
     """A run whose first turn asks for the change; the run, and its request."""
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(script)):
-        r = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
-        assert r.status_code == 200
+        r = take_turn(api, agent["id"], run["id"], "go")
         assert '"type":"error"' not in r.text
     run = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
     [request] = run["schema_change_requests"]
@@ -144,10 +149,9 @@ def test_a_request_ends_the_turn_waiting_with_a_card_of_the_exact_sql(api, agent
 def test_a_new_message_is_refused_while_the_request_is_pending(api, agent, queued):
     run, _ = start(api, agent, Script(CONTACTS))
 
-    r = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hello?"))
+    turn = take_turn(api, agent["id"], run["id"], "hello?")
 
-    assert r.status_code == 409
-    assert "schema change" in r.json()["detail"]
+    assert turn.error == agents_api.WAITING
 
 
 def test_approving_applies_it_and_the_run_carries_on_seeing_the_table(api, agent, store, queued):
@@ -173,8 +177,56 @@ def test_approving_applies_it_and_the_run_carries_on_seeing_the_table(api, agent
     assert run["ui_messages"][-1]["parts"][-1] == {"type": "text", "text": "done", "state": "done"}
     # And the run takes messages again.
     with use_model(model(script)):
-        r = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("ok"))
-    assert r.status_code == 200
+        assert take_turn(api, agent["id"], run["id"], "ok").error is None
+
+
+def test_a_resumed_turn_handed_back_by_a_stopping_process_carries_on_where_it_got_to(
+    api, agent, store, queued
+):
+    """A deploy mid-resume: the run had been given the outcome and was carrying on when its
+    process stopped. The next process carries the turn on from its last checkpoint, rather
+    than leaving it underway for ever with nothing to resume."""
+    script = Script(CONTACTS)
+    run, request = start(api, agent, script)
+    api.post(f"/api/schema-changes/{request['id']}/approve")
+    apply, args = queued.pop(0)
+    apply.run(*args)  # applied; its resume is queued next
+    [(_, (store_id, request_id))] = queued
+    with SessionLocal() as s:
+        queue.enqueue(s, [work.resume_for(uuid.UUID(str(store_id)), uuid.UUID(str(request_id)))])
+        s.commit()
+
+    calls, hung = [], asyncio.Event()
+
+    async def hangs_once(messages, info):
+        calls.append(len(messages))
+        if len(calls) == 1:
+            hung.set()
+            await asyncio.sleep(60)
+        async for item in script(messages, info):
+            yield item
+
+    async def stopping_mid_turn() -> None:
+        process = executor.Executor()
+        while not hung.is_set():
+            await process.claim()
+            await asyncio.sleep(0.02)
+        await process.stop(grace=0)
+
+    with use_model(model(hangs_once)):
+        asyncio.run(stopping_mid_turn())
+        asyncio.run(executor.drain_once())
+
+    after = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
+    assert after["waiting"] is False
+    [request] = after["schema_change_requests"]
+    assert request["resumed_at"] is not None
+    assert after["ui_messages"][-1]["parts"][-1] == {
+        "type": "text",
+        "text": "done",
+        "state": "done",
+    }
+    assert [t["status"] for t in after["turns"]] == ["succeeded", "succeeded"]
 
 
 def test_rejecting_resumes_the_run_with_the_note_and_changes_nothing(api, agent, store, queued):
@@ -225,7 +277,7 @@ def test_a_spec_the_store_doesnt_take_is_an_error_for_the_model_and_nothing_wait
     script = Script({**CONTACTS, "name": "select"})
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(script)):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
 
     (name, result), _ = script.results
     assert name == "request_schema_change"
@@ -399,7 +451,7 @@ def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, q
 
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(ask_twice)):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
     requests = run_of(api, agent, run)["schema_change_requests"]
     [first] = [r for r in requests if "contacts" in r["summary"]]
     [second] = [r for r in requests if "places" in r["summary"]]
@@ -408,8 +460,7 @@ def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, q
     with use_model(model(ask_twice)):
         run_queued(queued)
     assert run_of(api, agent, run)["waiting"] is True
-    url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-    assert api.post(url, json=chat_body("hello?")).status_code == 409
+    assert take_turn(api, agent["id"], run["id"], "hello?").error == agents_api.WAITING
 
     api.post(f"/api/schema-changes/{second['id']}/reject", json={"note": "One is enough"})
     with use_model(model(ask_twice)):
@@ -425,50 +476,6 @@ def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, q
     outcomes = [r for name, r in script.results if name == "request_schema_change"]
     assert sorted(o["status"] for o in outcomes) == ["applied", "rejected"]
     assert data_tables(store) == ["contacts"]
-
-
-def test_a_turn_stopped_before_its_request_waits_cancels_the_request(
-    api, user, db, agent, queued, monkeypatch
-):
-    """The model is told the call didn't finish, so the request goes too: nothing waits on it,
-    and it can't be approved."""
-    events: list = []
-    tools = [*TOOLS, {"key": "hybrid_search", "config": {}}]
-    api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools))
-    run = api.post(f"/api/agents/{agent['id']}/runs").json()
-
-    async def slow_search(data_store_id, query, limit):
-        events.append("search started")
-        await asyncio.sleep(60)
-
-    async def ask_and_search(messages, info):
-        yield ToolCall("request_schema_change", {"ops": [CONTACTS], "reason": "Why not"})
-        yield ToolCall("search_documents", {"query": "slow"})
-
-    monkeypatch.setattr(hybrid_search, "document_search_results", slow_search)
-    monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
-
-    async def stop_while_searching():
-        chunks = await agents_api.run_chat(
-            agent["id"], run["id"], chat_body("go"), user, db, org_of(db, user)
-        )
-        # Until the stream goes quiet (the search is running, the request recorded), then
-        # stopped as a client going away stops it.
-        with contextlib.suppress(TimeoutError, StopAsyncIteration):
-            while True:
-                await asyncio.wait_for(anext(chunks), 2)
-        await chunks.aclose()
-
-    with use_model(model(ask_and_search)):
-        asyncio.run(stop_while_searching())
-
-    after = run_of(api, agent, run)
-    [request] = after["schema_change_requests"]
-    assert (request["status"], after["waiting"]) == ("cancelled", False)
-    # Nothing for the owner to decide any more.
-    assert api.get("/api/notifications").json()["unread"] == 0
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
-    assert queued == []
 
 
 def test_an_apply_whose_resume_cant_be_queued_is_tried_again(api, agent, queued, monkeypatch):

@@ -21,7 +21,7 @@ from aios import embeddings, handoff, llm, tracing
 from aios.config import get_settings
 from aios.main import create_app
 from aios.models import DataStore
-from aios.run_service import sweep
+from aios.run_service import executor, sweep
 from aios.testing import scenarios
 
 # The tasks the code queued (applying a change, resuming a run), to run as the workers would.
@@ -144,6 +144,37 @@ def test_a_turn_waiting_on_its_request_isnt_failed_or_requeued(
     [invocation] = messages(api, chat)["invocations"]
     assert invocation["status"] == "running"
     assert invocation["agent_run"]["waiting"] is True
+
+
+def test_a_turn_asked_to_take_its_time_survives_a_run_service_restart(
+    api, notes_agent, scripted, monkeypatch, run_service
+):
+    """The full-stack test's second story, here: the run service stops mid-reply (its grace
+    gone), the turn is handed back, and a new process carries it on to its reply."""
+    monkeypatch.setattr(scenarios, "SLOW_SECONDS", 1.0)
+    chat = make_chat(api, "Notes")
+    add(api, chat, "agent", notes_agent)
+    run_service.auto = False
+    say(api, chat, f"@[Notes](agent:{notes_agent['id']}) write this slowly", ("agent", notes_agent))
+
+    async def restarted_mid_turn() -> None:
+        process = executor.Executor()
+        for _ in range(100):
+            await process.claim()
+            await asyncio.sleep(0.05)
+            [invocation] = messages(api, chat)["invocations"]
+            if invocation["status"] == "running":
+                break
+        await asyncio.sleep(0.3)  # mid-call
+        await process.stop(grace=0)
+
+    asyncio.run(restarted_mid_turn())
+    assert replies_from(api, chat) == []
+    run_service.drain()
+
+    assert replies_from(api, chat) == [("Notes", scenarios.WRITTEN_SLOWLY)]
+    [invocation] = messages(api, chat)["invocations"]
+    assert (invocation["status"], invocation["error"]) == ("succeeded", None)
 
 
 def test_embeddings_are_a_deterministic_fake(scripted):

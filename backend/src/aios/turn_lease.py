@@ -1,4 +1,4 @@
-"""The turn lease: how a run's turns take turns, wherever they run (two tabs, two replicas, a
+"""The turn lease: how a run's turns take turns, wherever they run (two run service processes, a
 schedule and a chat), so each starts from the history the previous one left rather than both
 forking from the same checkpoint.
 
@@ -10,8 +10,8 @@ are its Redis channels.
 - **Acquire.** A conditional update that succeeds only if the lease is free or expired, and sets
   a new token and a time it lasts until (`turn_lease_seconds`).
 - **Wait.** On the run's release channel in Redis, with a one-second poll as a fallback (Redis
-  down, or a release missed), for up to `turn_wait_seconds`. Past it, `RunBusy`: a run-page post
-  answers 409 "This run is busy".
+  down, or a release missed), for up to `turn_wait_seconds`. Past it, `RunBusy`: the run service
+  hands the turn's item back, to be tried again a little later.
 - **Refresh.** While the turn holds it (`held`), a heartbeat extends it while the token matches.
 - **Release.** Cleared while the token matches, then the release channel is published.
 - **Fencing.** Every checkpoint write first checks that the token still holds, in the write's

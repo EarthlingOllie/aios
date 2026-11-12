@@ -14,7 +14,7 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Chats](chats.md) | Open chats: chat members, joining, unread counts, messages and the Jev check, mentions, invocations and the handoff brief. |
 | [Triggers](triggers.md) | Schedules and the scheduler. |
 | [Usage, limits and mention guards](usage-and-limits.md) | The usage ledger in GBP and its reporting view, caps on turns and workflow runs, and the checks a mention passes before it runs. |
-| [Run service](run-service.md) | The service that runs mentioned turns, handoffs and schedules: its fair work queue, leases, retries and the in-flight cap. |
+| [Run service](run-service.md) | The service that runs every turn, handoff, workflow node, schedule and embedding sweep: its fair work queue, leases, retries, the in-flight cap, the model rate limit and graceful shutdown. |
 | [Development](development.md) | Prerequisites, the code layout, running the stack in Docker or locally, debugging with Claude Code, checks and tests, the dependency policy, changing models, and image size notes. |
 | [Deploy](deploy.md) | Deploying to AWS with Terraform and `infra/deploy.sh`, the database secrets, and sandboxes on Fargate. |
 | [Tracing](tracing.md) | Tracing agent runs and handoffs to Langfuse. |

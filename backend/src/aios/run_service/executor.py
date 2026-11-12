@@ -9,7 +9,9 @@
 - An item's handler (`aios.run_service.work`) says it's done, with what follows it, or that
   it can't run yet. One that raises is handed back to be tried again, counting the attempt.
 - With `scheduler_enabled`, it fires due schedules (`aios.scheduler.tick`) every
-  `scheduler_interval_seconds`; and it runs the requeue sweep (`aios.run_service.sweep`).
+  `scheduler_interval_seconds`; it runs the requeue sweep (`aios.run_service.sweep`); and every
+  `search_embed_interval_seconds` it enqueues each ready store's embedding sweep, background
+  work like any other.
 - It dispatches stores' events to event triggers (`aios.dispatcher.run_forever`) when woken
   and every `event_dispatch_poll_seconds`.
 - On a termination signal it stops claiming, lets its items finish for up to
@@ -37,6 +39,7 @@ from fastapi.concurrency import run_in_threadpool
 from psycopg import errors
 from sqlalchemy.exc import OperationalError
 
+from aios import model_rate_limit
 from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.models import WorkLane
@@ -137,12 +140,16 @@ class Executor:
 
     async def _run(self, item: queue.Claimed) -> None:
         try:
-            if item.exhausted:
-                outcome: work.Outcome = await work.fail(item)
-            else:
-                outcome = await work.HANDLERS[item.kind](item)
+            # Its model calls wait their turn under their models' rate limits as the item's
+            # lane does (`aios.model_rate_limit`).
+            with model_rate_limit.serving(item.lane):
+                if item.exhausted:
+                    outcome: work.Outcome = await work.fail(item)
+                else:
+                    outcome = await work.HANDLERS[item.kind](item)
         except asyncio.CancelledError:
             # Stopping: back to the queue for another process, not counted as an attempt.
+            log.info("work item %s (%s) handed back to the queue", item.id, item.kind)
             with CancelScope(shield=True):
                 await run_in_threadpool(_release, item, 0, False)
             raise
@@ -281,6 +288,14 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
         asyncio.create_task(_listen(woken), name="wake"),
         asyncio.create_task(executor.extend_forever(), name="leases"),
         asyncio.create_task(_every(SWEEP_SECONDS, "requeue sweep", sweep.run), name="sweep"),
+        asyncio.create_task(
+            _every(
+                settings.search_embed_interval_seconds,
+                "embedding sweep",
+                sweep.enqueue_embedding,
+            ),
+            name="embedding",
+        ),
     ]
     helpers.append(asyncio.create_task(dispatcher.run_forever(), name="event dispatcher"))
     if settings.scheduler_enabled:

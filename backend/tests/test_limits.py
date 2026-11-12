@@ -7,8 +7,8 @@ Through the API, as a signed-in member, with the scripted model."""
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import join_organisation
-from test_agents import agent_body, chat_body, make_agent
+from conftest import join_organisation, take_turn
+from test_agents import agent_body, make_agent
 from test_chat_agent_invocations import replies_from, say
 from test_chats import add, make_chat, signed_in_as
 from test_workflow_runs import queued  # noqa: F401 (a fixture)
@@ -68,7 +68,7 @@ def test_a_turn_stops_at_its_token_cap(api):
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     calls: list[int] = []
     with use_model(looping(calls, tokens=100)):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
     # 101, 202, 303 tokens: the fourth call would start past 250.
     assert len(calls) == 3
     page = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
@@ -85,7 +85,7 @@ def test_the_limit_in_force_follows_the_agent_then_the_organisation_then_the_dep
         run = api.post(f"/api/agents/{agent['id']}/runs").json()
         calls: list[int] = []
         with use_model(looping(calls)):
-            api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+            take_turn(api, agent["id"], run["id"], "go")
         return len(calls)
 
     assert api.get(f"/api/agents/{agent['id']}").json()["limits_in_force"]["turn_model_calls"] == 4

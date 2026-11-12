@@ -2,9 +2,9 @@
 their steps, and each run's history, kept by the store's own checkpointer. The platform database
 holds none of them."""
 
-from conftest import delete_user, provisioned_user, store_of, user_store
+from conftest import delete_user, provisioned_user, store_of, take_turn, user_store
 from sqlalchemy import text
-from test_agents import chat_body, make_agent
+from test_agents import make_agent
 
 from aios import checkpoints
 from aios.auth import current_user
@@ -24,6 +24,28 @@ def test_the_platform_holds_no_runs_and_no_checkpoints_and_each_store_does(db, u
             assert store.scalar(text("SELECT to_regclass(:t)"), {"t": f"aios.{table}"}), table
         for table in CHECKPOINTER_TABLES:
             assert store.scalar(text("SELECT to_regclass(:t)"), {"t": f"langgraph.{table}"})
+
+
+def test_the_old_heartbeat_columns_are_gone(user):
+    """Runs on the run service hold no process, so beat no heartbeat: its leases and retries
+    replace the runs', invocations' and workflow runs' heartbeats. A schedule's claim keeps the
+    time it was claimed (`aios.scheduler`)."""
+    with user_store(user) as store:
+        columns = set(
+            store.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns"
+                    " WHERE table_schema = 'aios'"
+                )
+            ).all()
+        )
+        indexes = set(
+            store.scalars(text("SELECT indexname FROM pg_indexes WHERE schemaname = 'aios'"))
+        )
+    assert not [c for c in columns if c[1] == "heartbeat_at"]
+    assert ("triggers", "claimed_at") in columns
+    assert "ix_agent_runs_heartbeat" not in indexes
+    assert "ix_triggers_running" in indexes
 
 
 def threads(user, run_id: int) -> int:
@@ -46,9 +68,9 @@ def test_a_new_turn_continues_the_runs_history_from_the_stores_checkpointer(api,
         yield f"reply {len(seen)}"
 
     with use_model(model(script)):
-        assert api.post(f"{url}/chat", json=chat_body("first")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "first")
         assert threads(user, run["id"]) > 0
-        assert api.post(f"{url}/chat", json=chat_body("second")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "second")
 
     # The second turn started from what the first left, read from the store.
     assert seen[1] == ["first", "reply 1", "second"]
@@ -62,8 +84,7 @@ def test_deleting_a_run_removes_its_history_from_the_store(api, user):
     run, kept = (api.post(f"/api/agents/{agent['id']}/runs").json() for _ in range(2))
     with use_model(replies("hi")):
         for r in (run, kept):
-            url = f"/api/agents/{agent['id']}/runs/{r['id']}/chat"
-            assert api.post(url, json=chat_body("hello")).status_code == 200
+            take_turn(api, agent["id"], r["id"], "hello")
     assert threads(user, run["id"]) > 0
 
     assert api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code == 204
@@ -84,7 +105,7 @@ def test_run_ids_repeat_across_organisations_and_each_keeps_its_own_history(api,
     agent = make_agent(api, "Bot")
     mine = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(replies("mine")):
-        api.post(f"/api/agents/{agent['id']}/runs/{mine['id']}/chat", json=chat_body("me"))
+        take_turn(api, agent["id"], mine["id"], "me")
 
     other = provisioned_user(db, "other-runs")
     try:
@@ -94,8 +115,7 @@ def test_run_ids_repeat_across_organisations_and_each_keeps_its_own_history(api,
         # The same ids, each in its own store.
         assert (their_agent["id"], theirs["id"]) == (agent["id"], mine["id"])
         with use_model(replies("theirs")):
-            url = f"/api/agents/{their_agent['id']}/runs/{theirs['id']}/chat"
-            assert client.post(url, json=chat_body("them")).status_code == 200
+            take_turn(client, their_agent["id"], theirs["id"], "them")
         shown = client.get(f"/api/agents/{their_agent['id']}/runs/{theirs['id']}").json()
         assert [m["content"] for m in shown["messages"]] == ["them", "theirs"]
         their_history = checkpoints.history(store_of(other), theirs["id"])

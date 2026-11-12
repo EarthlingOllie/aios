@@ -9,10 +9,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import join_organisation, store_of
+from conftest import join_organisation, store_of, take_turn
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.messages import AIMessage
-from test_agents import chat_body, make_agent
+from test_agents import make_agent
 from test_chat_agent_invocations import say
 from test_chats import add, make_chat, signed_in_as
 from test_data_tools import data_agent, run_tools, store  # noqa: F401 (fixtures)
@@ -72,7 +72,7 @@ def test_a_turn_with_n_model_calls_writes_n_rows_priced_in_gbp(api, user):
     )
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(three_calls()):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
 
     mine = totals(api)[agent["id"]]
     assert mine["name"] == "Counter"
@@ -97,8 +97,7 @@ def test_a_model_with_no_price_records_a_blank_cost(api, prices):
         yield Usage(50, 5)
 
     with use_model(model(script)):
-        resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
-    assert resp.status_code == 200
+        take_turn(api, agent["id"], run["id"], "hi")
     # The turn went fine regardless.
     assert api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()["status"] == "succeeded"
     mine = totals(api)[agent["id"]]
@@ -109,7 +108,7 @@ def test_recording_a_model_call_again_never_counts_it_twice(api, user, in_store)
     agent = make_agent(api, "Bot")
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(three_calls()):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
     turn = in_store.scalars(select_turns(run["id"])).one()
     charge = usage.for_turn(store_of(user), turn.id)
     response = AIMessage("again", id="msg_retried", usage_metadata=tokens(7, 3))
@@ -145,7 +144,7 @@ def test_web_searches_the_provider_ran_write_a_row_of_their_own(api, user):
         usage_metadata=tokens(10, 1),
     )
     with use_model(model(_say("hi"))):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
     charge = usage.for_turn(store_of(user), _latest_turn(user, run["id"]))
     usage.record_turn_call(charge, MODEL, response)
 
@@ -217,7 +216,7 @@ def test_agents_read_the_ledger_through_a_reporting_view_without_any_text(api, d
 
     run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
     with use_model(model(script)):
-        api.post(f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat", json=chat_body(secret))
+        take_turn(api, data_agent["id"], run["id"], secret)
     [described] = run_tools(api, data_agent, ToolCall("describe_data", {}))
     rows = reported(api, data_agent)
 
@@ -263,7 +262,7 @@ def test_a_range_picks_the_days_it_covers(api):
     agent = make_agent(api, "Bot")
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(_say("hi"))):
-        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+        take_turn(api, agent["id"], run["id"], "go")
     today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
     assert agent["id"] in totals(api, start=today.isoformat(), end=today.isoformat())
