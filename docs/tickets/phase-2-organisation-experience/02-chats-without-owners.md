@@ -13,12 +13,12 @@
 
 **Blocked by:** [01: Open chats, and the Jev check on posted messages](01-open-chats.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A small permission test through the API covers the rules: any chat member renames, describes, and adds or removes agents and workflows; a member who hasn't joined can't; only admins archive and unarchive.
-- [ ] Removing a person from a chat is refused for everyone, admins included.
-- [ ] The last person can leave, and the chat stays. Leaving the organisation hands nothing over.
-- [ ] An archived chat refuses posts, mentions, joins, edits and adds with a 409 and a clear message, without calling Jev. Its messages still appear in search, and it's listed under an Archived filter.
-- [ ] Runs already under way in a chat when it's archived still post their results.
-- [ ] Renames, archiving and unarchiving are recorded in the audit log.
-- [ ] The Delete button and the delete route are gone.
+- [x] A small permission test through the API covers the rules: any chat member renames, describes, and adds or removes agents and workflows; a member who hasn't joined can't; only admins archive and unarchive.
+- [x] Removing a person from a chat is refused for everyone, admins included.
+- [x] The last person can leave, and the chat stays. Leaving the organisation hands nothing over.
+- [x] An archived chat refuses posts, mentions, joins, edits and adds with a 409 and a clear message, without calling Jev. Its messages still appear in search, and it's listed under an Archived filter.
+- [x] Runs already under way in a chat when it's archived still post their results.
+- [x] Renames, archiving and unarchiving are recorded in the audit log.
+- [x] The Delete button and the delete route are gone.

@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 from conftest import QueuedRuns, capture_runs, drain_run, store_of
-from sqlalchemy import func, select, update
+from sqlalchemy import func, update
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member  # noqa: F401
 from test_workflow_runs import ProcessDied, agents, echo, lapse_leases
@@ -14,7 +14,7 @@ from aios import jev, workflows
 from aios.api import chats
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
-from aios.datastores.models import ChatMessage, Invocation
+from aios.datastores.models import Invocation
 from aios.run_service import STOPPED, sweep
 from aios.testing.fake_model import model, use_model
 from aios.tools import TOOLS
@@ -315,42 +315,25 @@ def test_a_lost_enqueue_is_repaired_by_the_requeue_sweep(
     assert (invocation["status"], invocation["workflow_run_id"]) == ("running", queued[0])
 
 
-def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(
-    api, in_store, queued
-):
-    wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
-    chat = make_chat(api, "Design")
-    add(api, chat, "workflow", wf)
-    say(api, chat, "Go", wf)
-    with use_model(echo()):
-        drain_run(queued.store, queued[0])
-    assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
-    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
-    assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
-    [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
-    assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
-
-
-def test_a_run_going_in_a_chat_that_is_deleted_goes_on_without_it(
+def test_a_run_going_in_a_chat_that_is_archived_finishes_and_posts_its_result(
     api,
-    in_store,
     user,
     member,  # noqa: F811
     queued,
 ):
-    """A chat deleted goes with its messages and invocations, and a run one started, not yet
-    finished, goes on and finishes without it."""
+    """An admin archives the chat while a run one of its members started is going: the run
+    finishes, and its result is posted back to the archived chat, which nobody else posts in."""
     with signed_in_as(member):
         wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
         chat = make_chat(api, "Mine")
         add(api, chat, "workflow", wf)
         say(api, chat, "Go", wf)
-        assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
-    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
-    assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
+    assert api.post(f"/api/chats/{chat['id']}/archive").status_code == 200
 
     with use_model(echo()):
         drain_run(queued.store, queued[0])
     [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
-    assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
-    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
+    assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", chat["id"])
+    [(author, body)] = results(api, chat)
+    assert author == "Digest" and body.startswith("first(")
+    assert messages(api, chat)["invocations"][0]["status"] == "succeeded"

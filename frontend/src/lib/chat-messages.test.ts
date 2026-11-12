@@ -198,6 +198,9 @@ describe("landingPath", () => {
     unread_count: is_member ? 0 : null,
     created_by: null,
     updated_by: null,
+    archived_at: null,
+    archived_by: null,
+    actions: is_member ? ["post", "leave", "edit", "include"] : ["post", "join"],
   });
 
   it("is the most recently active chat the user is in", () => {

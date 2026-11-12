@@ -24,6 +24,7 @@ from aios import (
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
 from aios.api import workflows as workflows_api
+from aios.api.chats import rules
 from aios.api.chats.common import (
     TARGET_MODELS,
     get_visible_chat,
@@ -33,6 +34,7 @@ from aios.api.chats.common import (
     users_by_id,
 )
 from aios.api.chats.members import join, mentionables
+from aios.api.chats.rules import ChatAction
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.config import get_settings
 from aios.datastores import store_id_of
@@ -466,8 +468,9 @@ def post_message(
     acknowledgement with a card and its queued invocation, whose run starts after the response.
 
     The one path every person's message goes through. In order, before anything is written:
-    the mention guards (`aios.guards`): more agents and workflows than a message may mention is
-    a 422; a mention of an agent or workflow the chat doesn't include is a 422 naming it; a
+    more agents and workflows than a message may mention is a 422 (`aios.guards`); the chat
+    rules (`aios.api.chats.rules`): an archived chat is a 409; the mention guards: a mention of
+    an agent or workflow the chat doesn't include is a 422 naming it; a
     mention the poster may not make (its target's invocable-by) is posted refused, its card
     saying why; past the poster's mention rate, a 429 with when to try again. Then Jev
     (`check_with_jev`): flagged is a 422 with the reason, unchecked a 503. None of those writes
@@ -481,6 +484,8 @@ def post_message(
     )
     guards.check_count(targets)
     chat = get_visible_chat(store, user.id, chat_id)
+    # An archived chat is read-only: a 409, before anything else (Jev's check included).
+    rules.check(role, chat, user.id, ChatAction.post)
     mentions = resolve_mentions(db, store, chat, body.mentions)
     refused = guards.refusals(store, role, targets)
     guards.check_rate(org.id, user.id, len([t for t in targets if t not in refused]))
@@ -495,8 +500,8 @@ def post_message(
         # Locks the chat, as posting does anyway.
         join(store, chat, user.id)
     else:
-        # A member deleting it meanwhile (`lock_chat`).
-        lock_chat(store, chat)
+        # An admin archiving it meanwhile (`lock_chat`).
+        lock_chat(store, chat, writing=True)
     message = ChatMessage(
         chat_id=chat.id,
         author_kind=ChatAuthorKind.user,

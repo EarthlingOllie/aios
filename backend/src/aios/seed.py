@@ -191,9 +191,17 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
         db,
         store,
     )
-    chat = create_chat(ChatIn(name="General"), user, org, db, store)
+    chat = create_chat(ChatIn(name="General"), user, org, Role.admin, db, store)
     for member in (writer, old):
-        add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=member.id), user, org, db, store)
+        add_member(
+            chat.id,
+            MemberIn(kind=ChatMemberKind.agent, id=member.id),
+            user,
+            org,
+            Role.admin,
+            db,
+            store,
+        )
     table(store, user, org, writer.id, "notes", "Notes the writer keeps between drafts")
     share(store, "notes", reviewer.id, user.id)
     store.commit()

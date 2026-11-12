@@ -46,6 +46,7 @@ AUDIT = (ADMINS, "audit log")  # read the audit log
 USAGE = (ADMINS, "usage")  # read usage totals
 RELEASE = (ADMINS, "flagged")  # see flagged content, release it
 TABLES = (BUILDERS, "data tables")  # share, unshare, transfer (approval rules refine it)
+ARCHIVE_CHATS = (ADMINS, "archive or unarchive chats")  # admins' only extra power over chats
 
 # Every route under the organisation prefix, by method and path after it, and its row.
 ROUTES = {
@@ -79,7 +80,8 @@ ROUTES = {
     ("POST", "/chats"): POST,
     ("GET", "/chats/{chat_id}"): READ,
     ("PUT", "/chats/{chat_id}"): POST,
-    ("DELETE", "/chats/{chat_id}"): POST,
+    ("POST", "/chats/{chat_id}/archive"): ARCHIVE_CHATS,
+    ("POST", "/chats/{chat_id}/unarchive"): ARCHIVE_CHATS,
     ("POST", "/chats/{chat_id}/join"): POST,
     ("POST", "/chats/{chat_id}/leave"): POST,
     ("POST", "/chats/{chat_id}/members"): POST,

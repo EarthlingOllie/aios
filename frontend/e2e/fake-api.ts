@@ -8,7 +8,9 @@ import type { Page, Route } from "@playwright/test";
  * is refused), plus schedules' preview and timezones, and chats with their members (a chat of
  * another organisation is a 404; every chat is open: listed, read and joined by anyone in the
  * organisation, and left by anyone in it; its members' actions are a 403 for anyone who hasn't
- * joined; names are unique within the organisation), each saying who made it and last changed
+ * joined; nobody adds or removes a person, or deletes a chat; admins archive and unarchive one,
+ * which makes it read-only, a 409 for posts, joins, edits and adds; each says what `me` may do to
+ * it, `actions`; names are unique within the organisation), each saying who made it and last changed
  * it, and each with an unread count of others' messages since the last one read (`chatReads`),
  * and messages (read a page at a time by id, `after` or `before` a cursor; posting joins; a
  * mention of a person who isn't a member is a 422, and of an agent or workflow the chat doesn't
@@ -497,6 +499,9 @@ export type ChatRow = {
   messages: ChatMessageRow[];
   created_at: string;
   updated_at: string;
+  /** When an admin archived it (read-only), and who; null while it isn't. */
+  archived_at?: string | null;
+  archived_by?: ChatUser | null;
 };
 /** A message's author: a user, or an agent or workflow (by id and name). */
 export type ChatAuthor = ChatUser | { kind: Kind; id: number; name: string };
@@ -603,6 +608,7 @@ export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
 /** The acknowledgement's placeholder, until the handoff writes what was understood. */
 const ACKNOWLEDGEMENT = "Reading the chat…";
 const CHAT_NAME_TAKEN = "The organisation already has a chat with that name.";
+const ARCHIVED = "This chat is archived, so it's read-only. An admin can unarchive it.";
 
 /** An event trigger's filter as the API normalises it: lower-case content types, empty fields left out. */
 function normalisedFilter(filter: Record<string, unknown[]> = {}): Record<string, unknown[]> {
@@ -2177,7 +2183,26 @@ export class FakeApi {
       updated_by: chat.updated_by,
       created_at: chat.created_at,
       updated_at: chat.updated_at,
+      archived_at: chat.archived_at ?? null,
+      archived_by: chat.archived_by ?? null,
+      actions: this.chatActions(chat),
     };
+  }
+
+  /** What `me` may do to the chat, by the chat rules (`aios.api.chats.rules`), in their order. */
+  private chatActions(chat: ChatRow): string[] {
+    const joined = this.inChat(chat);
+    const archived = Boolean(chat.archived_at);
+    const admin = this.roleOf(this.me.id) === "admin";
+    return [
+      !archived && "post",
+      !archived && !joined && "join",
+      joined && "leave",
+      !archived && joined && "edit",
+      !archived && joined && "include",
+      admin && !archived && "archive",
+      admin && archived && "unarchive",
+    ].filter((a): a is string => Boolean(a));
   }
 
   /** The agent or workflow a member is. */
@@ -3420,11 +3445,13 @@ export class FakeApi {
       }
     }
     if (path === "/api/chats" && method === "GET") {
+      const archived = url.searchParams.get("archived") === "true";
       // Most recently active first; everything here happens at NOW, so the newest first.
       return reply(
         200,
         this.organisationChats()
-          // Every chat, joined or not.
+          // Every chat, joined or not, that isn't archived (or, asked for, that is).
+          .filter((c) => Boolean(c.archived_at) === archived)
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
           .map((c) => ({ ...this.chatSummary(c), unread_count: this.unreadCount(c) })),
       );
@@ -3450,6 +3477,19 @@ export class FakeApi {
         return reply(200, this.messagesPage(chat, url.searchParams));
       }
       if (rest === "/mentionable" && method === "GET") return reply(200, this.mentionable(chat));
+      if (rest === "/archive" || rest === "/unarchive") {
+        if (method !== "POST") return fail(405, "Method Not Allowed");
+        const refused = this.roleOf(this.me.id) !== "admin";
+        if (refused) return fail(403, `${this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants"} can't archive or unarchive chats. Ask an admin.`);
+        if (rest === "/archive" && !chat.archived_at) Object.assign(chat, { archived_at: NOW, archived_by: this.me });
+        if (rest === "/unarchive") Object.assign(chat, { archived_at: null, archived_by: null });
+        return reply(200, this.chatOut(chat));
+      }
+      // An archived chat is read-only: checked before anything else (Jev's check included).
+      const writes = ["/join", "/messages", "/members", ""].includes(rest.replace(/\/\d+$/, ""));
+      if (chat.archived_at && writes && (method === "POST" || method === "PUT" || method === "DELETE")) {
+        return fail(409, ARCHIVED);
+      }
       if (rest === "/join" && method === "POST") {
         if (this.inChat(chat)) return fail(409, "Already a member of this chat.");
         // What was there to read before they joined counts as seen.
@@ -3566,24 +3606,9 @@ export class FakeApi {
         });
         return reply(200, this.chatOut(chat));
       }
-      if (rest === "" && method === "DELETE") {
-        this.chats.delete(chat.id);
-        // Its messages and invocations go with it; the runs stay.
-        for (const i of this.invocations.values()) if (i.chat_id === chat.id) this.invocations.delete(i.id);
-        return reply(204);
-      }
       if (rest === "/members" && method === "POST") {
         const kind = body.kind as ChatMention["kind"];
-        if (kind === "user") {
-          // Only a member of the organisation: anyone else doesn't exist here.
-          const found = this.organisation.members.find((x) => x.user.id === body.id);
-          if (!found) return fail(404, "Unknown user");
-          if (chat.members.some((x) => x.kind === "user" && x.user.id === body.id)) {
-            return fail(409, "Already a member of this chat.");
-          }
-          this.addChatMember(chat, found.user);
-          return reply(201, this.chatOut(chat));
-        }
+        if (kind === "user") return fail(403, "Nobody adds a person to a chat: people join it themselves.");
         if (!this.chatTarget(kind, body.id)) return fail(422, `Unknown ${kind}`);
         if (chat.members.some((x) => x.kind === kind && x.target_id === body.id)) {
           return fail(409, "Already a member of this chat.");
@@ -3594,6 +3619,7 @@ export class FakeApi {
       if ((m = rest.match(/^\/members\/(\d+)$/)) && method === "DELETE") {
         const member = chat.members.find((x) => x.id === Number(m![1]));
         if (!member) return fail(404, "Not Found");
+        if (member.kind === "user") return fail(403, "Nobody removes a person from a chat: people leave it themselves.");
         chat.members = chat.members.filter((x) => x !== member);
         return reply(204);
       }

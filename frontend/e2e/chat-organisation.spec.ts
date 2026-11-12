@@ -45,7 +45,7 @@ test("another organisation's chats aren't listed, don't open, and don't take a n
   await expect(page.getByRole("alert")).toHaveText("The organisation already has a chat with that name.");
 });
 
-test("a member adds a fellow member and another member's agent", async ({ page }) => {
+test("a member adds another member's agent, and nobody adds a person", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation.members.push({ user: sam, joined_at: "2026-10-15T08:00:00Z", invite_id: null });
   const agent = api.addAgent("Their reviewer");
@@ -54,20 +54,14 @@ test("a member adds a fellow member and another member's agent", async ({ page }
   await page.goto(inOrg(`/chats/${chat.id}/members`));
 
   const members = page.getByRole("tabpanel", { name: /Members/ });
-  await members.getByLabel("Add a member").selectOption("Sam Jones");
-  await members.getByRole("button", { name: "Add member" }).click();
-  await expect(members.getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([
-    /Tester/,
-    /Sam Jones/,
-  ]);
-  // Everyone in the organisation is in it now: nobody left to add.
+  await expect(members.getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([/Tester/]);
+  // People join themselves: there's no picker for them.
   await expect(members.getByLabel("Add a member")).toHaveCount(0);
 
   await members.getByLabel("Add an agent").selectOption("Their reviewer");
   await members.getByRole("button", { name: "Add agent" }).click();
   await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Their reviewer");
   expect(api.writes).toEqual([
-    ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "user", id: sam.id }],
     ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id }],
   ]);
 });

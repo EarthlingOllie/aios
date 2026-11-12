@@ -1,6 +1,6 @@
 """Chats belong to the organisation: every member of it reads and joins them, a chat's members add
-any of its agents, workflows and members, names are unique within it, each new chat gets its
-documents assistant, and to anyone in another organisation its chats don't exist."""
+any of its agents and workflows, names are unique within it, each new chat gets its documents
+assistant, and to anyone in another organisation its chats don't exist."""
 
 import threading
 import time
@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from conftest import delete_user, home_organisation, join_organisation, signed_in_store
 from sqlalchemy import select, text
-from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
+from test_chats import add, join_as, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import in_the_background
 
@@ -27,7 +27,7 @@ NAME_TAKEN = "The organisation already has a chat with that name."
 
 def every_endpoint(api, chat: dict, user_id: int, member_id: int = 1) -> dict[str, int]:
     """The status of each of the chat's endpoints for the signed-in user, adding the user
-    `user_id` and removing the member row `member_id`."""
+    `user_id` (which nobody may) and removing the member row `member_id`."""
     url = f"/api/chats/{chat['id']}"
     body = {"name": "Mine now", "description": ""}
     responses = {
@@ -41,7 +41,8 @@ def every_endpoint(api, chat: dict, user_id: int, member_id: int = 1) -> dict[st
         "change": api.put(url, json=body),
         "add member": api.post(f"{url}/members", json={"kind": "user", "id": user_id}),
         "remove member": api.delete(f"{url}/members/{member_id}"),
-        "delete": api.delete(url),
+        "archive": api.post(f"{url}/archive"),
+        "unarchive": api.post(f"{url}/unarchive"),
     }
     return {what: r.status_code for what, r in responses.items()}
 
@@ -86,7 +87,7 @@ def test_chat_names_are_unique_within_the_organisation(api, member, outsider):  
         assert [c["id"] for c in api.get("/api/chats").json()] == [theirs["id"]]
 
 
-def test_a_member_adds_another_members_agent_and_workflow_and_a_fellow_member(
+def test_a_member_adds_another_members_agent_and_workflow(
     api,
     user,
     member,  # noqa: F811
@@ -98,7 +99,7 @@ def test_a_member_adds_another_members_agent_and_workflow_and_a_fellow_member(
         workflow = make_workflow(api, "Their digest")
     add(api, chat, "agent", agent)
     add(api, chat, "workflow", workflow)
-    chat = add_user(api, chat, member)
+    chat = join_as(api, chat, member)
     assert [m["name"] for m in chat["members"]["agents"]] == [
         "Documents assistant",
         "Their reviewer",
@@ -122,10 +123,6 @@ def test_a_member_adds_another_members_agent_and_workflow_and_a_fellow_member(
             their_workflow = make_workflow(api, f"Outsider's workflow {n}")
     assert theirs["id"] not in [a["id"] for a in api.get("/api/agents").json()]
     assert their_workflow["id"] not in [w["id"] for w in api.get("/api/workflows").json()]
-    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": outsider.id})
-    assert resp.status_code == 404
-    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": -999})
-    assert resp.status_code == 404
     for kind, target in (("agent", theirs), ("workflow", their_workflow)):
         resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": target["id"]})
         assert resp.status_code == 422, kind
@@ -253,36 +250,6 @@ def users_in(db, chat: dict) -> list[int]:
         )
 
 
-def test_a_member_added_to_a_chat_as_they_leave_the_organisation_isnt_added(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-):
-    """A member adds Carol while her leave is under way: the add saw her a member, and her leave
-    has already taken her out of its chats. Had it committed her row, she'd be in a chat of an
-    organisation she isn't in."""
-    carol = join_organisation(db, user, "carol")
-    try:
-        with signed_in_as(member):
-            chat = make_chat(api, "Plans")
-            with leaving(carol):
-                adding, result = in_the_background(
-                    lambda: api.post(
-                        f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": carol.id}
-                    )
-                )
-                waits_on_a_lock(adding)
-            adding.join(timeout=10)
-
-            assert "error" not in result, result
-            assert result["value"].status_code == 404, result["value"].text
-            assert result["value"].json()["detail"] == "Unknown user"
-            assert users_in(db, chat) == [member.id]
-    finally:
-        delete_user(db, carol)
-
-
 def test_a_chat_made_as_its_maker_leaves_the_organisation_isnt_made(
     api,
     db,
@@ -336,51 +303,6 @@ def test_a_chat_joined_as_its_joiner_leaves_the_organisation_isnt_joined(
         delete_user(db, carol)
 
 
-def test_a_member_who_leaves_as_theyre_added_to_a_chat_is_taken_out_of_it(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-    monkeypatch,
-):
-    """The other order: the add has seen Carol a member, and holds that, when her leave starts.
-    The leave waits for the add (it doesn't deadlock with it), then takes her out of the chat."""
-    carol = join_organisation(db, user, "carol")
-    checked, go_on = threading.Event(), threading.Event()
-    holds_member = organisations.holds_member
-
-    def pausing(db, org, user_id):
-        held = holds_member(db, org, user_id)
-        if user_id == carol.id:
-            checked.set()
-            assert go_on.wait(10)
-        return held
-
-    monkeypatch.setattr(organisations, "holds_member", pausing)
-    try:
-        with signed_in_as(member):
-            chat = make_chat(api, "Plans")
-            adding, added = in_the_background(
-                lambda: api.post(
-                    f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": carol.id}
-                )
-            )
-            assert checked.wait(10), added
-        with signed_in_as(carol):
-            leaving_it, left = in_the_background(lambda: api.post("/api/organisation/leave"))
-            waits_on_a_lock(leaving_it)
-            go_on.set()
-            adding.join(timeout=10)
-            leaving_it.join(timeout=10)
-
-        assert added["value"].status_code == 201, added
-        assert left["value"].status_code == 200, left
-        assert users_in(db, chat) == [member.id]
-    finally:
-        go_on.set()
-        delete_user(db, carol)
-
-
 def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_isnt_in(
     api,
     db,
@@ -418,39 +340,6 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_isnt_in(
         delete_user(db, carol)
 
 
-def test_a_member_removed_from_a_chat_as_they_leave_the_organisation_is_removed(
-    api,
-    db,
-    user,
-):
-    """A member removes Carol as her leave is under way: the removal read her member row before
-    her leave deleted it, and waits for the leave, which commits first. She's out of the chat
-    either way, which is what the member asked for: the removal is done, not an error, and
-    doesn't delete a row that's no longer there (the ORM's delete of it would match no row: a
-    warning, or `StaleDataError` were the rows versioned)."""
-    carol = join_organisation(db, user, "carol")
-    try:
-        chat = make_chat(api, "Plans")
-        [theirs] = [
-            m for m in add_user(api, chat, carol)["members"]["users"] if m["target_id"] == carol.id
-        ]
-        with warnings.catch_warnings(record=True) as warned:
-            warnings.simplefilter("always")
-            with leaving(carol):
-                removing, removed = in_the_background(
-                    lambda: api.delete(f"/api/chats/{chat['id']}/members/{theirs['id']}")
-                )
-                waits_on_a_lock(removing)
-            removing.join(timeout=10)
-
-        assert "error" not in removed, removed
-        assert removed["value"].status_code == 204, removed["value"].text
-        assert [str(w.message) for w in warned] == []
-        assert users_in(db, chat) == [user.id]
-    finally:
-        delete_user(db, carol)
-
-
 def test_a_member_who_leaves_a_chat_as_they_leave_the_organisation_is_out_of_it(
     api,
     db,
@@ -462,7 +351,7 @@ def test_a_member_who_leaves_a_chat_as_they_leave_the_organisation_is_out_of_it(
     carol = join_organisation(db, user, "carol")
     try:
         chat = make_chat(api, "Plans")
-        add_user(api, chat, carol)
+        join_as(api, chat, carol)
         with signed_in_as(carol), warnings.catch_warnings(record=True) as warned:
             warnings.simplefilter("always")
             with leaving(carol):
@@ -476,36 +365,6 @@ def test_a_member_who_leaves_a_chat_as_they_leave_the_organisation_is_out_of_it(
         assert quit["value"].status_code == 204, quit["value"].text
         assert [str(w.message) for w in warned] == []
         assert users_in(db, chat) == [user.id]
-    finally:
-        delete_user(db, carol)
-
-
-def test_a_chat_deleted_as_one_of_its_members_leaves_the_organisation_is_deleted(
-    api,
-    db,
-    user,
-):
-    """A member deletes the chat as Carol's leave is under way: the deletion read the chat's
-    members, Carol among them, before her leave deleted her row, and waits for the leave. The chat
-    goes, with nothing deleted that's no longer there."""
-    carol = join_organisation(db, user, "carol")
-    try:
-        chat = make_chat(api, "Plans")
-        add_user(api, chat, carol)
-        with warnings.catch_warnings(record=True) as warned:
-            warnings.simplefilter("always")
-            with leaving(carol):
-                deleting, deleted = in_the_background(
-                    lambda: api.delete(f"/api/chats/{chat['id']}")
-                )
-                waits_on_a_lock(deleting)
-            deleting.join(timeout=10)
-
-        assert "error" not in deleted, deleted
-        assert deleted["value"].status_code == 204, deleted["value"].text
-        assert [str(w.message) for w in warned] == []
-        assert users_in(db, chat) == []
-        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
     finally:
         delete_user(db, carol)
 

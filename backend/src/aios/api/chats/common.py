@@ -8,10 +8,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.api.chats.rules import ARCHIVED, NOT_JOINED, ChatAction, allowed
+from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
 from aios.datastores.models import Agent, Chat, ChatMember, Workflow
 from aios.db import DbId
-from aios.models import ChatMemberKind, User
+from aios.models import ChatMemberKind, Role, User
 
 CHAT_NAME_INDEX = "uq_chats_name"
 # What an agent or workflow member is.
@@ -25,7 +26,6 @@ MEMBER_CONSTRAINTS = {
     ChatMemberKind.agent: "uq_chat_members_chat_id_agent_id",
     ChatMemberKind.workflow: "uq_chat_members_chat_id_workflow_id",
 }
-ALREADY_A_MEMBER = "Already a member of this chat."
 
 
 class ChatIn(BaseModel):
@@ -62,7 +62,10 @@ class ChatMembersOut(BaseModel):
     workflows: list[ChatMemberOut]
 
 
-class ChatSummary(Provenance):
+class ChatSummary(Provenance, Archived):
+    """A chat; `archived_at` and `archived_by` say when an admin archived it and who (read-only,
+    still read and searched), both null while it isn't."""
+
     id: int
     name: str
     description: str
@@ -73,6 +76,9 @@ class ChatSummary(Provenance):
     created_at: datetime
     # When it was last active: when it was last changed, or a message was last posted.
     updated_at: datetime
+    # What the signed-in member may do to it now, by the chat rules (`aios.api.chats.rules`):
+    # the screens show these actions and hide the rest.
+    actions: list[ChatAction]
 
 
 class ChatOut(ChatSummary):
@@ -169,14 +175,18 @@ def chat_summary(
     chat: Chat,
     member_count: int,
     joined: bool,
+    role: Role,
     known: dict[int, UserOut] | None = None,
 ) -> ChatSummary:
-    """The organisation's chat as the list shows it, to a user who has `joined` it or not; who
-    made and changed it from `known` when given (see `people`), else read now."""
+    """The organisation's chat as the list shows it, to a user with `role` who has `joined` it or
+    not; who made, changed and archived it from `known` when given (see `people`), else read
+    now."""
     if known is None:
-        known = people(db, organisation_id, [chat.created_by, chat.updated_by])
+        known = people(db, organisation_id, [chat.created_by, chat.updated_by, chat.archived_by])
     return ChatSummary(
         **provenance(db, chat, known),
+        **archived(chat, known),
+        actions=allowed(role, joined=joined, archived=chat.archived_at is not None),
         id=chat.id,
         name=chat.name,
         description=chat.description,
@@ -188,12 +198,12 @@ def chat_summary(
 
 
 def chat_out(
-    db: Session, store: Session, organisation_id: int, chat: Chat, user_id: int
+    db: Session, store: Session, organisation_id: int, chat: Chat, user_id: int, role: Role
 ) -> ChatOut:
-    """The organisation's chat (in its store, `store`), as the user sees it."""
+    """The organisation's chat (in its store, `store`), as the user, with `role`, sees it."""
     return ChatOut(
         **chat_summary(
-            db, organisation_id, chat, len(ordered_members(chat)), is_member(chat, user_id)
+            db, organisation_id, chat, len(ordered_members(chat)), is_member(chat, user_id), role
         ).model_dump(),
         members=members_out(db, store, chat),
     )
@@ -233,34 +243,28 @@ def get_visible_chat(store: Session, user_id: int, chat_id: int) -> Chat:
     return chat
 
 
-def lock_chat(store: Session, chat: Chat) -> None:
-    """Lock the chat until commit, for a change to it or to what's in it; a 404 if it has been
-    deleted since `get_visible_chat` read it. Under the lock that waits for the deletion and sees
-    the chat gone, where adding a member or a message to it would break their foreign key (a
-    500), and a deletion that comes after waits and takes what the change added with the chat.
-    `FOR NO KEY UPDATE`: the lock the change to `updated_at` each of them makes takes anyway, only
-    sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share)."""
-    locked = select(Chat.id).where(Chat.id == chat.id).with_for_update(key_share=True)
-    if store.scalar(locked) is None:
+def lock_chat(store: Session, chat: Chat, *, writing: bool = False) -> None:
+    """Lock the chat until commit, for a change to it or to what's in it; a 404 if it has gone
+    since `get_visible_chat` read it (its organisation's store being deleted), and, `writing` to
+    it (a post, join, edit or add), a 409 if it's archived, read under the lock: an archive that
+    got in since the chat rules' check (`rules.check`) committed first, and one that comes after
+    waits for the change, so nothing is written to an archived chat. `FOR NO KEY UPDATE`: the
+    lock the change to `updated_at` each of them makes takes anyway, only sooner, so it doesn't
+    hold up what that wouldn't (a message's foreign key takes a key share)."""
+    locked = store.execute(
+        select(Chat.id, Chat.archived_at).where(Chat.id == chat.id).with_for_update(key_share=True)
+    ).one_or_none()
+    if locked is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-
-
-NOT_JOINED = "Only the chat's members can do that: join it first."
-
-
-def get_chat_if_member(store: Session, user_id: int, chat_id: int) -> Chat:
-    """The chat, for one of its members' actions (changing it and its agents and workflows): a
-    403 for anyone in the organisation who hasn't joined it."""
-    chat = get_visible_chat(store, user_id, chat_id)
-    if not is_member(chat, user_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_JOINED)
-    return chat
+    if writing and locked.archived_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, ARCHIVED)
 
 
 def still_member(store: Session, chat: Chat, user_id: int) -> None:
-    """Lock the chat (`lock_chat`) and a 403 unless the user is still in it, read under the lock:
-    their leaving it, or the organisation, may have got in since `get_chat_if_member`."""
-    lock_chat(store, chat)
+    """Lock the chat to write to it (`lock_chat`: a 409 if it's archived) and a 403 unless the
+    user is still in it, read under the lock: their leaving it, or the organisation, may have got
+    in since the chat rules' check (`rules.check`)."""
+    lock_chat(store, chat, writing=True)
     found = store.scalar(
         select(ChatMember.id).where(
             ChatMember.chat_id == chat.id,

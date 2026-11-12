@@ -35,19 +35,28 @@ test("creates a chat and opens it", async ({ page }) => {
   await expect(page.getByRole("list").filter({ hasText: "Design" }).getByText("2 members")).toBeVisible();
 });
 
-test("a member removes a member", async ({ page }) => {
+test("a member removes an agent, but nobody removes a person", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  const member = api.addChatMember(chat, { id: 2, first_name: "Sam", last_name: "Jones" });
+  api.addChatMember(chat, { id: 2, first_name: "Sam", last_name: "Jones" });
+  const agent = api.addAgent("Scout");
+  const member = api.addChatTarget(chat, "agent", agent);
   await page.goto(inOrg(`/chats/${chat.id}`));
 
   await expect(page.getByRole("heading", { name: "Design", level: 2 })).toBeVisible();
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
-  await expect(members.getByRole("listitem")).toHaveText([/Terry Tester/, /Sam Jones/]);
+  await expect(members.getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([
+    /Terry Tester/,
+    /Sam Jones/,
+  ]);
+  await expect(members.getByRole("button", { name: "Remove Sam Jones" })).toHaveCount(0);
+  await expect(members.getByRole("button", { name: "Remove Terry Tester" })).toHaveCount(0);
+  // Nor does anyone add a person: people join themselves.
+  await expect(members.getByLabel("Add a member")).toHaveCount(0);
   page.on("dialog", (dialog) => dialog.accept());
-  await members.getByRole("button", { name: "Remove Sam Jones" }).click();
-  await expect(members.getByRole("listitem")).toHaveText([/Terry Tester/]);
+  await members.getByRole("button", { name: "Remove Scout" }).click();
+  await expect(members.getByRole("list", { name: "Agents" })).toHaveCount(0);
   expect(api.writes).toEqual([["DELETE", orgApi(`/chats/${chat.id}/members/${member.id}`), null]]);
 });
 

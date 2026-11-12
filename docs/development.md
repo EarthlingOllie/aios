@@ -68,15 +68,15 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     password
     organisations.py  organisations, which own what their members make: creating one, a
                     person's memberships (any number), invitation links, joining and
-                    leaving (handing over the chats a leaver owned)
+                    leaving (out of every chat, nothing handed over)
     api/documents.py upload/list/download/delete, GET /api/o/{org}/search
     api/skills.py   CRUD /api/o/{org}/skills
     api/agents/     CRUD /api/o/{org}/agents, versions, runs: /api/o/{org}/agents/{id}/runs[/{run_id}[/chat]]
                     (crud, versions, runs, chat: a run's chat stream)
     api/workflows.py CRUD /api/o/{org}/workflows, versions and restore, runs: /api/o/{org}/workflows/{id}/runs
     api/triggers.py CRUD /api/o/{org}/triggers (schedules), schedule preview, timezones
-    api/chats/      CRUD /api/o/{org}/chats, members: /api/o/{org}/chats/{id}/members[/{member_id}], mentionable, messages
-                    (crud, members, messages, invocations)
+    api/chats/      /api/o/{org}/chats (no delete), archive and unarchive, members: /api/o/{org}/chats/{id}/members[/{member_id}],
+                    mentionable, messages (crud, members, messages, invocations; rules: the chat rules)
     api/organisation.py POST /api/organisations, GET/PUT /api/o/{org}/organisation (the Organisation page), invitation
                     links (/api/o/{org}/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it

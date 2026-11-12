@@ -1072,8 +1072,16 @@ export type ChatMember = {
   archived: boolean;
 };
 
-/** An open chat: everyone in the organisation can find and read it, and posting joins it. */
-export type ChatSummary = Provenance & {
+/**
+ * What a person may do to a chat, by the chat rules: post (joining, if they haven't), join, leave,
+ * edit (rename or describe), include (add or remove its agents and workflows), and, for admins,
+ * archive or unarchive. Nobody adds or removes a person, or deletes a chat.
+ */
+export type ChatAction = "post" | "join" | "leave" | "edit" | "include" | "archive" | "unarchive";
+
+/** An open chat: everyone in the organisation can find and read it, and posting joins it. Chats
+ * have no owners; an admin may archive one, which makes it read-only (still read and searched). */
+export type ChatSummary = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -1084,6 +1092,8 @@ export type ChatSummary = Provenance & {
   created_at: string;
   /** When it was last active. */
   updated_at: string;
+  /** What the signed-in user may do to it now: the screens show these and hide the rest. */
+  actions: ChatAction[];
 };
 
 /** A chat as the list shows it: every chat of the organisation, joined or not. */
@@ -1556,12 +1566,15 @@ export const api = {
     request<SchedulePreview>(`${organisationApi()}/triggers/preview`, json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
 
-  listChats: () => request<ChatListed[]>(`${organisationApi()}/chats`),
+  /** The chats that aren't archived; with `archived`, the archived ones instead. */
+  listChats: (archived = false) =>
+    request<ChatListed[]>(archived ? `${organisationApi()}/chats?archived=true` : `${organisationApi()}/chats`),
   getChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}`),
   createChat: (body: ChatInput) => request<Chat>(`${organisationApi()}/chats`, json("POST", body)),
   updateChat: (id: number, body: ChatInput) =>
     request<Chat>(`${organisationApi()}/chats/${id}`, json("PUT", body)),
-  deleteChat: (id: number) => request<void>(`${organisationApi()}/chats/${id}`, { method: "DELETE" }),
+  archiveChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/archive`, { method: "POST" }),
+  unarchiveChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/unarchive`, { method: "POST" }),
   removeChatMember: (id: number, memberId: number) =>
     request<void>(`${organisationApi()}/chats/${id}/members/${memberId}`, { method: "DELETE" }),
   listChatMessages: (id: number, cursor: ChatMessagesCursor = {}) =>
