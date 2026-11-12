@@ -24,6 +24,7 @@ from aios.testing.fake_model import (
     Script,
     ToolCall,
     handback_output,
+    instructions,
     last_tool_results,
     model,
     tool_output,
@@ -51,6 +52,11 @@ SAVED = "Saved."
 SLOWLY = "slowly"
 SLOW_SECONDS = 6.0
 WRITTEN_SLOWLY = "Written, slowly."
+# The approval story's agents, by their instructions: one classifies a spend, giving structured
+# output (`aios.workflows.structured.OUTPUT_TOOL`); the others reply as their instructions say.
+CLASSIFY = "Classify the spend."
+SPEND = {"risk": "high", "amount": 250}
+REPLY_WITH = "Reply with: "
 
 
 def human_text(messages: list[BaseMessage]) -> str:
@@ -65,7 +71,19 @@ def human_text(messages: list[BaseMessage]) -> str:
 async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[str | ToolCall]:
     """Asks for a `notes` table; once it's applied, writes the message to it as a note and
     replies "Saved."; says why if the table was refused or the write failed. Asked to take its
-    time, it does, and replies "Written, slowly." (asking for nothing)."""
+    time, it does, and replies "Written, slowly." (asking for nothing).
+
+    In a workflow, an agent told to classify a spend gives `SPEND` as its structured output, and
+    one told "Reply with: <text>" replies <text>."""
+    from aios.workflows.structured import OUTPUT_TOOL
+
+    told = instructions(messages)
+    if told == CLASSIFY:
+        yield ToolCall(OUTPUT_TOOL, SPEND)
+        return
+    if told.startswith(REPLY_WITH):
+        yield told.removeprefix(REPLY_WITH)
+        return
     results = last_tool_results(messages)
     if SLOWLY in human_text(messages):
         await asyncio.sleep(SLOW_SECONDS)

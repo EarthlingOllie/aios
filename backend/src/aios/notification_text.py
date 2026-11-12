@@ -48,6 +48,11 @@ from aios.notifications import (
 log = logging.getLogger(__name__)
 
 APPROVAL_TITLE = "A schema change is waiting for you"
+# By approval kind (`aios.models.ApprovalKind`).
+APPROVAL_TITLES = {
+    "schema_change": APPROVAL_TITLE,
+    "workflow_step": "An approval is waiting for you",
+}
 RELEASED_TITLE = "A document you released has changed"
 RELEASED_DETAIL = "{name} is waiting for Jev to check it again, and isn't searchable until then."
 SCHEDULED_TITLE = "{name} is scheduled for deletion."
@@ -210,16 +215,22 @@ def _in_store(
 
     if approvals:
         ids = {_uuid(n.ref.get("approval_id")) for n in approvals} - {None}
-        summaries = dict(
-            store.execute(
-                select(SchemaChangeRequest.id, SchemaChangeRequest.summary).where(
-                    SchemaChangeRequest.id.in_(ids)
-                )
+        summaries = {
+            approval_id: (kind, summary)
+            for approval_id, kind, summary in store.execute(
+                select(
+                    SchemaChangeRequest.id, SchemaChangeRequest.kind, SchemaChangeRequest.summary
+                ).where(SchemaChangeRequest.id.in_(ids))
             ).all()
-        )
+        }
         for n in approvals:
-            summary = summaries.get(_uuid(n.ref.get("approval_id")))
-            found[n.id] = None if summary is None else Description(APPROVAL_TITLE, summary)
+            row = summaries.get(_uuid(n.ref.get("approval_id")))
+            if row is None:
+                found[n.id] = None
+                continue
+            kind, summary = row
+            title = APPROVAL_TITLES.get(kind, APPROVAL_TITLE)
+            found[n.id] = Description(title, summary or None)
 
     if documents:
         ids = {_int(n.ref.get("document_id")) for n in documents} - {None}

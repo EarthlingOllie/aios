@@ -114,11 +114,11 @@ def test_a_chat_turn_runs_the_core_loop_on_its_scenario_with_no_provider_called(
     assert invocation["status"] == "running"
     assert invocation["agent_run"]["waiting"] is True
     assert replies_from(api, chat) == []
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert (request["status"], request["summary"]) == ("pending", "Create table data.notes")
 
     # Approved (as on the Data page), it's applied and the run resumes, writes and replies.
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 200
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 200
     run_queued(queued)
 
     assert notes(store) == ["@Notes buy milk"]

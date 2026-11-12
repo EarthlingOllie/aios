@@ -25,7 +25,7 @@ from test_data_tools import as_owner, provisioned
 
 from aios import checkpoints, worker
 from aios.api import agents as agents_api
-from aios.api.schema_changes import waiting_on
+from aios.api.approvals import waiting_on
 from aios.auth import current_user
 from aios.datastores import can_approve, schema_changes, store_session
 from aios.datastores.schema_changes import SchemaChange
@@ -158,7 +158,7 @@ def test_approving_applies_it_and_the_run_carries_on_seeing_the_table(api, agent
     script = Script(CONTACTS)
     run, request = start(api, agent, script)
 
-    r = api.post(f"/api/schema-changes/{request['id']}/approve")
+    r = api.post(f"/api/approvals/{request['id']}/approve")
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "approved"
     with use_model(model(script)):
@@ -188,7 +188,7 @@ def test_a_resumed_turn_handed_back_by_a_stopping_process_carries_on_where_it_go
     than leaving it underway for ever with nothing to resume."""
     script = Script(CONTACTS)
     run, request = start(api, agent, script)
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    api.post(f"/api/approvals/{request['id']}/approve")
     apply, args = queued.pop(0)
     apply.run(*args)  # applied; its resume is queued next
     [(_, (store_id, request_id))] = queued
@@ -233,7 +233,7 @@ def test_rejecting_resumes_the_run_with_the_note_and_changes_nothing(api, agent,
     script = Script(CONTACTS)
     run, request = start(api, agent, script)
 
-    r = api.post(f"/api/schema-changes/{request['id']}/reject", json={"note": "Use a sheet"})
+    r = api.post(f"/api/approvals/{request['id']}/reject", json={"note": "Use a sheet"})
     assert r.status_code == 200, r.text
     with use_model(model(script)):
         run_queued(queued)
@@ -243,7 +243,7 @@ def test_rejecting_resumes_the_run_with_the_note_and_changes_nothing(api, agent,
     assert outcome["status"] == "rejected"
     assert outcome["note"] == "Use a sheet"
     assert "Use a sheet" in outcome["message"]
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert (request["status"], request["note"]) == ("rejected", "Use a sheet")
 
 
@@ -257,7 +257,7 @@ def test_a_failed_apply_resumes_the_run_with_the_error(api, agent, store, queued
     )
     _, request = start(api, agent, script)
 
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    api.post(f"/api/approvals/{request['id']}/approve")
     with use_model(model(script)):
         run_queued(queued)
 
@@ -288,10 +288,10 @@ def test_a_spec_the_store_doesnt_take_is_an_error_for_the_model_and_nothing_wait
 
 def test_the_data_pages_list_has_pending_requests_first_with_the_run_that_asked(api, agent, queued):
     run, first = start(api, agent, Script(CONTACTS))
-    api.post(f"/api/schema-changes/{first['id']}/reject", json={})
+    api.post(f"/api/approvals/{first['id']}/reject", json={})
     second_run, second = start(api, agent, Script({**CONTACTS, "name": "places"}))
 
-    listed = api.get("/api/schema-changes").json()
+    listed = api.get("/api/approvals").json()
 
     assert [r["id"] for r in listed] == [second["id"], first["id"]]
     assert listed[0]["run"] == {
@@ -314,10 +314,10 @@ def test_a_decision_that_cant_be_queued_is_undone_to_try_again(
 
     monkeypatch.setattr(worker.apply_schema_change_task, "delay", queue_down)
     monkeypatch.setattr(work, "enqueue_resume", queue_down)
-    r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+    r = api.post(f"/api/approvals/{request['id']}/{decision}", json={})
 
     assert r.status_code == 503
-    [listed] = api.get("/api/schema-changes").json()
+    [listed] = api.get("/api/approvals").json()
     assert (listed["status"], listed["decided_at"], listed["can_decide"]) == ("pending", None, True)
 
 
@@ -326,7 +326,7 @@ def test_a_redelivered_apply_still_resumes_the_run(api, agent, store, queued):
     apply twice, and queues the resume."""
     script = Script(CONTACTS)
     _, request = start(api, agent, script)
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    api.post(f"/api/approvals/{request['id']}/approve")
     (task, args) = queued.pop()
     task.run(*args)
     queued.clear()  # the resume it queued is lost
@@ -357,7 +357,7 @@ def test_the_list_reads_the_store_once_however_many_requests_it_has(api, store):
 
     event.listen(engine, "before_cursor_execute", record)
     try:
-        assert len(api.get("/api/schema-changes").json()) == 5
+        assert len(api.get("/api/approvals").json()) == 5
     finally:
         event.remove(engine, "before_cursor_execute", record)
 
@@ -369,8 +369,8 @@ def test_the_list_reads_the_store_once_however_many_requests_it_has(api, store):
 def test_a_request_is_decided_once(api, agent, queued):
     _, request = start(api, agent, Script(CONTACTS))
 
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 200
-    again = api.post(f"/api/schema-changes/{request['id']}/reject", json={})
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 200
+    again = api.post(f"/api/approvals/{request['id']}/reject", json={})
 
     assert again.status_code == 409
     assert [task for task, _ in queued] == [worker.apply_schema_change_task]
@@ -383,10 +383,10 @@ def test_only_members_of_the_stores_organisation_can_decide(api, user, agent, db
         app.dependency_overrides[current_user] = lambda: other
 
         for decision in ("approve", "reject"):
-            r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+            r = api.post(f"/api/approvals/{request['id']}/{decision}", json={})
             assert r.status_code == 404
-        assert api.get(f"/api/schema-changes/{request['id']}").status_code == 404
-        assert api.get("/api/schema-changes").json() == []
+        assert api.get(f"/api/approvals/{request['id']}").status_code == 404
+        assert api.get("/api/approvals").json() == []
         assert queued == []
         store = db.get(DataStore, request["data_store_id"])
         assert (can_approve(db, other.id, store), can_approve(db, user.id, store)) == (False, True)
@@ -405,7 +405,7 @@ def test_a_resume_that_cant_start_keeps_the_run_waiting_and_is_tried_again(
     """Not given its outcome, the run mustn't take new messages: its tool call has no result."""
     script = Script(CONTACTS)
     run, request = start(api, agent, script)
-    api.post(f"/api/schema-changes/{request['id']}/reject", json={})
+    api.post(f"/api/approvals/{request['id']}/reject", json={})
     [(task, args)] = queued
 
     turn, waiting_between = checkpoints.turn, []
@@ -456,13 +456,13 @@ def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, q
     [first] = [r for r in requests if "contacts" in r["summary"]]
     [second] = [r for r in requests if "places" in r["summary"]]
 
-    api.post(f"/api/schema-changes/{first['id']}/approve")
+    api.post(f"/api/approvals/{first['id']}/approve")
     with use_model(model(ask_twice)):
         run_queued(queued)
     assert run_of(api, agent, run)["waiting"] is True
     assert take_turn(api, agent["id"], run["id"], "hello?").error == agents_api.WAITING
 
-    api.post(f"/api/schema-changes/{second['id']}/reject", json={"note": "One is enough"})
+    api.post(f"/api/approvals/{second['id']}/reject", json={"note": "One is enough"})
     with use_model(model(ask_twice)):
         run_queued(queued)
 
@@ -480,7 +480,7 @@ def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, q
 
 def test_an_apply_whose_resume_cant_be_queued_is_tried_again(api, agent, queued, monkeypatch):
     _, request = start(api, agent, Script(CONTACTS))
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    api.post(f"/api/approvals/{request['id']}/approve")
     [(task, args)] = queued
 
     resumes = []

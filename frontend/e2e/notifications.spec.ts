@@ -75,7 +75,7 @@ test("an item opens the request on the Data page, and reads it", async ({ page }
   await expect(item).toContainText("A schema change is waiting for you");
   await item.click();
 
-  await expect(page).toHaveURL(inOrg(`/data/changes?request=${request.id}`));
+  await expect(page).toHaveURL(inOrg(`/data/approvals?approval=${request.id}`));
   await expect(list(page)).toBeHidden();
   await expect(card(page)).toHaveAttribute("aria-current", "true");
   await expect(card(page, "Create table data.places")).not.toHaveAttribute("aria-current", "true");

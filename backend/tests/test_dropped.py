@@ -228,7 +228,7 @@ def test_approving_a_drop_takes_the_tables_names_typed(api, store, queued):
         {"op": "drop_column", "table": "fish", "column": "weight_kg"},
         {"op": "create_table", "name": "eels", "columns": [{"name": "x", "type": "text"}]},
     )
-    url = f"/api/schema-changes/{request.id}"
+    url = f"/api/approvals/{request.id}"
     assert api.get(url).json()["confirm_with"] == "fish"
 
     for body in (None, {}, {"confirm": ""}, {"confirm": "eels"}, {"confirm": "Fish"}):
@@ -249,8 +249,8 @@ def test_a_request_that_drops_nothing_needs_no_confirmation(api, store, queued):
         store, {"op": "add_column", "table": "fish", "column": {"name": "x", "type": "text"}}
     )
 
-    assert api.get(f"/api/schema-changes/{request.id}").json()["confirm_with"] is None
-    assert api.post(f"/api/schema-changes/{request.id}/approve").status_code == 200
+    assert api.get(f"/api/approvals/{request.id}").json()["confirm_with"] is None
+    assert api.post(f"/api/approvals/{request.id}/approve").status_code == 200
 
 
 def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
@@ -262,7 +262,7 @@ def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
     with as_owner(store) as conn:
         conn.execute("INSERT INTO data.fish (name) VALUES ('eel')")
 
-    r = api.get(f"/api/schema-changes/{request.id}/impact")
+    r = api.get(f"/api/approvals/{request.id}/impact")
 
     assert r.status_code == 200, r.text
     assert r.json() == {
@@ -310,8 +310,8 @@ def test_an_agent_asks_from_its_chat_to_drop_a_table_and_is_told_it_can_be_resto
 
     run, request = start(api, agent, script)
     assert request["confirm_with"] == "fish"
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 422
-    r = api.post(f"/api/schema-changes/{request['id']}/approve", json={"confirm": "fish"})
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 422
+    r = api.post(f"/api/approvals/{request['id']}/approve", json={"confirm": "fish"})
     assert r.status_code == 200, r.text
     with use_model(model(script)):
         run_queued(tasks)
@@ -330,7 +330,7 @@ def test_a_count_that_takes_too_long_is_estimated_instead(api, store, monkeypatc
     with as_owner(store) as conn, conn.transaction():
         conn.execute("ANALYZE data.fish")
         conn.execute("LOCK TABLE data.fish IN ACCESS EXCLUSIVE MODE")
-        r = api.get(f"/api/schema-changes/{request.id}/impact")
+        r = api.get(f"/api/approvals/{request.id}/impact")
 
     assert r.status_code == 200, r.text
     [removal] = r.json()["removes"]

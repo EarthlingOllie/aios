@@ -60,13 +60,13 @@ test("a waiting run shows its waiting node and the request, approved from the ru
     "href",
     inOrg(`/agents/${builder.id}/runs/${conversation.id}`),
   );
-  await expect(waiting.getByRole("link", { name: "All schema changes" })).toHaveAttribute(
+  await expect(waiting.getByRole("link", { name: "All approvals" })).toHaveAttribute(
     "href",
-    inOrg("/data/changes"),
+    inOrg("/data/approvals"),
   );
 
   await card.getByRole("button", { name: "Approve" }).click();
-  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${request.id}/approve`), null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/approvals/${request.id}/approve`), null]);
   await expect(card).toContainText("Applying");
 
   // The worker applies it and the run carries on; the page follows it to the end.
@@ -89,7 +89,7 @@ test("rejecting from the run page sends the note", async ({ page }) => {
 
   expect(api.writes).toContainEqual([
     "POST",
-    orgApi(`/schema-changes/${request.id}/reject`),
+    orgApi(`/approvals/${request.id}/reject`),
     { note: "Use a sheet" },
   ]);
   await expect(card).toContainText("Rejected: Use a sheet");
@@ -141,7 +141,7 @@ test("a node waiting on two requests shows a card for each", async ({ page }) =>
   await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   const waiting = page.getByRole("region", { name: "Waiting for your decision" });
-  await expect(waiting).toContainText("these requests");
+  await expect(waiting).toContainText("these are approved or rejected");
   await expect(waiting.getByRole("region", { name: /^Schema change:/ })).toHaveCount(2);
   await expect(
     waiting.getByRole("region", { name: "Schema change: Create table data.places" }),

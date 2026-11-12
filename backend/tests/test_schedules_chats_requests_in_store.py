@@ -273,10 +273,10 @@ def test_a_notification_opens_the_right_organisations_approval(api, db, user):
             assert n["organisation"]["id"] == org_id
             assert n["detail"] == request.summary
             # Opened in its organisation, the approval is there; in the other, it isn't.
-            here = api.get(f"/api/o/{org_id}/schema-changes/{request.id}")
+            here = api.get(f"/api/o/{org_id}/approvals/{request.id}")
             assert here.status_code == 200, here.text
             assert here.json()["can_decide"] is True
             elsewhere = next(o for o in made if o != org_id)
-            assert api.get(f"/api/o/{elsewhere}/schema-changes/{request.id}").status_code == 404
+            assert api.get(f"/api/o/{elsewhere}/approvals/{request.id}").status_code == 404
     finally:
         delete_user(db, other)

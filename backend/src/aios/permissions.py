@@ -28,7 +28,7 @@ class Action(enum.StrEnum):
     post = "chat, mention and start runs"
     build = "create, edit, archive or unarchive agents, skills, workflows and schedules"
     documents = "upload or delete documents"
-    decide = "approve or reject schema change requests"
+    decide = "approve or reject schema changes and workflow approvals"
     restore = "restore dropped tables and columns"
     tables = "share, unshare or transfer data tables"
     sources = "add, change, pause or remove sources"

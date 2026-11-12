@@ -97,6 +97,8 @@ export type Organisation = OrganisationSummary & {
   deletion: OrganisationDeletion | null;
   /** How long runs and chat history are kept; every member sees it, admins change it. */
   retention: Retention;
+  /** How many days an approval waits undecided before it expires; admins change it. */
+  approval_expiry_days: number;
   /** The caps on turns and workflow runs; every member sees them, admins change them. */
   limits: OrganisationLimits;
 };
@@ -579,16 +581,43 @@ export type SchemaChangeStatus =
   | "stale"
   | "cancelled";
 
-/** An agent's request to change the tables in the organisation's data store. */
-export type SchemaChangeRequest = {
+/** schema_change: an agent asked to change the tables; workflow_step: a workflow's approval
+ * node waits for a person. */
+export type ApprovalKind = "schema_change" | "workflow_step";
+
+/** The workflow approval step waiting on an approval: its workflow, run and node. */
+export type ApprovalStep = {
+  workflow_id: number;
+  workflow_name: string;
+  run_id: number;
+  step_id: number;
+  path: string[];
+};
+
+/** Something a member with the right role must decide before a run carries on: a schema
+ * change an agent asked for, or a workflow's approval step. */
+export type Approval = {
   id: string;
+  /** Absent: a schema change. */
+  kind?: ApprovalKind;
   data_store_id: string;
   status: SchemaChangeStatus;
+  /** One line: a schema change's operations, or the approval step's prompt's first line. */
   summary: string;
+  /** In full: the agent's reason, or the approval step's prompt. */
   reason: string;
-  /** Exactly what runs on approval. */
-  sql: string;
-  ops: Record<string, unknown>[];
+  /** A schema change's: exactly what runs on approval. */
+  sql: string | null;
+  ops: Record<string, unknown>[] | null;
+  /** An approval step's: what its node was given, and the step itself. */
+  input?: JsonValue | null;
+  step?: ApprovalStep | null;
+  /** The least role that may decide it (as `needs_role`). */
+  approver_role?: Role;
+  /** Who decided it; null while pending, and once it expired or was cancelled. */
+  decided_by?: User | null;
+  /** When it expires undecided, counting as not approved. */
+  expires_at?: string | null;
   /** The agent run that asked, if it still exists. */
   run: { agent_id: number; run_id: number; title: string | null } | null;
   /** The tool call that asked, so a chat shows the request at that call. */
@@ -607,6 +636,12 @@ export type SchemaChangeRequest = {
   /** What approving it takes typed, if it drops anything: the tables' names. */
   confirm_with: string | null;
 };
+
+/** The old name: an approval, of either kind. */
+export type SchemaChangeRequest = Approval;
+
+/** The Approvals list's filters; unset: every kind, every status. */
+export type ApprovalFilters = { kind?: ApprovalKind; status?: SchemaChangeStatus };
 
 /** The least role that may decide a kind of schema change: an admin may raise it, never lower it
  * below its default. */
@@ -764,7 +799,11 @@ export type Run = RunSummary & {
   turns: Turn[];
 };
 
-export type WorkflowNodeKind = "agent" | "workflow";
+/** approval: waits for a person in its role to approve or reject it; it runs nothing. */
+export type WorkflowNodeKind = "agent" | "workflow" | "approval";
+
+/** Who may decide an approval node's approval: that role or above. */
+export type ApproverRole = "editor" | "admin";
 
 /** Where the editor draws a node: its top-left corner. */
 export type NodePosition = { x: number; y: number };
@@ -772,12 +811,12 @@ export type NodePosition = { x: number; y: number };
 export type WorkflowNode = {
   key: string;
   kind: WorkflowNodeKind;
-  /** The agent version or workflow version the node runs. */
-  version_id: number;
-  /** The agent or workflow that version belongs to. */
-  target_id: number;
+  /** The agent version or workflow version the node runs; null for an approval node. */
+  version_id: number | null;
+  /** The agent or workflow that version belongs to; null for an approval node. */
+  target_id: number | null;
   name: string;
-  version: number;
+  version: number | null;
   /** The agent's or workflow's current version; null if it has since been deleted. */
   latest_version: number | null;
   latest_version_id: number | null;
@@ -786,6 +825,11 @@ export type WorkflowNode = {
   input_schema?: JsonValue | null;
   output_schema?: JsonValue | null;
   input_template?: JsonValue | null;
+  /** An approval node's: the prompt its approvers see (placeholders as an input template's),
+   * who may decide it, and how many days it waits (null: the organisation's setting). */
+  prompt_template?: string | null;
+  approver_role?: ApproverRole | null;
+  expiry_days?: number | null;
 };
 
 /** Any JSON value: a schema, a template, a condition, a structured input or output. */
@@ -876,10 +920,13 @@ export type WorkflowInput = {
   nodes: {
     key: string;
     kind: WorkflowNodeKind;
-    version_id: number;
+    version_id: number | null;
     input_schema?: JsonValue | null;
     output_schema?: JsonValue | null;
     input_template?: JsonValue | null;
+    prompt_template?: string | null;
+    approver_role?: ApproverRole | null;
+    expiry_days?: number | null;
   }[];
   edges: WorkflowEdge[];
   input_schema?: JsonValue | null;
@@ -949,8 +996,11 @@ export type WorkflowRunStep = {
   /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
   agent_id: number | null;
   agent_run_id: number | null;
-  /** While an agent node waits: the schema change requests it waits on, oldest first. */
+  /** While a node waits: the approvals it waits on, oldest first (an agent node's schema
+   * changes, or an approval node's own). */
   waiting_on_request_ids: string[];
+  /** The approval it waits on, or an approval node's once decided. */
+  approval_id?: string | null;
   started_at: string;
   finished_at: string | null;
 };
@@ -1409,6 +1459,9 @@ export const api = {
   /** Admins only: how long runs and chat history are kept (null: indefinitely). */
   setRetention: (retention: Retention) =>
     request<Organisation>(`${organisationApi()}/organisation/retention`, json("PUT", retention)),
+  /** Admins only: how many days an approval waits undecided before it expires. */
+  setApprovalExpiry: (days: number) =>
+    request<Organisation>(`${organisationApi()}/organisation/approval-expiry`, json("PUT", { days })),
   /** Admins only: override the deployment's caps (null: the default). */
   setLimits: (limits: Limits) =>
     request<Organisation>(`${organisationApi()}/organisation/limits`, json("PUT", limits)),
@@ -1463,16 +1516,22 @@ export const api = {
     body.append("file", file);
     return request<DocumentInfo>(`${organisationApi()}/documents`, { method: "POST", body });
   },
-  listSchemaChanges: () => request<SchemaChangeRequest[]>(`${organisationApi()}/schema-changes`),
-  getSchemaChange: (id: string) => request<SchemaChangeRequest>(`${organisationApi()}/schema-changes/${id}`),
-  approveSchemaChange: (id: string, confirm?: string) =>
-    request<SchemaChangeRequest>(
-      `${organisationApi()}/schema-changes/${id}/approve`,
-      // A request that drops anything takes its tables' names typed.
-      confirm === undefined ? { method: "POST" } : json("POST", { confirm }),
+  listApprovals: (filters: ApprovalFilters = {}) => {
+    const set = Object.entries(filters).filter(([, value]) => !!value) as [string, string][];
+    const query = new URLSearchParams(set).toString();
+    return request<Approval[]>(`${organisationApi()}/approvals${query ? `?${query}` : ""}`);
+  },
+  getApproval: (id: string) => request<Approval>(`${organisationApi()}/approvals/${id}`),
+  approveApproval: (id: string, confirm?: string, note?: string) =>
+    request<Approval>(
+      `${organisationApi()}/approvals/${id}/approve`,
+      // A schema change that drops anything takes its tables' names typed.
+      confirm === undefined && !note
+        ? { method: "POST" }
+        : json("POST", { ...(confirm !== undefined && { confirm }), ...(note && { note }) }),
     ),
-  schemaChangeImpact: (id: string) =>
-    request<{ removes: Removal[] }>(`${organisationApi()}/schema-changes/${id}/impact`),
+  approvalImpact: (id: string) =>
+    request<{ removes: Removal[] }>(`${organisationApi()}/approvals/${id}/impact`),
   listFlagged: () => request<FlaggedDocument[]>(`${organisationApi()}/flagged`),
   releaseFlagged: (id: number) =>
     request<{ id: number; verdict: Verdict }>(`${organisationApi()}/flagged/${id}/release`, { method: "POST" }),
@@ -1485,8 +1544,8 @@ export const api = {
   listDropped: () => request<DroppedObject[]>(`${organisationApi()}/dropped`),
   restoreDropped: (id: number) =>
     request<DroppedObject>(`${organisationApi()}/dropped/${id}/restore`, { method: "POST" }),
-  rejectSchemaChange: (id: string, note: string) =>
-    request<SchemaChangeRequest>(`${organisationApi()}/schema-changes/${id}/reject`, json("POST", { note })),
+  rejectApproval: (id: string, note: string) =>
+    request<Approval>(`${organisationApi()}/approvals/${id}/reject`, json("POST", { note })),
   listNotifications: () => request<NotificationList>("/api/me/notifications"),
   markNotificationRead: (id: string) =>
     request<Notification>(`/api/me/notifications/${id}/read`, { method: "POST" }),
@@ -1629,6 +1688,9 @@ export const api = {
       `${organisationApi()}/workflows/${id}/runs`,
       json("POST", typeof input === "string" ? { input } : { input_json: input.json }),
     ),
+  /** Cancel a run that hasn't ended: it fails, and the approvals it waits on are cancelled. */
+  cancelWorkflowRun: (id: number, runId: number) =>
+    request<WorkflowRunPage>(`${organisationApi()}/workflows/${id}/runs/${runId}/cancel`, { method: "POST" }),
   deleteWorkflowRun: (id: number, runId: number) =>
     request<void>(`${organisationApi()}/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
 

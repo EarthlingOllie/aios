@@ -22,8 +22,19 @@ export type Draft = {
   output_schema?: JsonValue | null;
 };
 
-/** What a node can declare (`setNodeSpec`). */
-export type NodeSpec = Pick<WorkflowNode, "input_schema" | "output_schema" | "input_template">;
+/** What a node can declare (`setNodeSpec`): its schemas and input template, and an approval
+ * node's prompt, approver role and expiry. */
+export type NodeSpec = Partial<
+  Pick<
+    WorkflowNode,
+    | "input_schema"
+    | "output_schema"
+    | "input_template"
+    | "prompt_template"
+    | "approver_role"
+    | "expiry_days"
+  >
+>;
 
 /** An agent or workflow a node can run, at its current version. */
 export type Target = {
@@ -138,6 +149,27 @@ export function addNode(draft: Draft, target: Target): Draft {
   return relaid({ ...draft, nodes: [...draft.nodes, { key, ...pin(target) }] });
 }
 
+/** A new approval node, decided by an editor (or an admin) unless set otherwise. */
+export function addApprovalNode(draft: Draft): Draft {
+  const taken = draft.nodes.map((n) => n.key);
+  let key = "approval";
+  for (let n = 2; taken.includes(key); n++) key = `approval-${n}`;
+  const node: WorkflowNode = {
+    key,
+    kind: "approval",
+    version_id: null,
+    target_id: null,
+    name: "Approval",
+    version: null,
+    latest_version: null,
+    latest_version_id: null,
+    prompt_template: "",
+    approver_role: "editor",
+    expiry_days: null,
+  };
+  return relaid({ ...draft, nodes: [...draft.nodes, node] });
+}
+
 export function removeNode(draft: Draft, key: string): Draft {
   return relaid({
     ...draft,
@@ -169,7 +201,11 @@ export function renameNode(draft: Draft, from: string, to: string): Draft {
   return {
     ...draft,
     nodes: draft.nodes.map((n) => {
-      const renamed = n.key === from ? { ...n, key: to } : n;
+      let renamed = n.key === from ? { ...n, key: to } : n;
+      if (n.prompt_template) {
+        const prompt = renameInTemplate(n.prompt_template, from, to) as string;
+        renamed = { ...renamed, prompt_template: prompt };
+      }
       return n.input_template === null || n.input_template === undefined
         ? renamed
         : { ...renamed, input_template: renameInTemplate(n.input_template, from, to) };
@@ -194,7 +230,10 @@ export function updateToLatest(draft: Draft, key: string): Draft {
   return {
     ...draft,
     nodes: draft.nodes.map((n) =>
-      n.key === key && n.latest_version !== null && n.latest_version_id !== null
+      n.key === key &&
+      n.kind !== "approval" &&
+      n.latest_version !== null &&
+      n.latest_version_id !== null
         ? { ...n, version: n.latest_version, version_id: n.latest_version_id }
         : n,
     ),
@@ -278,12 +317,20 @@ export function toInput(
     name: meta.name,
     description: meta.description,
     // What's declared only where it is, so a workflow without any saves as it always has.
-    nodes: draft.nodes.map(({ key, kind, version_id, input_schema, output_schema, input_template }) => ({
-      key,
-      kind,
-      version_id,
-      ...declared({ input_schema, output_schema, input_template }),
-    })),
+    nodes: draft.nodes.map(
+      ({ key, kind, version_id, input_schema, output_schema, input_template, ...approval }) => ({
+        key,
+        kind,
+        version_id: kind === "approval" ? null : version_id,
+        ...declared({ input_schema, output_schema, input_template }),
+        // An approval node's own fields: its prompt and role always, its expiry if it sets one.
+        ...(kind === "approval" && {
+          prompt_template: approval.prompt_template ?? "",
+          approver_role: approval.approver_role ?? "editor",
+          ...declared({ expiry_days: approval.expiry_days }),
+        }),
+      }),
+    ),
     edges: draft.edges.map(({ source, target, condition }) => ({
       source,
       target,

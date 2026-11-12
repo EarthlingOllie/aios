@@ -2,13 +2,16 @@ import { useMemo, useState } from "react";
 import { ArrowUpCircle, Plus, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 
+import { selectClass } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, type SelectGroup } from "@/components/ui/select";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector, Row } from "@/components/workflow/inspector";
-import type { WorkflowNode } from "@/lib/api";
+import type { ApproverRole, WorkflowNode } from "@/lib/api";
 import {
+  addApprovalNode,
   addNode,
   canConnect,
   connect,
@@ -28,6 +31,9 @@ import {
 import { ConditionEditor, JsonField, TemplateField } from "@/components/workflow/structured";
 
 const targetValue = (t: { kind: string; id: number }) => `${t.kind}:${t.id}`;
+
+/** What "Add node" adds for an approval node, which runs nothing. */
+const APPROVAL = "approval:new";
 
 /** The agents and workflows a node can run, grouped by kind; those it can't, shown disabled. */
 const targetGroups = (targets: Target[]): SelectGroup[] =>
@@ -58,6 +64,12 @@ export function GraphEditor({
   const [adding, setAdding] = useState("");
 
   const onAdd = () => {
+    if (adding === APPROVAL) {
+      const next = addApprovalNode(draft);
+      onChange(next);
+      setSelection({ type: "node", key: next.nodes.at(-1)!.key });
+      return;
+    }
     const target = targets?.find((t) => targetValue(t) === adding);
     if (!target || target.unavailable) return;
     const next = addNode(draft, target);
@@ -83,12 +95,14 @@ export function GraphEditor({
           className="min-w-56"
           value={adding}
           onChange={setAdding}
-          groups={targetGroups(targets ?? [])}
-          placeholder={
-            targets?.every((t) => t.unavailable)
-              ? "Nothing to add yet"
-              : "Choose an agent or workflow…"
-          }
+          groups={[
+            ...targetGroups(targets ?? []),
+            {
+              label: "Steps",
+              options: [{ value: APPROVAL, label: "Approval: a person decides" }],
+            },
+          ]}
+          placeholder="Choose an agent, workflow or approval…"
         />
         <Button type="button" size="sm" variant="outline" onClick={onAdd} disabled={!adding}>
           <Plus />
@@ -253,50 +267,61 @@ function NodeControls({
   const connectable = refusals
     .filter(([, refusal]) => refusal === null)
     .map(([key]) => ({ value: key, label: key }));
-  const current = targetValue({ kind: node.kind, id: node.target_id });
+  const current = targetValue({ kind: node.kind, id: node.target_id ?? 0 });
   // Whether its latest version would make this workflow contain itself, as far as the list says.
   const listed = targets.find((t) => targetValue(t) === current);
   const loop = listed?.version_id === node.latest_version_id ? listed.unavailable : undefined;
   return (
     <div className="flex flex-col gap-3 border-t pt-3">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="node-target" className="text-xs font-medium">
-          Runs
-        </label>
-        <Select
-          id="node-target"
-          value={current}
-          onChange={(value) => {
-            const target = targets.find((t) => targetValue(t) === value);
-            if (target && !target.unavailable) onChange(retarget(draft, node.key, target));
-          }}
-          groups={targetGroups(targets)}
-          // What it runs may have been deleted since.
-          placeholder={node.name}
+      {node.kind === "approval" ? (
+        <ApprovalFields
+          key={node.key}
+          node={node}
+          predecessors={edges.filter((e) => e.target === node.key).map((e) => e.source)}
+          onChange={(spec) => onChange(setNodeSpec(draft, node.key, spec))}
         />
-      </div>
-      {node.latest_version !== null && node.latest_version > node.version && (
+      ) : (
         <div className="flex flex-col gap-1">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={!!loop}
-            aria-describedby={loop ? "node-update-refusal" : undefined}
-            onClick={() => onChange(updateToLatest(draft, node.key))}
-          >
-            <ArrowUpCircle />
-            Update to v{node.latest_version}
-          </Button>
-          {loop && (
-            <span id="node-update-refusal" className="text-muted-foreground text-xs">
-              {loop === "Current workflow"
-                ? "Can't update: this node runs this workflow itself."
-                : `Can't update: v${node.latest_version} runs this workflow, which would make a loop.`}
-            </span>
-          )}
+          <label htmlFor="node-target" className="text-xs font-medium">
+            Runs
+          </label>
+          <Select
+            id="node-target"
+            value={current}
+            onChange={(value) => {
+              const target = targets.find((t) => targetValue(t) === value);
+              if (target && !target.unavailable) onChange(retarget(draft, node.key, target));
+            }}
+            groups={targetGroups(targets)}
+            // What it runs may have been deleted since.
+            placeholder={node.name}
+          />
         </div>
       )}
+      {node.version !== null &&
+        node.latest_version !== null &&
+        node.latest_version > node.version && (
+          <div className="flex flex-col gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!!loop}
+              aria-describedby={loop ? "node-update-refusal" : undefined}
+              onClick={() => onChange(updateToLatest(draft, node.key))}
+            >
+              <ArrowUpCircle />
+              Update to v{node.latest_version}
+            </Button>
+            {loop && (
+              <span id="node-update-refusal" className="text-muted-foreground text-xs">
+                {loop === "Current workflow"
+                  ? "Can't update: this node runs this workflow itself."
+                  : `Can't update: v${node.latest_version} runs this workflow, which would make a loop.`}
+              </span>
+            )}
+          </div>
+        )}
       <div className="flex flex-col gap-1">
         <label htmlFor="node-connect" className="text-xs font-medium">
           Connect to
@@ -369,17 +394,20 @@ function NodeStructure({
           predecessors={predecessors}
           onChange={(input_template) => onChange({ input_template })}
         />
-        <JsonField
-          label="Output schema"
-          value={node.output_schema}
-          onChange={(output_schema) => onChange({ output_schema })}
-          placeholder='{"type": "object", "properties": {"score": {"type": "number"}}}'
-          hint={
-            node.kind === "agent"
-              ? "JSON Schema. The agent then gives structured output that fits it; conditions can read its fields."
-              : "JSON Schema the subworkflow's output is checked against."
-          }
-        />
+        {/* An approval node's output is its decision. */}
+        {node.kind !== "approval" && (
+          <JsonField
+            label="Output schema"
+            value={node.output_schema}
+            onChange={(output_schema) => onChange({ output_schema })}
+            placeholder='{"type": "object", "properties": {"score": {"type": "number"}}}'
+            hint={
+              node.kind === "agent"
+                ? "JSON Schema. The agent then gives structured output that fits it; conditions can read its fields."
+                : "JSON Schema the subworkflow's output is checked against."
+            }
+          />
+        )}
         <JsonField
           label="Input schema"
           value={node.input_schema}
@@ -395,3 +423,83 @@ const hasStructure = (node: WorkflowNode) =>
   [node.input_schema, node.output_schema, node.input_template].some(
     (v) => v !== null && v !== undefined,
   );
+
+/**
+ * An approval node's fields: the prompt its approvers see (placeholders as an input template's),
+ * the least role that may decide it, and how many days it waits before it expires.
+ */
+function ApprovalFields({
+  node,
+  predecessors,
+  onChange,
+}: {
+  node: WorkflowNode;
+  predecessors: string[];
+  onChange: (spec: NodeSpec) => void;
+}) {
+  const [prompt, setPrompt] = useState(node.prompt_template ?? "");
+  const [days, setDays] = useState(node.expiry_days ? String(node.expiry_days) : "");
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <label htmlFor="approval-prompt" className="text-xs font-medium">
+          Prompt
+        </label>
+        <Textarea
+          id="approval-prompt"
+          rows={4}
+          required
+          value={prompt}
+          placeholder="Approve spending {{nodes.quote.amount}} on {{input}}?"
+          onChange={(e) => setPrompt(e.target.value)}
+          onBlur={() => onChange({ prompt_template: prompt })}
+        />
+        <span className="text-muted-foreground text-xs">
+          What its approvers see, with the run's details written in: {"{{input}}"}
+          {predecessors.length > 0 &&
+            `, ${predecessors.map((p) => `{{nodes.${p}}}`).join(", ")} or a field of one`}
+          .
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="approval-role" className="text-xs font-medium">
+          Who decides
+        </label>
+        <select
+          id="approval-role"
+          className={selectClass}
+          value={node.approver_role ?? "editor"}
+          onChange={(e) => onChange({ approver_role: e.target.value as ApproverRole })}
+        >
+          <option value="editor">An editor or an admin</option>
+          <option value="admin">An admin</option>
+        </select>
+        <span className="text-muted-foreground text-xs">
+          Only they're notified, and only they can approve or reject it.
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="approval-expiry" className="text-xs font-medium">
+          Expires after (days)
+        </label>
+        <Input
+          id="approval-expiry"
+          type="number"
+          min={1}
+          max={365}
+          value={days}
+          placeholder="The organisation's setting"
+          onChange={(e) => setDays(e.target.value)}
+          onBlur={() => {
+            const n = Number.parseInt(days, 10);
+            onChange({ expiry_days: Number.isFinite(n) && n > 0 ? n : null });
+          }}
+        />
+        <span className="text-muted-foreground text-xs">
+          Undecided by then, it expires, which counts as not approved. Its output is its decision:
+          branch on <code className="font-mono">output.approved</code>.
+        </span>
+      </div>
+    </div>
+  );
+}

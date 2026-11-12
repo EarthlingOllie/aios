@@ -2,14 +2,14 @@ import json
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, FiniteFloat, model_serializer, model_validator
-from sqlalchemy import Row, delete, func, or_, select
+from sqlalchemy import Row, delete, func, or_, select, update
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
-from aios import audit, checkpoints, invocations, limits, run_service, used_by
+from aios import approvals, audit, checkpoints, invocations, limits, run_service, used_by
 from aios.api.agents.common import apply_guards, organisation_limits
 from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
@@ -46,6 +46,7 @@ from aios.limits import RunLimits
 from aios.models import (
     InvocableBy,
     InvocationStatus,
+    Role,
     SchemaChangeStatus,
     TriggerTargetKind,
     WorkflowNodeKind,
@@ -57,8 +58,11 @@ from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.tools import ToolOrganisation, unusable_tools
 from aios.versioning import NodeSpec, save_workflow_version
 from aios.workflows import (
+    NOT_ENDED,
     GraphError,
     RunError,
+    _end_runs,
+    _record_ended,
     advance_work,
     alive,
     archived_in_graph,
@@ -73,9 +77,14 @@ from aios.workflows.structured import (
     compact,
     describe,
     schema_errors,
+    template_errors,
 )
 
 router = APIRouter(prefix="/api")
+
+# How long an approval node's prompt template may be.
+PROMPT_MAX_LENGTH = 10_000
+MAX_EXPIRY_DAYS = approvals.MAX_EXPIRY_DAYS
 
 WORKFLOW_NAME_INDEX = "uq_workflows_name"
 
@@ -84,14 +93,22 @@ class WorkflowNodeIn(BaseModel):
     key: str
     kind: WorkflowNodeKind
     # The agent version or workflow version the node runs. Pinned, like an agent's skills: a
-    # newer version of the agent or subworkflow is taken by saving the workflow with it.
-    version_id: DbId
+    # newer version of the agent or subworkflow is taken by saving the workflow with it. None
+    # for an approval node, which pins nothing.
+    version_id: DbId | None = None
     # What it takes and gives (JSON Schemas), and the template its input is built from, if it
     # declares them (`aios.workflows.structured`). An agent node with an output schema gives
     # structured output.
     input_schema: Any = None
     output_schema: Any = None
     input_template: Any = None
+    # An approval node's (`aios.approvals`): the prompt its approvers see (a template, with
+    # placeholders as an input template's), the least role that may decide it (editor, the
+    # default, or admin), and how many days it waits before it expires (None: the
+    # organisation's setting). Only an approval node has them.
+    prompt_template: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH)
+    approver_role: Literal["editor", "admin"] | None = None
+    expiry_days: int | None = Field(default=None, ge=1, le=MAX_EXPIRY_DAYS)
 
 
 class WorkflowEdgeIn(BaseModel):
@@ -132,17 +149,22 @@ class WorkflowIn(BaseModel):
 class WorkflowNodeOut(BaseModel):
     key: str
     kind: WorkflowNodeKind
-    version_id: int
+    # None for an approval node, which pins nothing.
+    version_id: int | None
     # The agent or workflow the pinned version belongs to.
-    target_id: int
+    target_id: int | None
     name: str
-    version: int
+    version: int | None
     # The agent's or workflow's current version (None only while one is being made).
     latest_version: int | None
     latest_version_id: int | None
     input_schema: Any = None
     output_schema: Any = None
     input_template: Any = None
+    # An approval node's.
+    prompt_template: str | None = None
+    approver_role: str | None = None
+    expiry_days: int | None = None
 
 
 class WorkflowEdgeOut(BaseModel):
@@ -312,6 +334,12 @@ def resolve_graph(
         validate_graph([n.key for n in body.nodes], edges)
     except GraphError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    for n in body.nodes:
+        if n.kind != WorkflowNodeKind.approval and n.version_id is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"Node {n.key!r} needs the {n.kind} version it runs",
+            )
     agent_ids = {n.version_id for n in body.nodes if n.kind == WorkflowNodeKind.agent}
     workflow_ids = {n.version_id for n in body.nodes if n.kind == WorkflowNodeKind.workflow}
     found_agents = set(db.scalars(select(AgentVersion.id).where(AgentVersion.id.in_(agent_ids))))
@@ -331,10 +359,62 @@ def resolve_graph(
         refuse_self_containment(db, workflow, workflow_ids)
     refuse_invalid_structure(db, body)
     nodes = [
-        NodeSpec(n.key, n.kind, n.version_id, n.input_schema, n.output_schema, n.input_template)
+        NodeSpec(
+            n.key,
+            n.kind,
+            n.version_id if n.kind != WorkflowNodeKind.approval else None,
+            n.input_schema,
+            n.output_schema,
+            n.input_template,
+            **(
+                {
+                    "prompt_template": n.prompt_template,
+                    "approver_role": n.approver_role or Role.editor.value,
+                    "expiry_days": n.expiry_days,
+                }
+                if n.kind == WorkflowNodeKind.approval
+                else {}
+            ),
+        )
         for n in body.nodes
     ]
     return nodes, edges
+
+
+def approval_node_errors(body: WorkflowIn) -> list[tuple[str, str]]:
+    """Why the request's approval node fields can't be saved, by item: an approval node needs a
+    prompt, pins nothing, and gives a fixed output (`approvals.OUTCOME_SCHEMA`), so declares no
+    output schema; its prompt's placeholders name only predecessors. Other nodes have none of
+    its fields."""
+    sources: dict[str, list[str]] = {n.key: [] for n in body.nodes}
+    for e in body.edges:
+        sources.setdefault(e.target, []).append(e.source)
+    errors: list[tuple[str, str]] = []
+    for n in body.nodes:
+        item = f"nodes.{n.key}"
+        if n.kind != WorkflowNodeKind.approval:
+            for name in ("prompt_template", "approver_role", "expiry_days"):
+                if getattr(n, name) is not None:
+                    errors.append((f"{item}.{name}", "Only an approval node has this"))
+            continue
+        if n.version_id is not None:
+            errors.append((f"{item}.version_id", "An approval node runs no agent or workflow"))
+        if n.output_schema is not None:
+            errors.append(
+                (
+                    f"{item}.output_schema",
+                    "An approval node's output is its decision: approved, note, decided_by"
+                    " and status",
+                )
+            )
+        if not (n.prompt_template or "").strip():
+            errors.append((f"{item}.prompt_template", "Write the prompt its approvers see"))
+        else:
+            errors += [
+                (f"{item}.prompt_template", e)
+                for e in template_errors(n.prompt_template, sources.get(n.key, []))
+            ]
+    return errors
 
 
 class StructureRefusal(dict):
@@ -365,12 +445,16 @@ def refuse_invalid_structure(db: Session, body: WorkflowIn) -> None:
         if pinned
         else {}
     )
-    errors = check_workflow(
+    errors = approval_node_errors(body) + check_workflow(
         [
             NodeDeclared(
                 n.key,
                 n.input_schema,
-                n.output_schema if n.output_schema is not None else inner.get(n.version_id),
+                approvals.OUTCOME_SCHEMA
+                if n.kind == WorkflowNodeKind.approval
+                else n.output_schema
+                if n.output_schema is not None
+                else inner.get(n.version_id),
                 n.input_template,
             )
             for n in body.nodes
@@ -466,6 +550,22 @@ def load_version(db: Session, version_id: int) -> WorkflowVersion:
 
 
 def node_out(node: WorkflowNode) -> WorkflowNodeOut:
+    if node.kind == WorkflowNodeKind.approval:
+        return WorkflowNodeOut(
+            key=node.key,
+            kind=node.kind,
+            version_id=None,
+            target_id=None,
+            name="Approval",
+            version=None,
+            latest_version=None,
+            latest_version_id=None,
+            input_schema=node.input_schema,
+            input_template=node.input_template,
+            prompt_template=node.prompt_template,
+            approver_role=node.approver_role,
+            expiry_days=node.expiry_days,
+        )
     if node.kind == WorkflowNodeKind.agent:
         pinned: Any = node.agent_version
         target: Any = pinned.agent
@@ -890,6 +990,9 @@ def restore_workflow_version(
             n.input_schema,
             n.output_schema,
             n.input_template,
+            n.prompt_template,
+            n.approver_role,
+            n.expiry_days,
         )
         for n in old.nodes
     ]
@@ -995,8 +1098,10 @@ class WorkflowRunStepOut(BaseModel):
     agent_id: int | None
     agent_run_id: int | None
     # While an agent node waits: the schema change requests it waits on (one per call), oldest
-    # first.
+    # first; an approval node's, its approval.
     waiting_on_request_ids: list[uuid.UUID]
+    # The approval it waits on, or an approval node's once decided (`aios.approvals`).
+    approval_id: uuid.UUID | None = None
     started_at: datetime
     finished_at: datetime | None
 
@@ -1096,7 +1201,7 @@ def waiting_requests(store: Session, steps: Sequence[WorkflowRunStep]) -> list[S
     agent run may have gone)."""
     waiting = [s for s in steps if s.status == WorkflowStepStatus.waiting]
     agent_run_ids = [s.agent_run_id for s in waiting if s.agent_run_id is not None]
-    recorded = [s.waiting_on_request_id for s in waiting if s.waiting_on_request_id is not None]
+    recorded = [s.approval_id for s in waiting if s.approval_id is not None]
     if not waiting:
         return []
     return list(
@@ -1121,7 +1226,7 @@ def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list
     return [
         r.id
         for r in requests
-        if r.id == step.waiting_on_request_id
+        if r.id == step.approval_id
         or (step.agent_run_id is not None and r.requested_by_run == step.agent_run_id)
     ]
 
@@ -1418,6 +1523,7 @@ def workflow_run_out(
             agent_id=agent_id,
             agent_run_id=step.agent_run_id,
             waiting_on_request_ids=waits_on(step, waits),
+            approval_id=step.approval_id,
             started_at=step.started_at,
             finished_at=step.finished_at,
         )
@@ -1489,12 +1595,12 @@ def delete_workflow_run(
             status.HTTP_409_CONFLICT, "This run is still going; wait for it to finish."
         )
     steps = store.execute(
-        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.waiting_on_request_id).where(
+        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.approval_id).where(
             WorkflowRunStep.run_id == run.id
         )
     ).all()
     agent_run_ids = [s.agent_run_id for s in steps if s.agent_run_id is not None]
-    request_ids = [s.waiting_on_request_id for s in steps if s.waiting_on_request_id is not None]
+    request_ids = [s.approval_id for s in steps if s.approval_id is not None]
     sandboxes = run_sandboxes(store, agent_run_ids)
     # Their conversations go with them. Locked first: a request being recorded for one
     # meanwhile is waited for (`schema_changes.lock_run`), and then seen.
@@ -1508,6 +1614,48 @@ def delete_workflow_run(
     store.delete(run)  # and its steps
     store.commit()
     # Then what the platform says of them.
-    schema_changes.clear_notifications_of(cancelled)
+    approvals.clear_notifications_of(cancelled)
     if sandboxes:
         background.add_task(stop_sandboxes, sandboxes)
+
+
+@router.post(
+    "/workflows/{workflow_id}/runs/{run_id}/cancel",
+    response_model=WorkflowRunPageOut,
+    dependencies=[allow(Action.post)],
+)
+def cancel_workflow_run(
+    workflow_id: DbId,
+    run_id: DbId,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
+):
+    """Cancel a run that hasn't ended: it fails ("Cancelled by <name>."), with its steps still
+    going, and the approvals it waits on are cancelled, their notifications cleared
+    (`aios.approvals`). A 409 if it has ended."""
+    run = get_org_workflow_run(store, workflow_id, run_id)
+    locked = store.scalar(select(WorkflowRun).where(WorkflowRun.id == run.id).with_for_update())
+    if locked is None or locked.status not in NOT_ENDED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This run has already ended.")
+    # A waiting run is ended as a running one would be, adding the time it waited.
+    store.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == run.id, WorkflowRun.status == WorkflowRunStatus.waiting)
+        .values(status=WorkflowRunStatus.running)
+    )
+    name = people(db, org.id, [user.id]).get(user.id)
+    error = f"Cancelled by {name.name}." if name is not None else "Cancelled."
+    ended = _end_runs(store, [WorkflowRun.id == run.id], WorkflowRunStatus.failed, None, error)
+    audit.record(
+        store,
+        audit.person(user.id),
+        "workflow_run.cancelled",
+        "workflow_run",
+        run.id,
+        {"workflow_id": workflow_id, "approvals_cancelled": [str(i) for i in ended.cancelled]},
+    )
+    store.commit()
+    _record_ended(ended)
+    return get_workflow_run(workflow_id, run_id, org, db, store)

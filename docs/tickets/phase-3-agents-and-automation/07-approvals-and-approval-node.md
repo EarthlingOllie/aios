@@ -10,12 +10,12 @@
 
 **Blocked by:** [06: Structured workflows: typed I/O, templates, conditional edges](06-structured-workflows.md), [Phase 2 · 07: Notifications across organisations: mentions, replies, failures](../phase-2-organisation-experience/07-notifications.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The existing schema change behaviour and tests pass through the new approvals API, which replaces the old schema change routes.
-- [ ] The Approvals list filters by kind and status, and shows decision buttons only to people who may decide.
-- [ ] Approvers see the full reason and input.
-- [ ] An approval node renders its prompt, notifies only those who may decide, and waits.
-- [ ] Approving or rejecting resumes the run with a structured outcome that edges can branch on. An expired approval counts as not approved. Cancelling the run cancels the approval and clears its notifications.
-- [ ] Only the node's configured role may decide. Drops still need the table names typed, and every decision is audited.
-- [ ] The full-stack test covers a workflow that branches on structured output, pauses at an approval node, and resumes on the decision.
+- [x] The existing schema change behaviour and tests pass through the new approvals API, which replaces the old schema change routes.
+- [x] The Approvals list filters by kind and status, and shows decision buttons only to people who may decide.
+- [x] Approvers see the full reason and input.
+- [x] An approval node renders its prompt, notifies only those who may decide, and waits.
+- [x] Approving or rejecting resumes the run with a structured outcome that edges can branch on. An expired approval counts as not approved. Cancelling the run cancels the approval and clears its notifications.
+- [x] Only the node's configured role may decide. Drops still need the table names typed, and every decision is audited.
+- [x] The full-stack test covers a workflow that branches on structured output, pauses at an approval node, and resumes on the decision.

@@ -10,9 +10,9 @@ from typing import Any
 from sqlalchemy import ColumnElement, false, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import invocations
+from aios import approvals, invocations
 from aios.config import get_settings
-from aios.datastores import schema_changes, store_id_of, store_session
+from aios.datastores import store_id_of, store_session
 from aios.datastores.models import (
     SchemaChangeRequest,
     WorkflowRun,
@@ -21,7 +21,6 @@ from aios.datastores.models import (
 from aios.db import SessionLocal
 from aios.models import (
     DataStore,
-    SchemaChangeStatus,
     WorkflowRunStatus,
     WorkflowStepStatus,
 )
@@ -62,19 +61,14 @@ def _not_given(
 def decided_wait(store: Session, step: WorkflowRunStep) -> bool:
     """Whether the waiting agent step waits on a request (of the step's store, `store`) that's
     been decided but not yet given to it: it's resumed then."""
-    if step.agent_run_id is None and step.waiting_on_request_id is None:
+    if step.agent_run_id is None and step.approval_id is None:
         return False
     agent_run_ids = [step.agent_run_id] if step.agent_run_id is not None else []
-    request_ids = [step.waiting_on_request_id] if step.waiting_on_request_id is not None else []
+    request_ids = [step.approval_id] if step.approval_id is not None else []
     return (
         store.scalar(
             select(SchemaChangeRequest.id)
-            .where(
-                *_not_given(agent_run_ids, request_ids),
-                SchemaChangeRequest.status.not_in(
-                    [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
-                ),
-            )
+            .where(*_not_given(agent_run_ids, request_ids), approvals.decided_clause())
             .limit(1)
         )
         is not None
@@ -92,7 +86,7 @@ def workflow_run_waiting_on(store: Session, request: SchemaChangeRequest) -> int
     )
     return store.scalar(
         select(WorkflowRunStep.run_id)
-        .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
+        .where(or_(by_run, WorkflowRunStep.approval_id == request.id))
         .limit(1)
     )
 
@@ -159,7 +153,7 @@ def _end_runs(
     agent_run_ids: list[int] = []
     request_ids: list[uuid.UUID] = []
     for agent_run_id, request_id in store.execute(
-        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.waiting_on_request_id).where(
+        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.approval_id).where(
             WorkflowRunStep.run_id.in_(ids)
         )
     ):
@@ -181,7 +175,6 @@ def _end_runs(
             status=WorkflowStepStatus.failed,
             error="The run stopped before this step finished.",
             finished_at=func.now(),
-            waiting_on_request_id=None,
         )
     )
     # Those a chat started post their results back to it.
@@ -194,7 +187,7 @@ def _record_ended(ended: Ended) -> None:
     the notifications of the requests cancelled with them go."""
     if not ended.runs:
         return
-    schema_changes.clear_notifications_of(ended.cancelled)
+    approvals.clear_notifications_of(ended.cancelled)
 
 
 def close_requests(
@@ -204,11 +197,11 @@ def close_requests(
     their steps' agent runs, `agent_run_ids`, or the requests their steps waited on,
     `request_ids`) and haven't been given: the runs have ended or are being deleted, so nothing
     will give them their outcomes. Pending ones are cancelled, so they can't be approved
-    (`schema_changes.cancel`: returns their ids, whose notifications to clear once this
+    (`approvals.cancel`: returns their ids, whose notifications to clear once this
     commits); the others count as given, so the conversations don't wait on them (one being
     applied still is). In the caller's transaction."""
     not_given = _not_given(agent_run_ids, request_ids)
-    cancelled = schema_changes.cancel(store, *not_given)
+    cancelled = approvals.cancel(store, *not_given)
     store.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
     return cancelled
 

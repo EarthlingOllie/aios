@@ -15,6 +15,9 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * queue and carries on in the new process, and the chat gets its reply, never "The service
  * stopped mid-run."
  *
+ * A third story runs a workflow that branches on an agent's structured output, pauses at an
+ * approval node for an admin, and resumes on the decision made in the Data page's Approvals list.
+ *
  * Later steps add their stories here, each a scenario of the scripted model.
  */
 
@@ -101,14 +104,14 @@ test("a mention asks for a table, waits for approval on the Data page, then save
 
   // Approve on the Data page.
   await page.getByRole("link", { name: "Data" }).first().click();
-  await page.getByRole("tab", { name: /Changes/ }).click();
+  await page.getByRole("tab", { name: /Approvals/ }).click();
   const request = page
-    .getByRole("region", { name: "Pending changes" })
+    .getByRole("region", { name: "Pending approvals" })
     .getByRole("region", { name: "Schema change: Create table data.notes" });
   await expect(request).toContainText("To keep the chat's notes");
   await request.getByRole("button", { name: "Approve" }).click();
-  await expect(page.getByRole("region", { name: "Change history" })).toContainText("Create table data.notes");
-  await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("/data/changes")}`));
+  await expect(page.getByRole("region", { name: "Approval history" })).toContainText("Create table data.notes");
+  await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("/data/approvals")}`));
 
   // The run resumes, writes its row and replies in the chat.
   await page.goto(link(`/chats/${chat.id}`));
@@ -185,4 +188,93 @@ test("restarting the run service mid-turn hands the turn back, and it carries on
   await expect(cardStatus(page)).toHaveText("Succeeded");
   await expect(messageList(page)).not.toContainText("The service stopped mid-run.");
   await expect(messageList(page)).not.toContainText("The turn was stopped.");
+});
+
+test("a workflow branches on structured output, pauses at an approval node, and resumes on the decision", async ({
+  page,
+}) => {
+  const { api, link } = await setUp(page);
+  // On the scripted model: `classify` gives {risk: "high", amount: 250} as structured output; the
+  // others reply as they're told (backend/src/aios/testing/scenarios.py).
+  const agent = (name: string, base_prompt: string) =>
+    created<{ current_version: { id: number } }>(page.request, api("/agents"), { name, base_prompt });
+  const classify = await agent("Classify", "Classify the spend.");
+  const pay = await agent("Pay", "Reply with: Paid.");
+  const tell = await agent("Tell", "Reply with: Not approved.");
+  const auto = await agent("Auto", "Reply with: No approval needed.");
+  const high = { "==": [{ var: "output.risk" }, "high"] };
+  const workflow = await created<{ id: number }>(page.request, api("/workflows"), {
+    name: "Spend",
+    nodes: [
+      {
+        key: "classify",
+        kind: "agent",
+        version_id: classify.current_version.id,
+        output_schema: {
+          type: "object",
+          properties: { risk: { type: "string" }, amount: { type: "number" } },
+          required: ["risk", "amount"],
+        },
+      },
+      {
+        key: "approve",
+        kind: "approval",
+        prompt_template: "Spend {{nodes.classify.amount}} on {{input}}?\nThe risk is {{nodes.classify.risk}}.",
+        approver_role: "admin",
+      },
+      { key: "pay", kind: "agent", version_id: pay.current_version.id },
+      { key: "tell", kind: "agent", version_id: tell.current_version.id },
+      { key: "auto", kind: "agent", version_id: auto.current_version.id },
+    ],
+    edges: [
+      { source: "classify", target: "approve", condition: high },
+      { source: "classify", target: "auto", condition: { "!": [high] } },
+      { source: "approve", target: "pay", condition: { "==": [{ var: "output.approved" }, true] } },
+      { source: "approve", target: "tell", condition: { "!": [{ var: "output.approved" }] } },
+    ],
+  });
+  const run = await created<{ id: number }>(page.request, api(`/workflows/${workflow.id}/runs`), {
+    input: "laptops",
+  });
+
+  // It branches on the structured output to the approval node, and waits there.
+  await page.goto(link(`/workflows/${workflow.id}/runs/${run.id}`));
+  await expect(page.getByTestId("run-status")).toHaveText("Waiting for you", { timeout: 60_000 });
+  const waiting = page.getByRole("region", { name: "Waiting for your decision" });
+  await expect(waiting).toContainText("approve");
+
+  // Decide it in the Approvals list, where its approver sees the prompt and input in full.
+  await page.goto(link("/data/approvals?kind=workflow_step"));
+  const approval = page
+    .getByRole("region", { name: "Pending approvals" })
+    .getByRole("region", { name: "Approval: Spend 250 on laptops?" });
+  await expect(approval.getByLabel("Prompt")).toHaveText("Spend 250 on laptops?\nThe risk is high.");
+  await expect(approval.getByLabel("Input")).toContainText('"amount": 250');
+  await approval.getByRole("button", { name: "Approve" }).click();
+  await expect(
+    page.getByRole("region", { name: "Approval history" }).getByRole("region", { name: "Approval: Spend 250 on laptops?" }),
+  ).toContainText("Approved");
+
+  // The run resumes from the decision: the approved branch runs, the other is skipped.
+  await page.goto(link(`/workflows/${workflow.id}/runs/${run.id}`));
+  await expect(page.getByTestId("run-status")).toHaveText("Succeeded", { timeout: 60_000 });
+  const detail = (await (await page.request.get(api(`/workflows/${workflow.id}/runs/${run.id}`))).json()) as {
+    output: string;
+    steps: { path: string[]; status: string; output_json: Record<string, unknown> | null }[];
+  };
+  const step = (key: string) => detail.steps.find((s) => s.path.join("/") === key);
+  expect(step("auto")?.status).toBe("skipped");
+  expect(step("approve")?.output_json).toMatchObject({ approved: true, status: "approved", decided_by: { name: "Core Loop" } });
+  expect(step("pay")?.status).toBe("succeeded");
+  expect(step("tell")?.status).toBe("skipped");
+  expect(detail.output).toBe("Paid.");
+
+  // The decision is in the audit log.
+  const audit = await page.request.get(api("/audit-log?action=approval"));
+  const { entries } = (await audit.json()) as { entries: { action: string; details: Record<string, string> }[] };
+  expect(entries.find((e) => e.action === "approval.decided")?.details).toMatchObject({
+    kind: "workflow_step",
+    decision: "approved",
+    needs_role: "admin",
+  });
 });

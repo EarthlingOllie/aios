@@ -36,6 +36,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios import (
+    approvals,
     handback,
     handoff,
     invocations,
@@ -609,7 +610,7 @@ def resume_for(data_store_id: uuid.UUID, request_id: uuid.UUID) -> Work | None:
     node made it, which resumes the node where it waited; or a resume of the agent run."""
     with store_session(data_store_id, "ro") as store:
         request = store.get(SchemaChangeRequest, request_id)
-        if request is None or not request.status.decided or request.resumed_at is not None:
+        if request is None or not approvals.decided(request) or request.resumed_at is not None:
             return None
         run_id = request.requested_by_run
         workflow_run_id = workflows.workflow_run_waiting_on(store, request)

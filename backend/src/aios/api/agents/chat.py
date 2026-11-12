@@ -32,7 +32,7 @@ from aios import (
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
 from aios.api.agents.runs import build_version_tools
-from aios.api.schema_changes import of_run, waiting_on
+from aios.api.approvals import of_run, waiting_on
 from aios.datastores import schema_changes, store_session
 from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest, Turn
 from aios.db import SessionLocal

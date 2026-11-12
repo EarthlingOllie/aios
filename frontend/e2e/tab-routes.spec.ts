@@ -60,7 +60,7 @@ const pages: TabbedPage[] = [
     tabs: [
       ["overview", /Overview/],
       ["tables", /Tables/],
-      ["changes", /Changes/],
+      ["approvals", /Approvals/],
       ["dropped", /Dropped/],
       ["documents", /Documents/],
     ],

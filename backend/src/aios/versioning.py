@@ -187,22 +187,33 @@ def save_agent_version(
 
 @dataclass(frozen=True)
 class NodeSpec:
-    """A workflow node to save: its key, the agent or workflow version it pins, and what it
-    declares, if anything: its input and output schemas and its input template
-    (`aios.workflows.structured`)."""
+    """A workflow node to save: its key, the agent or workflow version it pins (None for an
+    approval node, which pins nothing), and what it declares, if anything: its input and output
+    schemas and its input template (`aios.workflows.structured`). An approval node's prompt
+    template, approver role and expiry in days (`aios.approvals`)."""
 
     key: str
     kind: WorkflowNodeKind
-    version_id: int
+    version_id: int | None
     input_schema: Any = None
     output_schema: Any = None
     input_template: Any = None
+    prompt_template: str | None = None
+    approver_role: str | None = None
+    expiry_days: int | None = None
 
     def hashed(self) -> dict[str, Any]:
         """What the configuration hash covers: what it declares only if it does, so a node
         that declares nothing hashes as it always has."""
         out: dict[str, Any] = {"key": self.key, "kind": self.kind, "version_id": self.version_id}
-        for name in ("input_schema", "output_schema", "input_template"):
+        for name in (
+            "input_schema",
+            "output_schema",
+            "input_template",
+            "prompt_template",
+            "approver_role",
+            "expiry_days",
+        ):
             if getattr(self, name) is not None:
                 out[name] = getattr(self, name)
         return out
@@ -278,6 +289,9 @@ def save_workflow_version(
                 input_schema=n.input_schema,
                 output_schema=n.output_schema,
                 input_template=n.input_template,
+                prompt_template=n.prompt_template,
+                approver_role=n.approver_role,
+                expiry_days=n.expiry_days,
             )
             for i, n in enumerate(nodes)
         ],

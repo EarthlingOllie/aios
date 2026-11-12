@@ -4,7 +4,7 @@ import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * Schema change requests: the approval card at the agent's tool call in its chat, and the Data
- * page's Changes section, where the same requests are decided.
+ * page's Approvals list, where the same requests are decided.
  */
 
 const card = (scope: Page | Locator, summary = "Create table data.contacts") =>
@@ -76,7 +76,7 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
 
   await expect(card(page)).toContainText("Applying");
   await expect(card(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
-  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${request.id}/approve`), null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/approvals/${request.id}/approve`), null]);
 
   api.finishSchemaChange(request.id, { status: "applied", messages: carriedOn });
 
@@ -136,7 +136,7 @@ test("rejecting with a note sends the note, and the run carries on", async ({ pa
   await expect(card(page)).toContainText("Rejected: Use a spreadsheet instead");
   expect(api.writes).toContainEqual([
     "POST",
-    orgApi(`/schema-changes/${request.id}/reject`),
+    orgApi(`/approvals/${request.id}/reject`),
     { note: "Use a spreadsheet instead" },
   ]);
   api.finishSchemaChange(request.id, { messages: carriedOn });
@@ -170,10 +170,10 @@ test("the Changes section lists pending requests first, with the run that asked"
     decided_at: "2026-10-14T10:00:00Z",
     resumed_at: "2026-10-14T10:00:01Z",
   });
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
-  const pending = page.getByRole("region", { name: "Pending changes" });
-  const history = page.getByRole("region", { name: "Change history" });
+  const pending = page.getByRole("region", { name: "Pending approvals" });
+  const history = page.getByRole("region", { name: "Approval history" });
   await expect(card(pending)).toContainText("To keep track of the people you meet");
   await expect(history).toContainText("Add column email to data.contacts");
   await expect(history).toContainText("Rejected: Not yet");
@@ -191,14 +191,14 @@ test("the Changes section lists pending requests first, with the run that asked"
 test("deciding from the Changes section moves the request to the history", async ({ page }) => {
   const api = await fakeApi(page);
   const { request } = waitingRun(api);
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
   await card(page).getByRole("button", { name: "Approve" }).click();
 
-  const history = page.getByRole("region", { name: "Change history" });
+  const history = page.getByRole("region", { name: "Approval history" });
   await expect(history).toContainText("Applying");
-  await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(
-    "No changes are waiting.",
+  await expect(page.getByRole("region", { name: "Pending approvals" })).toContainText(
+    "Nothing is waiting.",
   );
   api.finishSchemaChange(request.id, { status: "applied" });
   await expect(history).toContainText("Applied to the organisation's data store.");
@@ -218,9 +218,9 @@ test("the history shows expired and cancelled requests, with no controls", async
     decided_at: "2026-10-15T10:00:00Z",
     resumed_at: "2026-10-15T10:00:00Z",
   });
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
-  const history = page.getByRole("region", { name: "Change history" });
+  const history = page.getByRole("region", { name: "Approval history" });
   const expired = history.getByRole("region", { name: "Schema change: Create table data.places" });
   const cancelled = history.getByRole("region", { name: "Schema change: Create table data.things" });
   await expect(expired).toContainText("Expired");
@@ -229,25 +229,26 @@ test("the history shows expired and cancelled requests, with no controls", async
   await expect(cancelled).toContainText("Cancelled: the run that asked was deleted or stopped.");
   await expect(cancelled).toContainText(/Cancelled \w/);
   await expect(history.getByRole("button", { name: "Approve" })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(
-    "No changes are waiting.",
+  await expect(page.getByRole("region", { name: "Pending approvals" })).toContainText(
+    "Nothing is waiting.",
   );
 });
 
-test("a request the user may not decide shows who may, with Approve disabled", async ({ page }) => {
+test("a request the user may not decide shows who may, and no decision buttons", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSchemaChange({ decider: false });
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
   await expect(card(page)).toBeVisible();
   await expect(card(page).getByRole("note", { name: "Who may approve" })).toHaveText(
     "Needs an editor or an admin to approve",
   );
-  await expect(card(page).getByRole("button", { name: "Approve" })).toBeDisabled();
-  await expect(card(page).getByRole("button", { name: "Reject…" })).toBeDisabled();
+  // The decision buttons are only for those who may decide.
+  await expect(card(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
+  await expect(card(page).getByRole("button", { name: "Reject…" })).toHaveCount(0);
 });
 
-test("an editor sees a request that needs an admin, with Approve disabled", async ({ page }) => {
+test("an editor sees a request that needs an admin, with no decision buttons", async ({ page }) => {
   const api = await fakeApi(page);
   api.actAs("editor");
   api.addSchemaChange({
@@ -255,15 +256,11 @@ test("an editor sees a request that needs an admin, with Approve disabled", asyn
     needs_role: "admin",
   });
   const mine = api.addSchemaChange({ summary: "Create table data.contacts" });
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
   const mixed = card(page, "Add column data.fish.note; drop column data.fish.weight_kg");
   await expect(mixed.getByRole("note", { name: "Who may approve" })).toHaveText("Needs an admin to approve");
-  await expect(mixed.getByRole("button", { name: "Approve" })).toBeDisabled();
-  await expect(mixed.getByRole("button", { name: "Approve" })).toHaveAttribute(
-    "title",
-    "Needs an admin to approve",
-  );
+  await expect(mixed.getByRole("button", { name: "Approve" })).toHaveCount(0);
 
   // One editors may decide stays theirs.
   await expect(card(page).getByRole("note", { name: "Who may approve" })).toHaveText(
@@ -271,5 +268,5 @@ test("an editor sees a request that needs an admin, with Approve disabled", asyn
   );
   await card(page).getByRole("button", { name: "Approve" }).click();
   await expect(card(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
-  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${mine.id}/approve`), null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/approvals/${mine.id}/approve`), null]);
 });

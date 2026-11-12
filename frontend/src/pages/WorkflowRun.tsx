@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { ChevronRight, MessageSquare, Trash2, Workflow as WorkflowIcon } from "lucide-react";
+import {
+  ChevronRight,
+  CircleStop,
+  MessageSquare,
+  Trash2,
+  Workflow as WorkflowIcon,
+} from "lucide-react";
 
 import {
   DetailPage,
@@ -146,7 +152,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         // Through the run, so whoever may read it may open it.
         api.getRunSubworkflow(id, runId, [...prefix, node.key]),
         // Only for where its nodes are drawn; they're laid out afresh without it.
-        api.getWorkflow(node.target_id).catch(() => undefined),
+        api.getWorkflow(node.target_id ?? 0).catch(() => undefined),
       ]);
       setOpened([
         ...opened,
@@ -155,6 +161,15 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       setSelection(null);
     } catch (err) {
       setError(`Couldn't open ${node.name}: ${describeError(err)}`);
+    }
+  };
+  const onCancel = async () => {
+    if (!window.confirm("Cancel this run? Any approval it waits on is cancelled too.")) return;
+    try {
+      await api.cancelWorkflowRun(id, runId);
+      await run.reload();
+    } catch (err) {
+      setError(describeError(err));
     }
   };
   const onDelete = async () => {
@@ -201,18 +216,26 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         </>
       }
       actions={
-        !deleteRefusal && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onDelete}
-          disabled={r.status === "running"}
-          title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
-          aria-label="Delete run"
-        >
-          <Trash2 />
-        </Button>
-        )
+        <>
+          {active && (
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              <CircleStop />
+              Cancel run
+            </Button>
+          )}
+          {!deleteRefusal && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onDelete}
+              disabled={r.status === "running"}
+              title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
+              aria-label="Delete run"
+            >
+              <Trash2 />
+            </Button>
+          )}
+        </>
       }
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
@@ -363,7 +386,9 @@ function StepDetails({
                   ? `Waiting for your decision on: ${asks.map((r) => r.summary).join("; ")}`
                   : step.kind === "workflow"
                     ? "Waiting: a node inside it waits for your decision."
-                    : "Waiting for your decision on a schema change request."}
+                    : step.kind === "approval"
+                      ? "Waiting for its approval to be decided."
+                      : "Waiting for your decision on a schema change request."}
             </p>
           )}
           {step.status === "skipped" ? (

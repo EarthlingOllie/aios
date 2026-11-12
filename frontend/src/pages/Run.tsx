@@ -17,7 +17,7 @@ import {
 import { MarkdownView } from "@/components/Markdown";
 import { Notice } from "@/components/Notice";
 import { StartedBy } from "@/components/provenance";
-import { SchemaChangeCard } from "@/components/SchemaChanges";
+import { SchemaChangeCard } from "@/components/Approvals";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {

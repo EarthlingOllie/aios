@@ -98,6 +98,9 @@ class Organisation(Base):
     # once they've finished. Null keeps them indefinitely, the default. Only admins set them.
     run_retention_days: Mapped[int | None] = mapped_column(Integer)
     chat_retention_days: Mapped[int | None] = mapped_column(Integer)
+    # How many days an approval (`aios.approvals`) waits undecided before it expires, counting
+    # as not approved; an approval node may set its own. Only admins set it.
+    approval_expiry_days: Mapped[int] = mapped_column(Integer, default=7, server_default=text("7"))
     # Its caps on turns and workflow runs (`aios.limits`), where an admin overrode the
     # deployment's, by name; empty for all the defaults.
     limits: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
@@ -120,6 +123,10 @@ class Organisation(Base):
         ),
         CheckConstraint(
             "chat_retention_days BETWEEN 1 AND 36500", name="ck_organisations_chat_retention_days"
+        ),
+        CheckConstraint(
+            "approval_expiry_days BETWEEN 1 AND 365",
+            name="ck_organisations_approval_expiry_days",
         ),
         # The sweep's: those whose grace period is over.
         Index(

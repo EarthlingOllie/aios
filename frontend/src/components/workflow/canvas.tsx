@@ -22,7 +22,7 @@ import {
   type Viewport,
   useReactFlow,
 } from "@xyflow/react";
-import { Bot, Workflow as WorkflowIcon } from "lucide-react";
+import { Bot, ShieldCheck, Workflow as WorkflowIcon } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
@@ -48,14 +48,17 @@ export type Selection =
   | { type: "node"; key: string }
   | { type: "edge"; source: string; target: string };
 
+const KIND_LABELS = { agent: "Agent", workflow: "Workflow", approval: "Approval" } as const;
+
 type CardData = { node: WorkflowNode; start: boolean; editing: boolean; state?: NodeState };
 type CardNode = Node<CardData, "workflowNode">;
 
 /** A node: what it runs (an agent or a workflow), at which version, under its key. */
 function NodeCard({ data, selected }: NodeProps<CardNode>) {
   const { node, start, editing, state } = data;
-  const Icon = node.kind === "agent" ? Bot : WorkflowIcon;
-  const update = node.latest_version !== null && node.latest_version > node.version;
+  const Icon = node.kind === "agent" ? Bot : node.kind === "approval" ? ShieldCheck : WorkflowIcon;
+  const update =
+    node.version !== null && node.latest_version !== null && node.latest_version > node.version;
   return (
     <div
       className={cn(
@@ -69,17 +72,24 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
       <div className="flex min-w-0 items-center gap-2">
         <Icon className="text-muted-foreground size-4 shrink-0" aria-hidden />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.name}</span>
-        <Badge variant="outline" className="font-mono">
-          v{node.version}
-        </Badge>
+        {node.version !== null && (
+          <Badge variant="outline" className="font-mono">
+            v{node.version}
+          </Badge>
+        )}
       </div>
       <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
-        <span className="sr-only">{node.kind === "agent" ? "Agent" : "Workflow"}</span>
+        <span className="sr-only">{KIND_LABELS[node.kind]}</span>
         <span className="min-w-0 flex-1 truncate font-mono">{node.key}</span>
         {state ? <StateBadge state={state} /> : start && <Badge variant="secondary">Start</Badge>}
         {!state && node.kind === "workflow" && <Badge variant="secondary">Workflow</Badge>}
         {!state && update && <Badge variant="outline">v{node.latest_version} available</Badge>}
-        {!state && node.latest_version === null && <Badge variant="destructive">deleted</Badge>}
+        {!state && node.kind === "approval" && (
+          <Badge variant="secondary">{node.approver_role === "admin" ? "Admin" : "Editor"}</Badge>
+        )}
+        {!state && node.kind !== "approval" && node.latest_version === null && (
+          <Badge variant="destructive">deleted</Badge>
+        )}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={editing} />
     </div>

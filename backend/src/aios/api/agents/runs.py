@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from aios import checkpoints, invocations, turns, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
+from aios.api.approvals import SchemaChangeOut, run_requests, waiting_on
 from aios.api.provenance import UserOut, started_by
-from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import schema_changes, store_id_of
 from aios.datastores.models import (

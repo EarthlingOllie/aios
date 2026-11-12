@@ -23,8 +23,7 @@ from test_chats import (  # noqa: F401 (fixtures)
 )
 from test_schema_change_requests import CONTACTS, Script, agent, queued, start, store  # noqa: F401
 
-from aios import notifications, worker
-from aios.api import schema_changes as schema_changes_api
+from aios import approvals, notifications, worker
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.main import app
@@ -50,7 +49,7 @@ def test_unread_come_first_newest_first(api, agent, queued):  # noqa: F811
     _, first = start(api, agent, Script(CONTACTS))
     _, second = start(api, agent, Script({**CONTACTS, "name": "places"}))
     _, third = start(api, agent, Script({**CONTACTS, "name": "things"}))
-    api.post(f"/api/schema-changes/{third['id']}/reject", json={})
+    api.post(f"/api/approvals/{third['id']}/reject", json={})
 
     listed = api.get("/api/me/notifications").json()
 
@@ -111,7 +110,7 @@ def test_a_requests_notification_says_what_it_asks_for(api, agent, queued):  # n
 def test_deciding_the_request_marks_its_notification_read(api, agent, queued, decision):  # noqa: F811
     _, request = start(api, agent, Script(CONTACTS))
 
-    assert api.post(f"/api/schema-changes/{request['id']}/{decision}", json={}).status_code == 200
+    assert api.post(f"/api/approvals/{request['id']}/{decision}", json={}).status_code == 200
 
     listed = api.get("/api/me/notifications").json()
     assert listed["unread"] == 0
@@ -132,12 +131,12 @@ def test_a_decision_and_clearing_its_notifications_commit_together(
     def lost_connection(*args, **kwargs):
         raise RuntimeError("lost the connection")
 
-    monkeypatch.setattr(schema_changes_api, "clear_notifications", lost_connection)
+    monkeypatch.setattr(approvals, "clear_notifications", lost_connection)
     with pytest.raises(RuntimeError):
-        api.post(f"/api/schema-changes/{request['id']}/approve")
+        api.post(f"/api/approvals/{request['id']}/approve")
     monkeypatch.undo()
 
-    after = api.get(f"/api/schema-changes/{request['id']}").json()
+    after = api.get(f"/api/approvals/{request['id']}").json()
     assert (after["status"], queued) == ("pending", [])
     assert api.get("/api/me/notifications").json()["unread"] == 1
 
@@ -155,7 +154,7 @@ def test_a_decision_that_cant_be_queued_leaves_the_notification_unread(
         raise ConnectionError("Redis is down")
 
     monkeypatch.setattr(worker.apply_schema_change_task, "delay", broker_down)
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 503
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 503
 
     assert api.get("/api/me/notifications").json()["unread"] == 1
 
@@ -174,7 +173,7 @@ def test_an_undone_decision_leaves_one_the_user_read_themselves_read(
         raise ConnectionError("Redis is down")
 
     monkeypatch.setattr(worker.apply_schema_change_task, "delay", broker_down)
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 503
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 503
 
     listed = api.get("/api/me/notifications").json()
     assert listed["unread"] == 0

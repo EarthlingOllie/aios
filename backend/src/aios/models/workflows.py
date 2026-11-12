@@ -10,6 +10,8 @@ import enum
 class WorkflowNodeKind(enum.StrEnum):
     agent = "agent"
     workflow = "workflow"
+    # Waits for a person in its role to approve or reject it (`aios.approvals`).
+    approval = "approval"
 
 
 # A workflow run walks its pinned version's graph, recording a step per node as it starts. An
@@ -19,8 +21,8 @@ class WorkflowNodeKind(enum.StrEnum):
 class WorkflowRunStatus(enum.StrEnum):
     queued = "queued"
     running = "running"
-    # Paused on a node waiting for a schema change request, holding no worker; queued again
-    # once it's decided (`aios.workflows`).
+    # Paused on a node waiting for an approval (a schema change its agent asked for, or an
+    # approval node's), holding no worker; queued again once it's decided (`aios.workflows`).
     waiting = "waiting"
     succeeded = "succeeded"
     failed = "failed"
@@ -28,8 +30,8 @@ class WorkflowRunStatus(enum.StrEnum):
 
 class WorkflowStepStatus(enum.StrEnum):
     running = "running"
-    # An agent node waiting for a schema change request, or a workflow node one of whose nodes
-    # is waiting.
+    # An agent node waiting for a schema change request, an approval node waiting for its
+    # decision, or a workflow node one of whose nodes is waiting.
     waiting = "waiting"
     succeeded = "succeeded"
     failed = "failed"

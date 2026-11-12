@@ -12,11 +12,57 @@ export type RequestSummary = {
   decidedLabel: "Decided" | "Expired" | "Cancelled";
 };
 
-/** How a schema change request stands, as its card and the Changes list show it. */
+/** Whether the approval is a workflow's approval step (else a schema change). */
+export const isStep = (request: SchemaChangeRequest) => request.kind === "workflow_step";
+
+/** How an approval stands, as its card and the Approvals list show it. */
 export function requestSummary(request: SchemaChangeRequest): RequestSummary {
   const decidedLabel =
     request.status === "expired" ? "Expired" : request.status === "cancelled" ? "Cancelled" : "Decided";
-  return { ...describe(request), decidedLabel };
+  return { ...(isStep(request) ? describeStep(request) : describe(request)), decidedLabel };
+}
+
+/** A workflow approval step's: its run carries on once it's decided, either way. */
+function describeStep(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLabel"> {
+  const resuming = !request.resumed_at && !!request.step;
+  const carryingOn = resuming ? " The workflow is carrying on." : "";
+  switch (request.status) {
+    case "pending":
+      return {
+        label: "Waiting for you",
+        variant: "secondary",
+        message: "The workflow is waiting for you to approve or reject this.",
+        inFlight: false,
+      };
+    case "approved":
+      return {
+        label: "Approved",
+        variant: "outline",
+        message: (request.note ? `Approved: ${request.note}` : "Approved.") + carryingOn,
+        inFlight: resuming,
+      };
+    case "rejected":
+      return {
+        label: "Rejected",
+        variant: "outline",
+        message: (request.note ? `Rejected: ${request.note}` : "Rejected.") + carryingOn,
+        inFlight: resuming,
+      };
+    case "expired":
+      return {
+        label: "Expired",
+        variant: "outline",
+        message: "Nobody decided in time, so it expired, which counts as not approved." + carryingOn,
+        inFlight: resuming,
+      };
+    default:
+      return {
+        label: "Cancelled",
+        variant: "outline",
+        message: "Cancelled: the run waiting on it was cancelled or deleted.",
+        inFlight: false,
+      };
+  }
 }
 
 function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLabel"> {
@@ -89,8 +135,8 @@ function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLa
   }
 }
 
-/** Who may decide a pending request, by the approval rules: "Needs an admin to approve". Null
- * once it's decided. */
+/** Who may decide a pending approval (by the approval rules, or its approval step's role):
+ * "Needs an admin to approve". Null once it's decided. */
 export function approvalNeeds(request: SchemaChangeRequest): string | null {
   if (request.status !== "pending") return null;
   const who = request.needs_role === "admin" ? aRole("admin") : `${aRole("editor")} or ${aRole("admin")}`;

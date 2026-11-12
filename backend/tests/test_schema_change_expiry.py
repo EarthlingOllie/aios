@@ -37,13 +37,17 @@ def asked_ago(request: dict, age: timedelta) -> None:
         db.execute(
             update(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
-            .values(created_at=SchemaChangeRequest.created_at - age)
+            .values(
+                created_at=SchemaChangeRequest.created_at - age,
+                expires_at=SchemaChangeRequest.expires_at - age,
+            )
         )
         db.commit()
 
 
 def expiry() -> timedelta:
-    return timedelta(days=get_settings().schema_change_request_expiry_days)
+    """The organisation's approval expiry, as it is by default."""
+    return timedelta(days=7)
 
 
 def expire(queued: list) -> None:  # noqa: F811
@@ -52,7 +56,7 @@ def expire(queued: list) -> None:  # noqa: F811
 
 
 def request_of(api, request: dict) -> dict:
-    return api.get(f"/api/schema-changes/{request['id']}").json()
+    return api.get(f"/api/approvals/{request['id']}").json()
 
 
 def test_a_request_pending_past_the_expiry_resumes_its_chat_run_with_expired(
@@ -116,7 +120,7 @@ def test_deleting_a_waiting_chat_run_cancels_its_request_and_nothing_resumes(
     assert cancelled["status"] == "cancelled"
     assert cancelled["decided_at"] is not None
     assert api.get("/api/me/notifications").json()["unread"] == 0
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 409
     expire(queued)
     assert queued == []
     assert data_tables(store) == []
@@ -171,7 +175,7 @@ def test_an_expired_request_cant_be_decided(
     expire(queued)
     queued.clear()
 
-    r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+    r = api.post(f"/api/approvals/{request['id']}/{decision}", json={})
 
     assert r.status_code == 409
     assert "expired" in r.json()["detail"]
@@ -283,7 +287,7 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
     deleting.join(10)
 
     assert deleted == [204]
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert request["status"] == "cancelled"
 
 
@@ -299,16 +303,20 @@ def test_the_routine_workers_beat_expires_requests_every_so_often():
     }
 
 
-def test_the_expiry_period_is_configuration(
+def test_the_expiry_period_is_the_organisations_setting(
     api,
     agent,  # noqa: F811
     queued,  # noqa: F811
-    monkeypatch,
 ):
+    resp = api.put("/api/organisation/approval-expiry", json={"days": 1})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approval_expiry_days"] == 1
     _, request = start(api, agent, Script(CONTACTS))
-    asked_ago(request, timedelta(hours=2))
-    monkeypatch.setattr(get_settings(), "schema_change_request_expiry_days", 1 / 24)
+    asked_ago(request, timedelta(hours=23))
+    expire(queued)
+    assert request_of(api, request)["status"] == "pending"
 
+    asked_ago(request, timedelta(hours=2))
     expire(queued)
 
     assert request_of(api, request)["status"] == "expired"

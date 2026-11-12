@@ -236,12 +236,12 @@ def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_the
     with signed_in_as(member):
         assert notified(api, drop)
         # First in the Data page's Changes, pending, for them to decide.
-        listed_request = api.get("/api/schema-changes").json()[0]
+        listed_request = api.get("/api/approvals").json()[0]
         assert (listed_request["id"], listed_request["can_decide"]) == (str(drop.id), True)
-        impact = api.get(f"/api/schema-changes/{drop.id}/impact")
+        impact = api.get(f"/api/approvals/{drop.id}/impact")
         assert impact.status_code == 200
         assert [r["column"] for r in impact.json()["removes"]] == ["weight_kg"]
-        approved = api.post(f"/api/schema-changes/{drop.id}/approve", json={"confirm": "fish"})
+        approved = api.post(f"/api/approvals/{drop.id}/approve", json={"confirm": "fish"})
         assert approved.status_code == 200, approved.text
         assert approved.json()["status"] == "approved"
         # Decided, it's read for everyone it notified.
@@ -253,7 +253,7 @@ def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_the
         store, {"op": "add_column", "table": "fish", "column": {"name": "colour", "type": "text"}}
     )
     with signed_in_as(member):
-        rejected = api.post(f"/api/schema-changes/{add.id}/reject", json={"note": "Not now"})
+        rejected = api.post(f"/api/approvals/{add.id}/reject", json={"note": "Not now"})
         assert rejected.status_code == 200, rejected.text
     assert rows_of(user).get(SchemaChangeRequest, add.id).status == SchemaChangeStatus.rejected
 
@@ -298,13 +298,11 @@ def test_another_organisation_cant_see_or_decide_the_stores_requests_or_restore_
 
     with signed_in_as(outsider):
         assert api.get("/api/me/notifications").json()["notifications"] == []
-        assert api.get("/api/schema-changes").json() == []
-        assert api.get(f"/api/schema-changes/{request.id}").status_code == 404
-        assert api.get(f"/api/schema-changes/{request.id}/impact").status_code == 404
+        assert api.get("/api/approvals").json() == []
+        assert api.get(f"/api/approvals/{request.id}").status_code == 404
+        assert api.get(f"/api/approvals/{request.id}/impact").status_code == 404
         for decision in ("approve", "reject"):
-            assert (
-                api.post(f"/api/schema-changes/{request.id}/{decision}", json={}).status_code == 404
-            )
+            assert api.post(f"/api/approvals/{request.id}/{decision}", json={}).status_code == 404
         assert listed(api) == []
         assert api.post(f"/api/dropped/{table['id']}/restore").status_code == 404
     assert (queued, restores) == ([], [])

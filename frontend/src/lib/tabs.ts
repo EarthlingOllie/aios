@@ -32,14 +32,19 @@ export function tabHref(base: string, ids: string[], id: string, search: string)
 
 /**
  * Where to send a tab URL that isn't the canonical one, or null if it is: the first tab's own
- * segment and an unknown one go to `base`, and an old `?tab=<id>` link to the tab's path.
+ * segment and an unknown one go to `base`, an old `?tab=<id>` link to the tab's path, and a
+ * tab's old id (`renamed`, old id to new) to the tab it's now.
  */
 export function tabRedirect(
   base: string,
   ids: string[],
   requested: string | undefined,
   search: string,
+  renamed: Record<string, string> = {},
 ): string | null {
+  if (requested !== undefined && !ids.includes(requested) && renamed[requested]) {
+    return tabHref(base, ids, renamed[requested], search);
+  }
   const query = new URLSearchParams(search);
   const legacy = query.get("tab");
   if (legacy !== null) {

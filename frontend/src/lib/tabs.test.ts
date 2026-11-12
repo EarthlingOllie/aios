@@ -52,6 +52,18 @@ describe("tabHref", () => {
   });
 });
 
+describe("tabRedirect for a renamed tab", () => {
+  it("sends a tab's old id to its new one, keeping the query", () => {
+    const ids = ["overview", "approvals"];
+    const renamed = { changes: "approvals" };
+    expect(tabRedirect("/data", ids, "changes", "?request=7", renamed)).toBe(
+      "/data/approvals?request=7",
+    );
+    expect(tabRedirect("/data", ids, "approvals", "", renamed)).toBeNull();
+    expect(tabRedirect("/data", ids, "nope", "", renamed)).toBe("/data");
+  });
+});
+
 describe("tabRedirect", () => {
   it("is nothing for the page's own path or a known tab's", () => {
     expect(tabRedirect("/agents/3", ids, undefined, "?q=web")).toBeNull();

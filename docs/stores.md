@@ -14,8 +14,9 @@ contents as **Data**. See also [Accounts and organisations](accounts-and-organis
 ## The Data page
 
 The **Data** page shows the organisation's store, the same for every member: its status
-(Overview), the schema changes its agents asked for (Changes: those waiting for a decision, then
-the history), the tables and columns they dropped (Dropped: restorable until purged), its data
+(Overview), its approvals (Approvals: the schema changes its agents asked for and its workflows'
+approval steps, filterable by kind and status, those waiting for a decision first, then the
+history), the tables and columns they dropped (Dropped: restorable until purged), its data
 tables (Tables, below), and its documents, with each one's ingest status, chunk count, size,
 upload time and who uploaded it, upload, download and delete (the chat's documents panel in the
 Chats section uploads to the same list). Each section is a tab with its own URL
@@ -324,8 +325,22 @@ on the Organisation page's Settings tab (`PUT /api/o/{org}/approval-rules/{kind}
 below its default (422); each change is audited. A request needs the highest role among its
 operations: one adding a column and dropping another needs an admin. Only members with that
 role are notified of it, and only they may approve or reject it (403 otherwise); the Data page's
-Changes tab shows every member the role each request needs, with Approve disabled for those
-who can't decide it.
+Approvals tab shows every member the role each request needs, and its decision buttons only to
+those who may decide it.
+
+Schema changes are one kind of **approval** (`aios.approvals`), a workflow's approval step the
+other (see [Workflows](workflows.md#approval-nodes)). Both are listed, read and decided through
+one API, which replaced the schema change routes: `GET /api/o/{org}/approvals` (`?kind=` and
+`?status=` filter it), `GET .../approvals/{id}`, `GET .../approvals/{id}/impact` (a schema
+change's only; 422 for another kind), and `POST .../approvals/{id}/approve` and `/reject`, each
+with an optional note (and a drop's typed confirmation); 403 for a role that may not decide it,
+409 once it's decided. One module owns what both kinds share: notifying only those who may
+decide one, expiring it (`expires_at`, from the organisation's approval expiry setting, 7 days
+by default, `PUT /api/o/{org}/organisation/approval-expiry`; an approval node may set its own),
+cancelling it when nothing waits on it any more, clearing its notifications, and resuming the
+run waiting on it. An expired approval counts as not approved. Every decision is audited
+(`approval.decided`). Approvals are still kept in `aios.schema_change_requests`, with a `kind`,
+until the rename to approvals.
 
 ### Uploaded files
 
@@ -450,7 +465,7 @@ the table or column to `_dropped_<timestamp>_<name>` and record it in
 `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with
 dropped columns keeps its privileges on its other columns only, so `SELECT *` on it is
 refused until they're restored or purged), so it's gone from `describe_data`, `query_data`
-and `write_data` while its data stays. The card and the Changes section show what a drop
+and `write_data` while its data stays. The card and the Approvals list show what a drop
 would remove (row counts, the columns affected), and approving it takes the tables' names
 typed (refused by the server otherwise). The Data page's Dropped section lists what's
 dropped with when it's purged, and restores it (on the urgent worker,

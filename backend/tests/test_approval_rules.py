@@ -91,14 +91,14 @@ def test_an_editor_cant_approve_a_request_mixing_an_added_and_a_dropped_column(
 
     assert notified(db, request) == {user.id}
     with signed_in_as(editor):
-        seen = api.get(f"/api/schema-changes/{request.id}").json()
-        refused = api.post(f"/api/schema-changes/{request.id}/approve", json={"confirm": "fish"})
-        rejected = api.post(f"/api/schema-changes/{request.id}/reject", json={})
+        seen = api.get(f"/api/approvals/{request.id}").json()
+        refused = api.post(f"/api/approvals/{request.id}/approve", json={"confirm": "fish"})
+        rejected = api.post(f"/api/approvals/{request.id}/reject", json={})
     assert (seen["needs_role"], seen["can_decide"]) == ("admin", False)
     assert refused.status_code == 403
     assert "admin" in refused.json()["detail"]
     assert rejected.status_code == 403
-    assert api.get(f"/api/schema-changes/{request.id}").json()["status"] == "pending"
+    assert api.get(f"/api/approvals/{request.id}").json()["status"] == "pending"
 
 
 def test_an_editor_approves_adding_a_column_and_editors_are_notified(api, db, user, store, editor):
@@ -106,8 +106,8 @@ def test_an_editor_approves_adding_a_column_and_editors_are_notified(api, db, us
 
     assert notified(db, request) == {user.id, editor.id}
     with signed_in_as(editor):
-        seen = api.get(f"/api/schema-changes/{request.id}").json()
-        approved = api.post(f"/api/schema-changes/{request.id}/approve", json={})
+        seen = api.get(f"/api/approvals/{request.id}").json()
+        approved = api.post(f"/api/approvals/{request.id}/approve", json={})
     assert (seen["needs_role"], seen["can_decide"]) == ("editor", True)
     assert approved.status_code == 200, approved.text
 
@@ -141,7 +141,7 @@ def test_raising_a_rule_works_and_is_audited(api, db, user, store, editor):
     request = propose(store, ADD_NOTE)
     assert notified(db, request) == {user.id}
     with signed_in_as(editor):
-        assert api.post(f"/api/schema-changes/{request.id}/approve", json={}).status_code == 403
+        assert api.post(f"/api/approvals/{request.id}/approve", json={}).status_code == 403
 
     # And back down to its default.
     assert api.put("/api/approval-rules/add_column", json={"role": "editor"}).status_code == 200
@@ -163,12 +163,13 @@ def test_decisions_are_audited(api, db, user, store):
     approved = propose(store, CONTACTS)
     rejected = propose(store, ADD_NOTE)
 
-    api.post(f"/api/schema-changes/{approved.id}/approve", json={})
-    api.post(f"/api/schema-changes/{rejected.id}/reject", json={"note": "Not now"})
+    api.post(f"/api/approvals/{approved.id}/approve", json={})
+    api.post(f"/api/approvals/{rejected.id}/reject", json={"note": "Not now"})
 
     decided = {e["target_id"]: e for e in entries(api, action="approval.decided")}
     assert decided[str(approved.id)]["details"]["decision"] == "approved"
     assert decided[str(rejected.id)]["details"] == {
+        "kind": "schema_change",
         "decision": "rejected",
         "summary": rejected.summary,
         "note": "Not now",

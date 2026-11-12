@@ -22,7 +22,6 @@ from aios.api import (
     me,
     notifications,
     organisation,
-    schema_changes,
     skills,
     sources,
     streams,
@@ -31,6 +30,7 @@ from aios.api import (
     workflows,
 )
 from aios.api import approval_rules as approval_rules_api
+from aios.api import approvals as approvals_api
 from aios.api import audit as audit_api
 from aios.api import flagged as flagged_api
 from aios.api import search as search_api
@@ -78,7 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router)
     app.include_router(exports.router)
     app.include_router(triggers.router)
-    app.include_router(schema_changes.router)
+    app.include_router(approvals_api.router)
     app.include_router(audit_api.router)
     app.include_router(usage_api.router)
     app.include_router(flagged_api.router)

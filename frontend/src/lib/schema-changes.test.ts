@@ -107,3 +107,35 @@ describe("approvalNeeds", () => {
     expect(approvalNeeds(request({ status: "applied", needs_role: "admin" }))).toBeNull();
   });
 });
+
+describe("a workflow's approval step", () => {
+  const step = (fields: Partial<SchemaChangeRequest>) =>
+    request({
+      kind: "workflow_step",
+      sql: null,
+      ops: null,
+      run: null,
+      summary: "Spend 250 on laptops?",
+      step: { workflow_id: 1, workflow_name: "Spend", run_id: 3, step_id: 9, path: ["approve"] },
+      ...fields,
+    });
+
+  it("waits for a decision, then carries the workflow on", () => {
+    expect(requestSummary(step({}))).toMatchObject({ label: "Waiting for you", inFlight: false });
+    const approved = requestSummary(step({ status: "approved", note: "Fine" }));
+    expect(approved).toMatchObject({ label: "Approved", inFlight: true });
+    expect(approved.message).toBe("Approved: Fine The workflow is carrying on.");
+    const done = requestSummary(step({ status: "rejected", resumed_at: "2026-10-17T09:01:00Z" }));
+    expect(done).toMatchObject({ label: "Rejected", message: "Rejected.", inFlight: false });
+  });
+
+  it("counts an expiry as not approved", () => {
+    const expired = requestSummary(step({ status: "expired", resumed_at: "2026-10-17T09:01:00Z" }));
+    expect(expired).toMatchObject({ label: "Expired", decidedLabel: "Expired" });
+    expect(expired.message).toContain("not approved");
+  });
+
+  it("says who may decide it", () => {
+    expect(approvalNeeds(step({ needs_role: "admin" }))).toBe("Needs an admin to approve");
+  });
+});
