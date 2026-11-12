@@ -86,6 +86,7 @@ export function UsageSection() {
                   <th className="px-3 py-2 text-right font-medium">Tokens in</th>
                   <th className="px-3 py-2 text-right font-medium">Tokens out</th>
                   <th className="px-3 py-2 text-right font-medium">Web searches</th>
+                  <th className="px-3 py-2 text-right font-medium">Tool calls</th>
                   <th className="px-3 py-2 text-right font-medium">Sandbox seconds</th>
                   <th className="px-3 py-2 text-right font-medium">Cost</th>
                 </tr>
@@ -98,6 +99,7 @@ export function UsageSection() {
                     <td className="px-3 py-2 text-right tabular-nums">{number(t.input_tokens)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{number(t.output_tokens)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{number(t.web_searches)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{number(t.tool_calls)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{number(t.sandbox_seconds)}</td>
                     <td
                       className="px-3 py-2 text-right tabular-nums"

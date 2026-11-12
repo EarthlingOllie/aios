@@ -140,6 +140,8 @@ export type UsageTotal = {
   output_tokens: number;
   embedded_texts: number;
   web_searches: number;
+  /** Tool calls the ledger counts (agents' posts into other chats). */
+  tool_calls: number;
   sandbox_seconds: number;
   /** Estimated, in GBP; null if nothing in it was priced. */
   cost: number | null;

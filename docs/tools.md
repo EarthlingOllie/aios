@@ -3,8 +3,8 @@
 A **tool** is a capability from the tool library that an agent version may use, with its
 settings: web search; search, the hybrid search over everything in the agent's organisation
 (see [Stores](stores.md#the-search-index)), with document search and run history search, the
-same search fixed to documents or to past runs; Remember and Forget, an agent's memory; Run
-Python; and the data tools. `GET /api/tools`
+same search fixed to documents or to past runs; Remember and Forget, an agent's memory; Post
+message, posting into other chats; Run Python; and the data tools. `GET /api/tools`
 (`aios.api.tools`) lists the library, with each tool's settings schema. See
 [Agents and skills](agents-and-skills.md) for how agents are given them.
 
@@ -70,6 +70,13 @@ was learned; editors and admins edit (`PATCH`) and delete (`DELETE .../memories/
 them, each recorded in the audit log (`memory.edited`, `memory.deleted`; an agent's `forget` is
 `memory.forgotten`). Memories survive archiving, are never pruned by retention (pruning a run or
 chat only clears where a memory was learned), and are left out of exports.
+
+## Post message
+
+**Post message** (`post_message`) lets an agent post into other chats it's a chat member of: a
+chat's name and a markdown body, and optionally the names of the chat's members to mention. See
+[Chats](chats.md#agents-posting-into-other-chats) for what it refuses and how a post is treated.
+Its result (which message, or why not) is the platform's own, so it isn't sent to Jev.
 
 ## Web search
 

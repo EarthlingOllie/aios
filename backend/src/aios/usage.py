@@ -15,7 +15,9 @@ charged to it; the Search page sets the person's; the background embedding sweep
 - the handoff's call (`aios.handoff`), written with its brief;
 - the embeddings module, once per batch (`aios.embeddings`);
 - a sandbox session, when it ends (`sandbox_ended`): replaced by a new one, or stopped with its
-  run.
+  run;
+- a post by `post_message`, as a tool call costing nothing, with the post
+  (`aios.tools.post_message`).
 
 A model call's row is keyed by its response's id (`call_key`): recording it again is a no-op, so
 a retry never counts twice. A model with no price records a null cost, never an error.
@@ -492,8 +494,8 @@ GROUPS = ("agent", "workflow", "person", "day")
 def totals(store: Session, group: str, start: date, end: date) -> list[dict[str, Any]]:
     """The ledger's totals from `start` to `end` (days, inclusive, UTC) by `group`: agent,
     workflow, person or day. Each: the key (an id, or the day), model calls, tokens in and out,
-    embeddings' texts, web searches, sandbox seconds, the cost (null if nothing in it was
-    priced) and how many entries are unpriced."""
+    embeddings' texts, web searches, tool calls, sandbox seconds, the cost (null if nothing in
+    it was priced) and how many entries are unpriced."""
     key = {
         "agent": UsageEntry.agent_id,
         "workflow": UsageEntry.workflow_id,
@@ -512,6 +514,7 @@ def totals(store: Session, group: str, start: date, end: date) -> list[dict[str,
             func.coalesce(func.sum(UsageEntry.output_tokens), 0).label("output_tokens"),
             quantity(UsageKind.embedding).label("embedded_texts"),
             quantity(UsageKind.web_search).label("web_searches"),
+            quantity(UsageKind.tool_call).label("tool_calls"),
             quantity(UsageKind.sandbox_seconds).label("sandbox_seconds"),
             func.sum(UsageEntry.cost).label("cost"),
             func.count().filter(UsageEntry.cost.is_(None)).label("unpriced"),

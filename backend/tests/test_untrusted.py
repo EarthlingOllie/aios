@@ -134,6 +134,7 @@ def test_every_trusted_tool_is_one_of_the_platforms_own():
         "request_schema_change",
         "remember",
         "forget",
+        "post_message",
     } == tool_checks.TRUSTED
 
 

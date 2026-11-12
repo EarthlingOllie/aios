@@ -13,8 +13,9 @@ Every billable call writes one row of `aios.usage`, in the organisation's store 
 | `web_search` | the same middleware, from the response (the provider's count, else its web search blocks) | `turn` |
 | `embedding` | `aios.embeddings`, once per batch: a search's query, `write_data`'s texts, and the background sweep (documents' chunks as `ingest`, everything else as `index_embedding`) | `search_query`, `index_embedding`, `ingest` |
 | `sandbox_seconds` | a sandbox session ending: replaced by a new one, or stopped with its run | `turn` |
+| `tool_call` | `post_message`, with each post (free: cost 0) | `turn` |
 
-Tool calls get rows once a later phase prices them. Each row carries the model, tokens (cache
+Other tool calls get rows once a later phase prices them. Each row carries the model, tokens (cache
 reads and writes too), a quantity, the estimated cost in pounds sterling, and what it's charged to:
 the agent or workflow, the agent run and workflow run, the turn, the invocation, the person and
 the cause. A turn's charge is set as a context variable while its graph runs (`usage.charging`),
@@ -26,7 +27,8 @@ so its tools' embeddings are charged to it; the Search page charges the person s
 - **Retries never count twice**: a model call's row is keyed by its response's id.
 - It's never pruned (`aios.retention` leaves it), and has no foreign keys, so deleting a run
   leaves its usage.
-- **Reading it.** Admins read totals by agent, workflow, person or day over a range of days
+- **Reading it.** Admins read totals (model calls, tokens, embedded texts, web searches, tool
+  calls, sandbox seconds and cost) by agent, workflow, person or day over a range of days
   (`GET /api/o/{org}/usage?group=&start=&end=`, the Organisation page's Usage tab). Agents read
   the rows through `reporting.usage` with `query_data`: identifiers, counts, costs and kinds, no
   text.
