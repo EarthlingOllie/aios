@@ -41,6 +41,10 @@ RECENT_SYNCS = 20
 ALREADY_SYNCING = "This source is syncing now. Try again once it's finished."
 PAUSED = "This source is paused. Resume it to sync it."
 REMOVING = "This source is being removed."
+CONNECTORS_SOURCE = (
+    "This source is its connector's: remove the connector to stop it, keeping or deleting what "
+    "it synced."
+)
 
 
 class SyncOut(BaseModel):
@@ -342,6 +346,8 @@ def remove_source(source_id: DbId, user: CurrentUser, store_id: CurrentDataStore
     """Mark a source for removal; it stops syncing at once. Uploads can't be removed (409)."""
     with store_session(store_id, "rw") as store:
         source = _changeable(store, source_id)
+        if source.connector_id is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, CONNECTORS_SOURCE)
         source.status = SourceStatus.removing
         audit.configured(store, user.id, "source", source, "removed")
         store.commit()

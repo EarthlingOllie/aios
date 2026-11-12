@@ -53,6 +53,9 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("ALTER TABLE aios.sources DROP COLUMN connector_id")
+        conn.execute("DROP TABLE aios.connectors")
+        conn.execute("DROP TYPE aios.connector_status")
         conn.execute("ALTER TABLE aios.documents DROP COLUMN synced_item_id")
         conn.execute("DROP TABLE aios.source_syncs, aios.synced_items CASCADE")
         conn.execute("DROP TYPE aios.sync_kind, aios.sync_status, aios.synced_item_kind")

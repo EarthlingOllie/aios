@@ -45,7 +45,11 @@ UNSCOPED = {"auth", "dev", "me", "invites", "tools", "organisations", "o"}
 def unscoped(path: str) -> bool:
     """Whether an API path is one of the unscoped routes', or already under the prefix."""
     rest = path.removeprefix("/api/")
-    return rest.split("/", 1)[0].split("?", 1)[0] in UNSCOPED or rest == "triggers/timezones"
+    return (
+        rest.split("/", 1)[0].split("?", 1)[0] in UNSCOPED
+        or rest == "triggers/timezones"
+        or rest.split("?", 1)[0] == "connectors/callback"
+    )
 
 
 def home_organisation(db, user_id: int) -> Organisation | None:

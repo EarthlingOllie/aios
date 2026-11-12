@@ -8,13 +8,13 @@ Connecting runs an OAuth-style flow with a signed state; credentials are stored 
 
 **Blocked by:** [02: Sync engine, file items, source health](02-sync-engine.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Only admins can start a connection; bad, expired or mismatched states are refused (400 or 403); one connector per provider is enforced (409).
-- [ ] A final authorisation failure sets the connector to needs-reconnecting, stops its syncs and shows Reconnect; reconnecting resumes from the stored cursor.
-- [ ] Picking restricted items without acknowledging is refused (422), and the warning text matches the spec.
-- [ ] Saving the scope creates the connector's source, which syncs; content is searchable by every member; narrowing the scope removes the dropped items at the next sync.
-- [ ] A call to a host outside the provider's allowed list is refused and recorded on the sync.
-- [ ] Removing a provider from the enabled list marks its connectors unavailable at once and keeps their content searchable.
-- [ ] Removing a connector with "Delete" leaves no synced items, documents or search entries; with "Keep" it produces Uploads documents (message items as Markdown, grouped as the spec says) that survive.
-- [ ] Connecting, scope changes and removal (with the keep-or-delete choice) are recorded in the audit log.
+- [x] Only admins can start a connection; bad, expired or mismatched states are refused (400 or 403); one connector per provider is enforced (409).
+- [x] A final authorisation failure sets the connector to needs-reconnecting, stops its syncs and shows Reconnect; reconnecting resumes from the stored cursor.
+- [x] Picking restricted items without acknowledging is refused (422), and the warning text matches the spec.
+- [x] Saving the scope creates the connector's source, which syncs; content is searchable by every member; narrowing the scope removes the dropped items at the next sync.
+- [x] A call to a host outside the provider's allowed list is refused and recorded on the sync.
+- [x] Removing a provider from the enabled list marks its connectors unavailable at once and keeps their content searchable.
+- [x] Removing a connector with "Delete" leaves no synced items, documents or search entries; with "Keep" it produces Uploads documents (message items as Markdown, grouped as the spec says) that survive.
+- [x] Connecting, scope changes and removal (with the keep-or-delete choice) are recorded in the audit log.

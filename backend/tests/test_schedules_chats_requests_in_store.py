@@ -49,6 +49,8 @@ PLATFORM_TABLES = {
     # Agents' login roles in their stores (`aios.datastores.agent_roles`): names and encrypted
     # passwords, credentials like the stores' own.
     "agent_store_roles",
+    # Connectors' credentials (`aios.connectors`): encrypted, kept out of every store on purpose.
+    "connector_credentials",
 }
 MOVED = (
     "triggers",

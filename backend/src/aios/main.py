@@ -32,11 +32,12 @@ from aios.api import (
 from aios.api import approval_rules as approval_rules_api
 from aios.api import approvals as approvals_api
 from aios.api import audit as audit_api
+from aios.api import connectors as connectors_api
 from aios.api import flagged as flagged_api
 from aios.api import search as search_api
 from aios.api import usage as usage_api
 from aios.api.scoping import mount_organisation_prefix
-from aios.config import get_settings
+from aios.config import DEV_CONNECTOR_CREDENTIALS_KEY, get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
 from aios.models import DataStoreStatus
@@ -58,6 +59,14 @@ def create_app() -> FastAPI:
         raise RuntimeError(
             "SCRIPTED_MODELS_ENABLED is for the full-stack test only, and can't be on with "
             "COOKIE_SECURE (a production-like configuration)"
+        )
+    if (
+        settings.cookie_secure
+        and settings.connector_credentials_key.get_secret_value() == DEV_CONNECTOR_CREDENTIALS_KEY
+    ):
+        raise RuntimeError(
+            "CONNECTOR_CREDENTIALS_KEY must be set in a production-like configuration "
+            "(COOKIE_SECURE)"
         )
     app = FastAPI(title="aios", lifespan=lifespan)
     app.add_middleware(
@@ -85,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(approval_rules_api.router)
     app.include_router(dropped.router)
     app.include_router(sources.router)
+    app.include_router(connectors_api.router)
     app.include_router(notifications.router)
     app.include_router(search_api.router)
     app.include_router(organisation.router)

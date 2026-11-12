@@ -10,16 +10,25 @@ An item (`Item`) is named by its external id, and carries a content hash that ch
 its content does, so the loop fetches and indexes again only what changed. A provider raises
 `NeedsReconnecting` on a final authorisation failure, and anything else when a sync can't go on.
 
-The providers are found by name (`adapter_for`): so far only the development-only test provider
-(`aios.source_providers.test`); URL, webhook, email and connector sources add theirs.
+**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive, GitHub and the
+development-only test provider (`aios.source_providers.test`). Each says why it's unavailable here,
+if it is (`why_unavailable`): switched off in this deployment (`connector_enabled_providers`, which
+stops its syncs at once and leaves its content), missing its app settings, or not built yet. A
+connector's provider also runs its connect flow (`Provider.authorise_url`, `exchange`, `revoke`)
+and says how its message items are kept as documents when its connector is removed
+(`Provider.keep_groups`). Its calls go through `aios.outbound`, which reaches only its hosts.
 """
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from aios.config import get_settings
 from aios.datastores.models import SyncedItemKind
+
+if TYPE_CHECKING:
+    from aios.datastores.models import SyncedItem
 
 
 class NeedsReconnecting(Exception):
@@ -76,11 +85,13 @@ class ScopeOption:
 
 @dataclass(frozen=True)
 class SourceView:
-    """What an adapter is told of the source it syncs."""
+    """What an adapter is told of the source it syncs: with its connector's credential (never
+    printed), for a connector's."""
 
     id: int
     name: str
     settings: dict[str, Any]
+    credential: str | None = field(default=None, repr=False)
 
 
 class Adapter(Protocol):
@@ -93,26 +104,126 @@ class Adapter(Protocol):
     def scope_options(self, source: SourceView) -> list[ScopeOption]: ...
 
 
+@dataclass(frozen=True)
+class Grant:
+    """What a provider granted at the end of a connect flow: the secret (never printed) and what
+    isn't secret about it."""
+
+    secret: str = field(repr=False)
+    kind: str = "oauth"
+    scopes: str | None = None
+    expires_at: datetime | None = None
+    external_account: str | None = None
+
+
+@dataclass(frozen=True)
+class KeptDocument:
+    """A document made from a removed connector's message items, kept as an upload."""
+
+    filename: str
+    markdown: str
+
+
+@dataclass(frozen=True)
+class Provider:
+    name: str
+    title: str
+    # Why it can't be used here whatever the enabled list says (missing app settings, not built
+    # yet); None if it can.
+    unavailable: Callable[[], str | None]
+    # Its adapter; None until it's built.
+    adapter: Callable[[], Adapter] | None = None
+    # The connect flow: where to send the admin's browser with the signed state, and what the
+    # code it comes back with is worth. None: it can't be connected (yet).
+    authorise_url: Callable[[str], str] | None = None
+    exchange: Callable[[str], Grant] | None = None
+    # Revokes a grant at the provider, where it can.
+    revoke: Callable[[str], None] | None = None
+    # Its message items as documents, grouped as the provider's content is (a removed connector's
+    # content, kept).
+    keep_groups: Callable[[Iterable["SyncedItem"]], list[KeptDocument]] | None = None
+
+
+def _app_settings(title: str, *values: Any) -> str | None:
+    def present(v: Any) -> bool:
+        return bool(v.get_secret_value() if hasattr(v, "get_secret_value") else v)
+
+    if all(present(v) for v in values):
+        return f"{title} isn't available in this version of aios yet."
+    return f"{title} isn't set up in this deployment: it needs its app settings."
+
+
+def _test_unavailable() -> str | None:
+    if get_settings().sources_test_provider_enabled:
+        return None
+    return "The test provider is for development only."
+
+
+def _test_provider() -> Provider:
+    from aios.source_providers import test
+
+    return test.PROVIDER
+
+
 TEST = "test"
 
 
+def _providers() -> dict[str, Provider]:
+    s = get_settings()
+    return {
+        "slack": Provider(
+            "slack",
+            "Slack",
+            lambda: _app_settings("Slack", s.slack_client_id, s.slack_client_secret),
+        ),
+        "google_drive": Provider(
+            "google_drive",
+            "Google Drive",
+            lambda: _app_settings("Google Drive", s.google_client_id, s.google_client_secret),
+        ),
+        "github": Provider(
+            "github",
+            "GitHub",
+            lambda: _app_settings(
+                "GitHub", s.github_app_id, s.github_app_private_key, s.github_app_slug
+            ),
+        ),
+        TEST: _test_provider(),
+    }
+
+
+def provider(name: str | None) -> Provider | None:
+    return _providers().get(name or "")
+
+
+def all_providers() -> list[Provider]:
+    return list(_providers().values())
+
+
+def why_unavailable(name: str | None) -> str | None:
+    """Why the provider can't be used here (None if it can): there's none by that name, it's
+    switched off in this deployment, or it's unavailable of itself."""
+    found = provider(name)
+    if found is None:
+        return f"There's no provider {name!r}."
+    if found.name not in get_settings().connector_enabled_providers:
+        return f"{found.title} is switched off in this deployment."
+    return found.unavailable()
+
+
 def available() -> dict[str, str | None]:
-    """The providers a source can be added with here, each with why it's unavailable (None if
-    it's available)."""
-    test_off = (
-        None
-        if get_settings().sources_test_provider_enabled
-        else "The test provider is for development only."
-    )
-    return {TEST: test_off}
+    """The providers a source can be added with directly (not through a connector) here, each
+    with why it's unavailable (None if it's available): the test provider."""
+    return {TEST: why_unavailable(TEST)}
 
 
 def adapter_for(settings: dict[str, Any]) -> Adapter:
     """The adapter for a source with these settings. Raises `ProviderUnavailable`."""
-    provider = settings.get("provider")
-    why = available().get(provider, f"There's no provider {provider!r}.")
+    name = settings.get("provider")
+    why = why_unavailable(name)
+    found = provider(name)
+    if why is None and (found is None or found.adapter is None):
+        why = f"There's no adapter for {name!r}."
     if why is not None:
         raise ProviderUnavailable(why)
-    from aios.source_providers import test
-
-    return test.TestProvider()
+    return found.adapter()

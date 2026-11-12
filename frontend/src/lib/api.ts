@@ -290,6 +290,33 @@ export type SourceProvider = { provider: string; unavailable: string | null };
 export type SourceCreate = { name: string; provider: string; feed?: string; interval_seconds?: number };
 export type SourceUpdate = { name?: string; paused?: boolean; interval_seconds?: number };
 
+/** A provider a connector can be made with; `unavailable` says why it can't here, if it can't. */
+export type ConnectorProvider = {
+  provider: string;
+  title: string;
+  unavailable: string | null;
+  /** The organisation's connector to it, if it has one. */
+  connector_id: number | null;
+};
+
+/** Something a connector can sync (a channel, folder or repository); `restricted` at its source. */
+export type ScopeItem = { id: string; name: string; restricted: boolean };
+
+/** A connection to an external system, one per provider. Its credentials are never sent. */
+export type Connector = {
+  id: number;
+  provider: string;
+  name: string;
+  status: "active" | "needs_reauth" | "removing";
+  /** Why its provider can't be used here now (switched off, say); null if it can. */
+  unavailable: string | null;
+  scope: ScopeItem[];
+  /** Its source, once its scope is first saved. */
+  source_id: number | null;
+  source: Source | null;
+  created_at: string;
+};
+
 /** The source a document belongs to: Uploads for an upload. */
 export type DocumentSource = Pick<Source, "id" | "kind" | "name">;
 
@@ -1586,6 +1613,27 @@ export const api = {
   /** Admins only: queued (202), or a 409 while a sync of it runs, or for Uploads or a paused source. */
   syncSource: (id: number, full = false) =>
     request<void>(`${organisationApi()}/sources/${id}/sync`, json("POST", { full })),
+  listConnectorProviders: () => request<ConnectorProvider[]>(`${organisationApi()}/connector-providers`),
+  listConnectors: () => request<Connector[]>(`${organisationApi()}/connectors`),
+  getConnector: (id: number) => request<Connector>(`${organisationApi()}/connectors/${id}`),
+  /** Admins only: where to send the browser to authorise the provider; a 409 if the organisation
+   * has a connector to it already, or it can't be connected here. */
+  startConnecting: (provider: string) =>
+    request<{ redirect_url: string }>(`${organisationApi()}/connectors`, json("POST", { provider })),
+  reconnectConnector: (id: number) =>
+    request<{ redirect_url: string }>(`${organisationApi()}/connectors/${id}/reconnect`, { method: "POST" }),
+  /** Admins only: what the connector can sync, matching `q`. A 409 while it needs reconnecting. */
+  connectorScopeOptions: (id: number, q = "") =>
+    request<ScopeItem[]>(`${organisationApi()}/connectors/${id}/scope-options?${new URLSearchParams({ q })}`),
+  /** Admins only: a 422 if something restricted is picked without `acknowledge_restricted`. */
+  setConnectorScope: (id: number, items: string[], acknowledge_restricted: boolean) =>
+    request<Connector>(
+      `${organisationApi()}/connectors/${id}/scope`,
+      json("PUT", { items, acknowledge_restricted }),
+    ),
+  /** Admins only (202): stops it at once; its content is kept as Uploads documents, or deleted. */
+  removeConnector: (id: number, keep: boolean) =>
+    request<void>(`${organisationApi()}/connectors/${id}?keep=${keep}`, { method: "DELETE" }),
   deleteDocument: (id: number) => request<void>(`${organisationApi()}/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
     const body = new FormData();

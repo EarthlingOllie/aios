@@ -9,13 +9,14 @@
   per ready store (`aios.run_service.work.embedding_work`), queued once however many ask.
 - **Syncs**: every `sync_poll_seconds` each process enqueues a sync of every ready store's
   sources that are due (`aios.sync.due`), queued once per source however many ask, and prunes
-  sync records past `sync_history_days` (`aios.sync.prune`)."""
+  sync records past `sync_history_days` (`aios.sync.prune`). It also finishes removing connectors
+  whose removal stopped part way (`aios.connectors.removals_due`)."""
 
 import logging
 
 from fastapi.concurrency import run_in_threadpool
 
-from aios import sync
+from aios import connectors, sync
 from aios.config import get_settings
 from aios.datastores import ready_stores, store_session
 from aios.db import SessionLocal
@@ -90,7 +91,10 @@ def _enqueue_syncs() -> int:
             with store_session(store_id, "rw") as store:
                 due = sync.due(store)
                 sync.prune(store)
+                removing = connectors.removals_due(store)
                 store.commit()
+            for connector_id in removing:
+                connectors.finish_removal(store_id, connector_id)
         except Exception:
             log.exception("couldn't look for data store %s's sources due", store_id)
             continue

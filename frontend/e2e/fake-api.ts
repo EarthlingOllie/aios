@@ -314,6 +314,25 @@ export type SourceRow = {
   created_at: string;
 };
 
+/** Something a connector can sync; `restricted` at its source. */
+export type ScopeItemRow = { id: string; name: string; restricted: boolean };
+
+/** A connector, as GET /connectors answers it (its source is filled in from `sources`). */
+export type ConnectorRow = {
+  id: number;
+  provider: string;
+  name: string;
+  status: "active" | "needs_reauth" | "removing";
+  unavailable: string | null;
+  scope: ScopeItemRow[];
+  source_id: number | null;
+  created_at: string;
+};
+
+/** What an admin must accept before syncing something restricted, as the API says it. */
+export const RESTRICTED_WARNING =
+  "Some of what you picked is restricted at its source. Once it's synced, everyone in the organisation will be able to search it.";
+
 /** One sync of a source. */
 export type SyncRow = {
   id: number;
@@ -900,6 +919,30 @@ export class FakeApi {
   ];
   /** The providers a source can be added with (GET /api/source-providers). */
   sourceProviders: { provider: string; unavailable: string | null }[] = [{ provider: "test", unavailable: null }];
+  /** The providers a connector can be made with (GET /api/connector-providers). */
+  connectorProviders: { provider: string; title: string; unavailable: string | null }[] = [
+    { provider: "slack", title: "Slack", unavailable: "Slack isn't set up in this deployment: it needs its app settings." },
+    {
+      provider: "google_drive",
+      title: "Google Drive",
+      unavailable: "Google Drive isn't set up in this deployment: it needs its app settings.",
+    },
+    { provider: "github", title: "GitHub", unavailable: "GitHub isn't set up in this deployment: it needs its app settings." },
+    { provider: "test", title: "Test", unavailable: null },
+  ];
+  /** The organisation's connectors. Connecting one (POST /connectors) makes it at once, as if the
+   * provider had sent the browser straight back. */
+  connectors: ConnectorRow[] = [];
+  /** What every connector can sync (GET /connectors/:id/scope-options). */
+  scopeOptions: ScopeItemRow[] = [
+    { id: "general", name: "general", restricted: false },
+    { id: "random", name: "random", restricted: false },
+    { id: "board", name: "board", restricted: true },
+  ];
+  /** Each scope saved: the connector, the ids picked, and whether restricted ones were accepted. */
+  scopeSaves: { id: number; items: string[]; acknowledged: boolean }[] = [];
+  /** Each connector removed, and whether its content was kept. */
+  connectorRemovals: { id: number; keep: boolean }[] = [];
   /** Each Sync now and Full resync asked for: the source's id, and whether it was full. */
   syncRequests: { id: number; full: boolean }[] = [];
   /** Synced message items Jev flagged. */
@@ -1335,6 +1378,29 @@ export class FakeApi {
     };
     this.sources.push(source);
     return source;
+  }
+
+  /** Adds a connector, as connecting would. */
+  addConnector(provider = "test", fields: Partial<ConnectorRow> = {}): ConnectorRow {
+    const title = this.connectorProviders.find((p) => p.provider === provider)?.title ?? provider;
+    const connector: ConnectorRow = {
+      id: (this.connectors.at(-1)?.id ?? 0) + 1,
+      provider,
+      name: title,
+      status: "active",
+      unavailable: null,
+      scope: [],
+      source_id: null,
+      created_at: NOW,
+      ...fields,
+    };
+    this.connectors.push(connector);
+    return connector;
+  }
+
+  private connectorOut(connector: ConnectorRow) {
+    const source = this.sources.find((s) => s.id === connector.source_id);
+    return { ...connector, source: source ? this.sourceOut(source) : null };
   }
 
   /** A sync, as a source's page lists it. */
@@ -3252,6 +3318,9 @@ export class FakeApi {
       path === "/api/sources" ||
       path.startsWith("/api/sources/") ||
       path === "/api/source-providers" ||
+      path === "/api/connector-providers" ||
+      path === "/api/connectors" ||
+      path.startsWith("/api/connectors/") ||
       path === "/api/search" ||
       path.startsWith("/api/data/")
     ) {
@@ -3321,6 +3390,72 @@ export class FakeApi {
         const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
         return fail(403, `${who} can't add, change, sync, pause or remove sources. Ask an admin.`);
       };
+      if (path === "/api/connector-providers" && method === "GET") {
+        return reply(
+          200,
+          this.connectorProviders.map((p) => ({
+            ...p,
+            connector_id: this.connectors.find((c) => c.provider === p.provider)?.id ?? null,
+          })),
+        );
+      }
+      if (path === "/api/connectors" && method === "GET") {
+        return reply(200, this.connectors.map((c) => this.connectorOut(c)));
+      }
+      if (path === "/api/connectors" && method === "POST") {
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        const provider = this.connectorProviders.find((p) => p.provider === body.provider);
+        if (!provider || provider.unavailable) return fail(409, provider?.unavailable ?? "There's no such provider.");
+        if (this.connectors.some((c) => c.provider === provider.provider)) {
+          return fail(409, `This organisation already has a ${provider.title} connector: remove it to connect another.`);
+        }
+        const connector = this.addConnector(provider.provider);
+        return reply(200, { redirect_url: inOrg(`/data/connectors/${connector.id}`) });
+      }
+      if ((m = path.match(/^\/api\/connectors\/(\d+)(\/[\w-]+)?$/))) {
+        const connector = this.connectors.find((c) => c.id === Number(m![1]));
+        if (!connector) return fail(404, "Not Found");
+        const action = m[2] ?? "";
+        if (action === "" && method === "GET") return reply(200, this.connectorOut(connector));
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        if (action === "/reconnect" && method === "POST") {
+          connector.status = "active";
+          const source = this.sources.find((s) => s.id === connector.source_id);
+          if (source) {
+            source.status = "active";
+            source.health = "healthy";
+          }
+          return reply(200, { redirect_url: inOrg(`/data/connectors/${connector.id}`) });
+        }
+        if (action === "/scope-options" && method === "GET") {
+          if (connector.status === "needs_reauth") return fail(409, "This connector needs reconnecting first.");
+          const q = (new URL(request.url()).searchParams.get("q") ?? "").toLowerCase();
+          return reply(200, this.scopeOptions.filter((o) => o.name.toLowerCase().includes(q)));
+        }
+        if (action === "/scope" && method === "PUT") {
+          const items = (body.items as string[]) ?? [];
+          const acknowledged = Boolean(body.acknowledge_restricted);
+          const picked = items.map((id) => this.scopeOptions.find((o) => o.id === id)!);
+          if (picked.some((o) => o.restricted) && !acknowledged) return fail(422, RESTRICTED_WARNING);
+          this.scopeSaves.push({ id: connector.id, items, acknowledged });
+          connector.scope = picked;
+          if (connector.source_id === null) {
+            connector.source_id = this.addSource(connector.name, "connector", {
+              provider: connector.provider,
+              syncs: [this.sync({ kind: "full" })],
+            }).id;
+          }
+          return reply(200, this.connectorOut(connector));
+        }
+        if (action === "" && method === "DELETE") {
+          const keep = new URL(request.url()).searchParams.get("keep") === "true";
+          this.connectorRemovals.push({ id: connector.id, keep });
+          this.connectors = this.connectors.filter((c) => c !== connector);
+          this.sources = this.sources.filter((s) => s.id !== connector.source_id);
+          return reply(202, null);
+        }
+        return fail(404, "Not Found");
+      }
       const tooOften = (seconds: unknown) =>
         typeof seconds === "number" && seconds < 300
           ? fail(422, "A source can sync at most every 5 minutes (300 seconds).")

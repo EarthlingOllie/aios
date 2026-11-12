@@ -1,13 +1,14 @@
 import { useCallback, useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { Inbox, Loader2, Plus, Upload } from "lucide-react";
+import { Inbox, Loader2, Plug, Plus, Upload } from "lucide-react";
 
 import { ErrorBanner, Field, formatDate, RoleNote, useLoad } from "@/components/crud";
 import { Notice } from "@/components/Notice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api, describeError, type Source, type SourceHealth } from "@/lib/api";
+import { api, describeError, type Connector, type ConnectorProvider, type Source, type SourceHealth } from "@/lib/api";
+import { connectorState } from "@/lib/connectors";
 import { useRefusal } from "@/lib/current-user";
 import { intervalLabel, sourceHealthLabel, sourceKindLabel, sourceStatusLabel, syncSummary } from "@/lib/sources";
 
@@ -87,6 +88,96 @@ export function SourcesSection() {
           {list.data.map((source) => (
             <SourceRow key={source.id} source={source} />
           ))}
+        </ul>
+      )}
+      <ConnectorsSection />
+    </section>
+  );
+}
+
+/** The connector's state, as a badge: "Reconnect" when its access failed. */
+export function ConnectorBadge({ connector }: { connector: Pick<Connector, "status" | "unavailable"> }) {
+  const state = connectorState(connector);
+  return <Badge variant={state.attention ? "destructive" : "outline"}>{state.label}</Badge>;
+}
+
+/** Sends the browser to the provider to authorise aios; it comes back to the connector's page. */
+export async function goConnect(start: () => Promise<{ redirect_url: string }>) {
+  const { redirect_url } = await start();
+  window.location.assign(redirect_url);
+}
+
+/**
+ * The systems this deployment can connect (Slack, Google Drive, GitHub), with why any can't be,
+ * and the organisation's connectors. Admins connect; everyone else sees Connect disabled, with why.
+ */
+function ConnectorsSection() {
+  const providers = useLoad(useCallback(() => api.listConnectorProviders(), []));
+  const connectors = useLoad(useCallback(() => api.listConnectors(), []));
+  const refusal = useRefusal("sources");
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const byId = new Map((connectors.data ?? []).map((c) => [c.id, c]));
+
+  async function connect(provider: ConnectorProvider) {
+    setBusy(provider.provider);
+    setError(undefined);
+    try {
+      await goConnect(() => api.startConnecting(provider.provider));
+    } catch (err) {
+      setError(describeError(err));
+      setBusy(undefined);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-2" aria-label="Connectors">
+      <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Connectors</h3>
+      <p className="text-muted-foreground text-sm">
+        Connect a system once, then choose exactly what it syncs. Everything synced is searchable by everyone in the
+        organisation.
+      </p>
+      <ErrorBanner message={error ?? providers.error ?? connectors.error} onDismiss={() => setError(undefined)} />
+      {providers.data && (
+        <ul className="divide-y rounded-md border" aria-label="Connectors">
+          {providers.data.map((provider) => {
+            const connector = provider.connector_id === null ? undefined : byId.get(provider.connector_id);
+            return (
+              <li key={provider.provider} className="flex items-center gap-3 px-3 py-2">
+                <Plug className="text-muted-foreground size-4 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  {connector ? (
+                    <Link to={`/data/connectors/${connector.id}`} className="block truncate text-sm hover:underline">
+                      {provider.title}
+                    </Link>
+                  ) : (
+                    <p className="text-sm">{provider.title}</p>
+                  )}
+                  <p className="text-muted-foreground text-xs">
+                    {connector
+                      ? connector.scope.length === 0
+                        ? "Choose what it syncs."
+                        : `Syncs ${connector.scope.map((i) => i.name).join(", ")}`
+                      : (provider.unavailable ?? "Not connected.")}
+                  </p>
+                </div>
+                {connector ? (
+                  <ConnectorBadge connector={connector} />
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!!refusal || !!provider.unavailable || busy !== undefined}
+                    title={refusal ?? provider.unavailable ?? undefined}
+                    onClick={() => void connect(provider)}
+                  >
+                    {busy === provider.provider && <Loader2 className="animate-spin" />}
+                    Connect
+                  </Button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
