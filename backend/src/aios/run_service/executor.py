@@ -196,10 +196,12 @@ async def drain_once(
     extending = asyncio.create_task(executor.extend_forever())
     try:
         while True:
+            # Cleared before claiming: an item that finishes (and enqueues more) while the claim
+            # is in flight wakes the next pass rather than being lost.
+            executor.changed.clear()
             await executor.claim()
             if not executor.running:
                 return
-            executor.changed.clear()
             await executor.changed.wait()
     finally:
         extending.cancel()
@@ -308,12 +310,13 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
     log.info("run service started: %s slots", executor.concurrency)
     try:
         while not stopping.is_set():
+            # Cleared before claiming, so a wake or a finished item during the claim isn't lost.
+            woken.clear()
+            executor.changed.clear()
             try:
                 await executor.claim()
             except Exception:
                 log.exception("run service claim failed")
-            woken.clear()
-            executor.changed.clear()
             waits = [
                 asyncio.create_task(woken.wait()),
                 asyncio.create_task(executor.changed.wait()),
