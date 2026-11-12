@@ -25,8 +25,23 @@ import type { Page, Route } from "@playwright/test";
  */
 
 type Kind = "agent" | "workflow";
-type NodeIn = { key: string; kind: Kind; version_id: number };
-type Edge = { source: string; target: string };
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+/** What a node declares, if anything: its schemas and its input template. */
+type NodeIn = {
+  key: string;
+  kind: Kind;
+  version_id: number;
+  input_schema?: Json | null;
+  output_schema?: Json | null;
+  input_template?: Json | null;
+};
+/** `condition`: a JSONLogic condition, if the edge has one. */
+type Edge = { source: string; target: string; condition?: Json | null };
+/** The JSONLogic operators conditions may use, as the server allows them. */
+const CONDITION_OPERATORS = new Set([
+  "var", "==", "!=", "===", "!==", "<", "<=", ">", ">=", "!", "!!", "and", "or", "if", "in", "missing",
+  "missing_some",
+]);
 type Position = { x: number; y: number };
 
 type AgentRow = {
@@ -201,6 +216,8 @@ type WorkflowVersionRow = {
   created_at: string;
   nodes: NodeIn[];
   edges: Edge[];
+  input_schema?: Json | null;
+  output_schema?: Json | null;
 };
 type WorkflowRow = {
   id: number;
@@ -323,7 +340,7 @@ export type TableRow = {
 /** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
 const PREVIEW_CHARS = 200;
 type RunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
-type StepStatus = "running" | "waiting" | "succeeded" | "failed";
+type StepStatus = "running" | "waiting" | "succeeded" | "failed" | "skipped";
 export type StepRow = {
   id: number;
   path: string[];
@@ -337,6 +354,9 @@ export type StepRow = {
   waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
+  input_json?: Json | null;
+  output_json?: Json | null;
+  conditions?: Record<string, boolean> | null;
 };
 export type StalePinRow = {
   path: string[];
@@ -368,6 +388,9 @@ export type RunRow = {
   input: string;
   output: string | null;
   error: string | null;
+  input_json?: Json | null;
+  output_json?: Json | null;
+  output_note?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -1645,7 +1668,7 @@ export class FakeApi {
     const current = this.current(workflow);
     const next = structuredClone(current);
     change(next);
-    this.saveVersion(workflow, next.nodes, next.edges, note);
+    this.saveVersion(workflow, next.nodes, next.edges, note, next);
   }
 
   /** A newer version of the agent, as editing it would make. */
@@ -2006,15 +2029,27 @@ export class FakeApi {
     return member;
   }
 
-  private saveVersion(workflow: WorkflowRow, nodes: NodeIn[], edges: Edge[], note: string | null) {
-    const hash = (n: NodeIn[], e: Edge[]) =>
+  private saveVersion(
+    workflow: WorkflowRow,
+    nodes: NodeIn[],
+    edges: Edge[],
+    note: string | null,
+    schemas: { input_schema?: Json | null; output_schema?: Json | null } = {},
+  ) {
+    const hash = (n: NodeIn[], e: Edge[], s: typeof schemas) =>
       JSON.stringify([
-        n.map((x) => `${x.key}/${x.kind}/${x.version_id}`).sort(),
-        e.map((x) => `${x.source}>${x.target}`).sort(),
+        n
+          .map(
+            (x) =>
+              `${x.key}/${x.kind}/${x.version_id}/${JSON.stringify([x.input_schema ?? null, x.output_schema ?? null, x.input_template ?? null])}`,
+          )
+          .sort(),
+        e.map((x) => `${x.source}>${x.target}/${JSON.stringify(x.condition ?? null)}`).sort(),
+        JSON.stringify([s.input_schema ?? null, s.output_schema ?? null]),
       ]);
     if (workflow.versions.length) {
       const cur = this.current(workflow);
-      if (hash(cur.nodes, cur.edges) === hash(nodes, edges)) return;
+      if (hash(cur.nodes, cur.edges, cur) === hash(nodes, edges, schemas)) return;
     }
     const version: WorkflowVersionRow = {
       id: this.id(),
@@ -2024,6 +2059,8 @@ export class FakeApi {
       created_at: NOW,
       nodes,
       edges,
+      input_schema: schemas.input_schema ?? null,
+      output_schema: schemas.output_schema ?? null,
     };
     this.workflowVersions.set(version.id, version);
     workflow.versions.push(version.id);
@@ -2149,6 +2186,8 @@ export class FakeApi {
       created_by: this.me,
       nodes: version.nodes.map((n) => this.nodeOut(n)),
       edges: version.edges,
+      input_schema: version.input_schema ?? null,
+      output_schema: version.output_schema ?? null,
       unrunnable: null,
     };
   }
@@ -3302,7 +3341,7 @@ export class FakeApi {
       };
       this.workflows.set(workflow.id, workflow);
       this.applyLayout(workflow, body);
-      this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null);
+      this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null, body);
       return reply(201, this.workflowOut(workflow));
     }
     if ((m = path.match(/^\/api\/workflows\/(\d+)(\/.*)?$/))) {
@@ -3330,7 +3369,7 @@ export class FakeApi {
         workflow.description = body.description ?? "";
         workflow.updated_by = this.me;
         this.applyLayout(workflow, body);
-        this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null);
+        this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null, body);
         return reply(200, this.workflowOut(workflow));
       }
       if ((rest === "/archive" || rest === "/unarchive") && method === "POST") {
@@ -3383,6 +3422,30 @@ export class FakeApi {
         );
       }
       if (rest === "/runs" && method === "POST") {
+        const schema = this.current(workflow).input_schema;
+        if (schema) {
+          // The server checks it against the schema; here, only that required fields are there.
+          const value = body?.input_json ?? body?.input;
+          const required = (schema as { required?: string[] }).required ?? [];
+          const missing = required.filter(
+            (f) => typeof value !== "object" || value === null || !(f in value),
+          );
+          if (missing.length) {
+            const errors = missing.map((f) => ({ path: "/", message: `'${f}' is a required property` }));
+            const message = `The input doesn't fit the workflow's input schema: ${errors.map((e) => `at ${e.path}: ${e.message}`).join("; ")}`;
+            return reply(422, { detail: { message, errors } });
+          }
+          if (this.current(workflow).nodes.length === 0) {
+            return fail(422, "This workflow has no nodes to run");
+          }
+          const run = this.addRun(workflow, {
+            status: "queued",
+            input: JSON.stringify(value),
+            input_json: value,
+            started_at: null,
+          });
+          return reply(201, this.runSummary(run));
+        }
         if (!body?.input?.trim()) return fail(422, "input: String should match pattern");
         if (this.current(workflow).nodes.length === 0) {
           return fail(422, "This workflow has no nodes to run");
@@ -3440,7 +3503,7 @@ export class FakeApi {
         const old = this.workflowVersions.get(vid)!;
         if (!m[2]) return reply(200, this.versionOut(old));
         workflow.updated_by = this.me;
-        this.saveVersion(workflow, old.nodes, old.edges, `Restored from v${old.version}`);
+        this.saveVersion(workflow, old.nodes, old.edges, `Restored from v${old.version}`, old);
         return reply(200, this.workflowOut(workflow));
       }
     }
@@ -3677,6 +3740,17 @@ export class FakeApi {
           return "A workflow can't contain itself, even through another workflow";
         }
       }
+    }
+    // Conditions use only the allowed operators (the server checks fields and size too).
+    const operators = (c: Json | null | undefined): string[] =>
+      Array.isArray(c)
+        ? c.flatMap(operators)
+        : c !== null && typeof c === "object"
+          ? Object.entries(c).flatMap(([op, args]) => [op, ...operators(args)])
+          : [];
+    for (const e of body.edges) {
+      const bad = operators(e.condition).find((op) => !CONDITION_OPERATORS.has(op));
+      if (bad) return `edges.${e.source}→${e.target}.condition: The operator '${bad}' is not allowed`;
     }
     return null;
   }

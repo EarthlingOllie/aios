@@ -1,10 +1,11 @@
+import json
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
-from pydantic import BaseModel, Field, FiniteFloat
+from pydantic import BaseModel, Field, FiniteFloat, model_serializer, model_validator
 from sqlalchemy import Row, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
@@ -66,6 +67,13 @@ from aios.workflows import (
     reachable_versions,
     validate_graph,
 )
+from aios.workflows.structured import (
+    NodeDeclared,
+    check_workflow,
+    compact,
+    describe,
+    schema_errors,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -78,11 +86,19 @@ class WorkflowNodeIn(BaseModel):
     # The agent version or workflow version the node runs. Pinned, like an agent's skills: a
     # newer version of the agent or subworkflow is taken by saving the workflow with it.
     version_id: DbId
+    # What it takes and gives (JSON Schemas), and the template its input is built from, if it
+    # declares them (`aios.workflows.structured`). An agent node with an output schema gives
+    # structured output.
+    input_schema: Any = None
+    output_schema: Any = None
+    input_template: Any = None
 
 
 class WorkflowEdgeIn(BaseModel):
     source: str
     target: str
+    # A JSONLogic condition on the source's output and the run's input; None: always active.
+    condition: Any = None
 
 
 class NodePosition(BaseModel):
@@ -95,6 +111,9 @@ class WorkflowIn(BaseModel):
     description: str = ""
     nodes: list[WorkflowNodeIn] = []
     edges: list[WorkflowEdgeIn] = []
+    # JSON Schemas for what its runs take and give, if it declares them.
+    input_schema: Any = None
+    output_schema: Any = None
     # Where the editor draws each node, by key. Not versioned; None keeps the saved layout.
     layout: dict[str, NodePosition] | None = None
     # Optional "what changed", stored on the new version if one is created.
@@ -121,11 +140,23 @@ class WorkflowNodeOut(BaseModel):
     # The agent's or workflow's current version (None only while one is being made).
     latest_version: int | None
     latest_version_id: int | None
+    input_schema: Any = None
+    output_schema: Any = None
+    input_template: Any = None
 
 
 class WorkflowEdgeOut(BaseModel):
     source: str
     target: str
+    # Only when it has one.
+    condition: Any = None
+
+    @model_serializer(mode="wrap")
+    def _without_no_condition(self, handler) -> dict[str, Any]:
+        out = handler(self)
+        if out.get("condition") is None:
+            out.pop("condition", None)
+        return out
 
 
 class WorkflowVersionSummary(BaseModel):
@@ -147,6 +178,8 @@ class WorkflowVersionOut(BaseModel):
     created_by: UserOut | None
     nodes: list[WorkflowNodeOut]
     edges: list[WorkflowEdgeOut]
+    input_schema: Any = None
+    output_schema: Any = None
     # Why a run of the version can't start: an agent it runs, at any depth, can't run in the
     # organisation (a tool it needs is missing, as an imported version's may be); None if not.
     unrunnable: str | None = None
@@ -296,7 +329,68 @@ def resolve_graph(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown workflow version")
     if workflow is not None:
         refuse_self_containment(db, workflow, workflow_ids)
-    return [NodeSpec(n.key, n.kind, n.version_id) for n in body.nodes], edges
+    refuse_invalid_structure(db, body)
+    nodes = [
+        NodeSpec(n.key, n.kind, n.version_id, n.input_schema, n.output_schema, n.input_template)
+        for n in body.nodes
+    ]
+    return nodes, edges
+
+
+class StructureRefusal(dict):
+    """A 422's detail for invalid schemas, templates or conditions: a message, and each error
+    with the item it's about. Read as text, its message."""
+
+    def __str__(self) -> str:
+        return self["message"]
+
+
+def refuse_invalid_structure(db: Session, body: WorkflowIn) -> None:
+    """Refuse the request's schemas, templates and conditions if any is invalid: a 422 naming
+    each invalid item (`aios.workflows.structured.check_workflow`). A workflow node's conditions
+    read its own output schema, or else its pinned version's."""
+    pinned = {
+        n.version_id
+        for n in body.nodes
+        if n.kind == WorkflowNodeKind.workflow and n.output_schema is None
+    }
+    inner = (
+        dict(
+            db.execute(
+                select(WorkflowVersion.id, WorkflowVersion.output_schema).where(
+                    WorkflowVersion.id.in_(pinned)
+                )
+            ).all()
+        )
+        if pinned
+        else {}
+    )
+    errors = check_workflow(
+        [
+            NodeDeclared(
+                n.key,
+                n.input_schema,
+                n.output_schema if n.output_schema is not None else inner.get(n.version_id),
+                n.input_template,
+            )
+            for n in body.nodes
+        ],
+        [(e.source, e.target, e.condition) for e in body.edges],
+        body.input_schema,
+        body.output_schema,
+    )
+    if errors:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            StructureRefusal(
+                message="; ".join(f"{item}: {message}" for item, message in errors),
+                errors=[{"item": item, "message": message} for item, message in errors],
+            ),
+        )
+
+
+def conditions_of(body: WorkflowIn) -> dict[tuple[str, str], Any]:
+    return {(e.source, e.target): e.condition for e in body.edges if e.condition is not None}
 
 
 def lock_graph(
@@ -388,6 +482,9 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
         version=pinned.version,
         latest_version=latest.version if latest else None,
         latest_version_id=latest.id if latest else None,
+        input_schema=node.input_schema,
+        output_schema=node.output_schema,
+        input_template=node.input_template,
     )
 
 
@@ -429,7 +526,12 @@ def version_out(
         created_at=version.created_at,
         created_by=saved_by,
         nodes=[node_out(n) for n in version.nodes],
-        edges=[WorkflowEdgeOut(source=e.source, target=e.target) for e in version.edges],
+        edges=[
+            WorkflowEdgeOut(source=e.source, target=e.target, condition=e.condition)
+            for e in version.edges
+        ],
+        input_schema=version.input_schema,
+        output_schema=version.output_schema,
         unrunnable=unrunnable(store, version, ToolOrganisation(org_id, store))
         if runnable
         else None,
@@ -577,7 +679,15 @@ def create_workflow(
     store.add(workflow)
     with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
-            store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
+            store,
+            workflow,
+            nodes=nodes,
+            edges=edges,
+            note=body.note,
+            user_id=user.id,
+            conditions=conditions_of(body),
+            input_schema=body.input_schema,
+            output_schema=body.output_schema,
         )
         audit.configured(store, user.id, "workflow", workflow, "created")
         store.commit()
@@ -638,7 +748,15 @@ def update_workflow(
     apply_layout(workflow, body)
     with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
-            store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
+            store,
+            workflow,
+            nodes=nodes,
+            edges=edges,
+            note=body.note,
+            user_id=user.id,
+            conditions=conditions_of(body),
+            input_schema=body.input_schema,
+            output_schema=body.output_schema,
         )
         audit.configured(store, user.id, "workflow", workflow, "updated")
         store.commit()
@@ -765,9 +883,18 @@ def restore_workflow_version(
     # The versions its nodes pin still exist (nothing is deleted), but the agents and workflows
     # they belong to may have been archived since.
     nodes = [
-        NodeSpec(n.key, n.kind, n.agent_version_id or n.subworkflow_version_id) for n in old.nodes
+        NodeSpec(
+            n.key,
+            n.kind,
+            n.agent_version_id or n.subworkflow_version_id,
+            n.input_schema,
+            n.output_schema,
+            n.input_template,
+        )
+        for n in old.nodes
     ]
     edges = [(e.source, e.target) for e in old.edges]
+    conditions = {(e.source, e.target): e.condition for e in old.edges}
     # The old version passed this check when saved and pins never change, so this only refuses
     # versions saved before the check covered nesting through other workflows.
     refuse_self_containment(
@@ -793,6 +920,9 @@ def restore_workflow_version(
         edges=edges,
         note=f"Restored from v{old.version}",
         user_id=user.id,
+        conditions=conditions,
+        input_schema=old.input_schema,
+        output_schema=old.output_schema,
     )
     audit.configured(store, user.id, "workflow", workflow, "version_restored", version=old.version)
     store.commit()
@@ -803,8 +933,16 @@ def restore_workflow_version(
 
 
 class WorkflowRunIn(BaseModel):
-    # Given to the nodes with no incoming edge, as the user's message to an agent.
-    input: str = Field(min_length=1, pattern=r"\S")
+    # Given to the nodes with no incoming edge, as the user's message to an agent. For a version
+    # with an input schema, JSON (`input_json`), or text read as JSON if it is.
+    input: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    input_json: Any = None
+
+    @model_validator(mode="after")
+    def _given(self) -> "WorkflowRunIn":
+        if self.input is None and self.input_json is None:
+            raise ValueError("Give the run an input")
+        return self
 
 
 class WorkflowRunSummary(BaseModel):
@@ -814,6 +952,12 @@ class WorkflowRunSummary(BaseModel):
     workflow_version: int
     status: WorkflowRunStatus
     input: str
+    # Its input and output as JSON: the input when the version has an input schema; the output
+    # one final node's, or an object of several's by node.
+    input_json: Any = None
+    output_json: Any = None
+    # Why a run that succeeded has no output: "No final step ran".
+    output_note: str | None = None
     output: str | None
     error: str | None
     created_at: datetime
@@ -841,6 +985,11 @@ class WorkflowRunStepOut(BaseModel):
     input: str
     output: str | None
     error: str | None
+    # Its input and output as JSON, when structured; and, once it succeeded, how its outgoing
+    # edges' conditions came out, by target (only those with one).
+    input_json: Any = None
+    output_json: Any = None
+    conditions: dict[str, bool] | None = None
     # An agent node's conversation, on the agent's run page; None for workflow nodes, and once
     # the agent run has been deleted (with its agent).
     agent_id: int | None
@@ -997,7 +1146,9 @@ def workflow_run_summary_query():
         WorkflowVersion.version.label("workflow_version"),
         WorkflowRun.status,
         WorkflowRun.input,
+        WorkflowRun.input_json,
         WorkflowRun.output,
+        WorkflowRun.output_json,
         WorkflowRun.error,
         WorkflowRun.created_at,
         WorkflowRun.started_at,
@@ -1022,6 +1173,9 @@ def workflow_run_summaries(
         [
             {
                 **row._mapping,
+                "output_note": NO_FINAL_STEP
+                if row.status == WorkflowRunStatus.succeeded and row.output is None
+                else None,
                 "chat_id": chats.get(row.id, (None, None))[0],
                 "chat_name": chats.get(row.id, (None, None))[1],
             }
@@ -1072,7 +1226,9 @@ def create_workflow_run(
     """Start a run of the workflow's current version. The run service runs it, node by node
     (`aios.workflows.advance`)."""
     workflow = get_org_workflow(store, workflow_id)
-    run = new_workflow_run(store, org.id, workflow, body.input, created_by=user.id)
+    run = new_workflow_run(
+        store, org.id, workflow, body.input, input_json=body.input_json, created_by=user.id
+    )
     work = queue_workflow_run(store, run, org.id)
     background.add_task(run_service.wake, work.lane)
     return workflow_run_summary(db, org.id, store, run.id)
@@ -1082,8 +1238,9 @@ def new_workflow_run(
     store: Session,
     organisation_id: int,
     workflow: Workflow,
-    input: str,
+    input: str | None,
     *,
+    input_json: Any = None,
     created_by: int | None,
     trigger_id: int | None = None,
     by_mention: bool = False,
@@ -1099,6 +1256,10 @@ def new_workflow_run(
     run; 422 if it has no nodes. Commit with `queue_workflow_run`; the share lock taken here
     keeps a concurrent archive waiting until the run counts as already going. Also how a
     schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
+
+    The input is text (`input`), or JSON (`input_json`, read in place of the text). A version
+    with an input schema has it checked, the text read as JSON if it is: a 422 with the
+    validation errors if it doesn't fit (`run_input`).
 
     Its invocation is made with it (`invocations.for_run`): a schedule's, an event trigger's
     (with the `event` it fired on), or one started by hand by `created_by`, running from when
@@ -1116,11 +1277,13 @@ def new_workflow_run(
         load_graph(store, version.id, organisation_id)
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    text, value = run_input(version.input_schema, input, input_json)
     # Pin the version: later edits to the workflow don't change this run.
     run = WorkflowRun(
         workflow_id=workflow.id,
         workflow_version_id=version.id,
-        input=input,
+        input=text,
+        input_json=value,
         created_by=created_by,
         trigger_id=trigger_id,
     )
@@ -1139,6 +1302,35 @@ def new_workflow_run(
         invocation.workflow_run_id = run.id
         store.flush()
     return run
+
+
+NO_FINAL_STEP = "No final step ran"
+
+
+def run_input(schema: Any, text: str | None, value: Any = None) -> tuple[str, Any]:
+    """A run's input as text and as JSON (None without an input schema). With a schema, JSON
+    given is the input, else the text read as JSON if it is (otherwise the text itself); a 422
+    if it doesn't fit, with each validation error's path and message. Without one, JSON given
+    is the input as text."""
+    if schema is None:
+        if text is None:
+            text = compact(value)
+        return text, None
+    if value is None:
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError):
+            value = text
+    errors = schema_errors(value, schema)
+    if errors:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            StructureRefusal(
+                message=f"The input doesn't fit the workflow's input schema: {describe(errors)}",
+                errors=[{"path": path, "message": message} for path, message in errors],
+            ),
+        )
+    return compact(value), value
 
 
 def enqueue_run(work: run_service.Work) -> None:
@@ -1220,6 +1412,9 @@ def workflow_run_out(
             input=step.input,
             output=step.output,
             error=step.error,
+            input_json=step.input_json,
+            output_json=step.output_json,
+            conditions=step.conditions,
             agent_id=agent_id,
             agent_run_id=step.agent_run_id,
             waiting_on_request_ids=waits_on(step, waits),

@@ -4,6 +4,7 @@
  * made), so the editor can keep it in state and compare it with what was loaded.
  */
 import type {
+  JsonValue,
   NodePosition,
   WorkflowEdge,
   WorkflowInput,
@@ -16,7 +17,13 @@ export type Draft = {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   positions: Record<string, NodePosition>;
+  /** JSON Schemas for what the workflow's runs take and give, if it declares them. */
+  input_schema?: JsonValue | null;
+  output_schema?: JsonValue | null;
 };
+
+/** What a node can declare (`setNodeSpec`). */
+export type NodeSpec = Pick<WorkflowNode, "input_schema" | "output_schema" | "input_template">;
 
 /** An agent or workflow a node can run, at its current version. */
 export type Target = {
@@ -33,7 +40,12 @@ const KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** A version's graph as a draft: saved positions where there are some, the rest laid out. */
 export function fromVersion(
-  version: { nodes: WorkflowNode[]; edges: WorkflowEdge[] },
+  version: {
+    nodes: WorkflowNode[];
+    edges: WorkflowEdge[];
+    input_schema?: JsonValue | null;
+    output_schema?: JsonValue | null;
+  },
   layout: Record<string, NodePosition>,
 ): Draft {
   const keys = version.nodes.map((n) => n.key);
@@ -41,6 +53,8 @@ export function fromVersion(
     nodes: version.nodes,
     edges: version.edges,
     positions: layoutGraph(keys, version.edges, layout),
+    input_schema: version.input_schema ?? null,
+    output_schema: version.output_schema ?? null,
   };
 }
 
@@ -126,18 +140,41 @@ export function addNode(draft: Draft, target: Target): Draft {
 
 export function removeNode(draft: Draft, key: string): Draft {
   return relaid({
+    ...draft,
     nodes: draft.nodes.filter((n) => n.key !== key),
     edges: draft.edges.filter((e) => e.source !== key && e.target !== key),
     positions: {},
   });
 }
 
-/** Renames a node's key, in its edges and position too. Check it with `keyError` first. */
+/** A template with its placeholders for node `from` naming `to` instead. */
+function renameInTemplate(template: JsonValue | null | undefined, from: string, to: string) {
+  if (template === null || template === undefined) return template;
+  const pattern = new RegExp(`\\{\\{(\\s*)nodes\\.${from.replace(/-/g, "\\-")}(?=[.\\s}])`, "g");
+  const walk = (value: JsonValue): JsonValue =>
+    typeof value === "string"
+      ? value.replace(pattern, `{{$1nodes.${to}`)
+      : Array.isArray(value)
+        ? value.map(walk)
+        : value !== null && typeof value === "object"
+          ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]))
+          : value;
+  return walk(template);
+}
+
+/** Renames a node's key, in its edges, position and the templates that name it too. Check it
+ * with `keyError` first. */
 export function renameNode(draft: Draft, from: string, to: string): Draft {
   const rename = (key: string) => (key === from ? to : key);
   return {
-    nodes: draft.nodes.map((n) => (n.key === from ? { ...n, key: to } : n)),
-    edges: draft.edges.map((e) => ({ source: rename(e.source), target: rename(e.target) })),
+    ...draft,
+    nodes: draft.nodes.map((n) => {
+      const renamed = n.key === from ? { ...n, key: to } : n;
+      return n.input_template === null || n.input_template === undefined
+        ? renamed
+        : { ...renamed, input_template: renameInTemplate(n.input_template, from, to) };
+    }),
+    edges: draft.edges.map((e) => ({ ...e, source: rename(e.source), target: rename(e.target) })),
     positions: Object.fromEntries(
       Object.entries(draft.positions).map(([key, p]) => [rename(key), p]),
     ),
@@ -189,9 +226,47 @@ export function removeEdge(draft: Draft, source: string, target: string): Draft 
   });
 }
 
+/** Sets what a node declares: its schemas and its input template (null: none). */
+export function setNodeSpec(draft: Draft, key: string, spec: NodeSpec): Draft {
+  return {
+    ...draft,
+    nodes: draft.nodes.map((n) => (n.key === key ? { ...n, ...spec } : n)),
+  };
+}
+
+/** Sets an edge's condition (null: none, the edge is always taken). */
+export function setCondition(
+  draft: Draft,
+  source: string,
+  target: string,
+  condition: JsonValue | null,
+): Draft {
+  return {
+    ...draft,
+    edges: draft.edges.map((e) =>
+      e.source === source && e.target === target ? { ...e, condition } : e,
+    ),
+  };
+}
+
+/** Sets the workflow's input or output schema (null: none). */
+export function setSchemas(
+  draft: Draft,
+  schemas: Pick<Draft, "input_schema" | "output_schema">,
+): Draft {
+  return { ...draft, ...schemas };
+}
+
 /** Moves nodes, all at once, e.g. the several selected nodes in one drag. */
 export function moveNodes(draft: Draft, positions: Record<string, NodePosition>): Draft {
   return { ...draft, positions: { ...draft.positions, ...positions } };
+}
+
+/** The fields of `fields` that are set. */
+function declared<T extends Record<string, JsonValue | null | undefined>>(fields: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, v]) => v !== null && v !== undefined),
+  ) as Partial<T>;
 }
 
 /** The save request for the draft, with every node's position as the layout. */
@@ -202,8 +277,19 @@ export function toInput(
   return {
     name: meta.name,
     description: meta.description,
-    nodes: draft.nodes.map(({ key, kind, version_id }) => ({ key, kind, version_id })),
-    edges: draft.edges,
+    // What's declared only where it is, so a workflow without any saves as it always has.
+    nodes: draft.nodes.map(({ key, kind, version_id, input_schema, output_schema, input_template }) => ({
+      key,
+      kind,
+      version_id,
+      ...declared({ input_schema, output_schema, input_template }),
+    })),
+    edges: draft.edges.map(({ source, target, condition }) => ({
+      source,
+      target,
+      ...declared({ condition }),
+    })),
+    ...declared({ input_schema: draft.input_schema, output_schema: draft.output_schema }),
     layout: draft.positions,
     note: meta.note?.trim() || undefined,
   };

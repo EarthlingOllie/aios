@@ -55,9 +55,13 @@ export function edgeStates(
       const source = stepAt(steps, [...prefix, e.source]);
       const target = stepAt(steps, [...prefix, e.target]);
       // Taken only once the target has started: a succeeded source alone doesn't mean its output
-      // went anywhere (the target may be waiting on, or blocked by, another predecessor).
+      // went anywhere (the target may be waiting on, or blocked by, another predecessor). Nor is
+      // an edge whose condition didn't hold, or one into a node that was skipped.
       const state: EdgeState =
-        source?.status !== "succeeded" || !target
+        source?.status !== "succeeded" ||
+        !target ||
+        target.status === "skipped" ||
+        source.conditions?.[e.target] === false
           ? "idle"
           : target.status === "running"
             ? "live"
@@ -67,8 +71,12 @@ export function edgeStates(
   );
 }
 
-/** How many of the run's own nodes (`keys`, not those inside its subworkflows) have succeeded. */
+/** How many of the run's own nodes (`keys`, not those inside its subworkflows) have finished:
+ * succeeded, or skipped (no active path reached them). */
 export function nodesDone(keys: string[], steps: WorkflowRunStep[]): { done: number; total: number } {
-  const done = keys.filter((key) => stepAt(steps, [key])?.status === "succeeded").length;
+  const done = keys.filter((key) => {
+    const status = stepAt(steps, [key])?.status;
+    return status === "succeeded" || status === "skipped";
+  }).length;
   return { done, total: keys.length };
 }

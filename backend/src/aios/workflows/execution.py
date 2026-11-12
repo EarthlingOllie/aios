@@ -5,6 +5,7 @@ import logging
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import ColumnElement, false, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -124,6 +125,8 @@ def _end_runs(
     status: WorkflowRunStatus,
     output: str | None,
     error: str | None,
+    *,
+    output_json: Any = None,
 ) -> Ended:
     """End the store's runs matching `where` that haven't ended, and fail their steps still
     running, close out the requests their agent nodes made (`close_requests`), and finish the
@@ -140,6 +143,7 @@ def _end_runs(
             .values(
                 status=status,
                 output=output,
+                output_json=output_json,
                 error=error,
                 finished_at=func.now(),
                 waited_seconds=WorkflowRun.waited_seconds + waited,

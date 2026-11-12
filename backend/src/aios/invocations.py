@@ -81,6 +81,7 @@ ACKNOWLEDGEMENT = "Reading the chat…"
 NEVER_STARTED = "The service stopped before the run could start."
 RUN_DELETED = "The run was deleted before it finished."
 NO_OUTPUT = "_The run finished with no output._"
+NO_FINAL_STEP = "_No final step ran._"
 NO_REPLY = "_The agent finished without a reply._"
 
 # Before its run has started, and before it has finished.
@@ -360,7 +361,9 @@ def finish_workflow_runs(store: Session, runs: Sequence[WorkflowRun]) -> None:
         # Started, even if it ended before it was marked running.
         invocation.started_at = func.coalesce(Invocation.started_at, run.started_at, func.now())
         if run.status == WorkflowRunStatus.succeeded:
-            _finish(store, invocation, InvocationStatus.succeeded, run.output or NO_OUTPUT)
+            # A run in which no final step ran (its branches were all skipped) has no output.
+            result = NO_FINAL_STEP if run.output is None else run.output or NO_OUTPUT
+            _finish(store, invocation, InvocationStatus.succeeded, result)
         else:
             failed(store, invocation, run.error or "The run failed.")
 

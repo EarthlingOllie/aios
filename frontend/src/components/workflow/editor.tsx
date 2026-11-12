@@ -18,10 +18,14 @@ import {
   removeNode,
   renameNode,
   retarget,
+  setCondition,
+  setNodeSpec,
   updateToLatest,
   type Draft,
+  type NodeSpec,
   type Target,
 } from "@/lib/editor";
+import { ConditionEditor, JsonField, TemplateField } from "@/components/workflow/structured";
 
 const targetValue = (t: { kind: string; id: number }) => `${t.kind}:${t.id}`;
 
@@ -146,15 +150,25 @@ export function GraphEditor({
               ),
             })}
             editEdge={(edge) => (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => onDelete({ type: "edge", ...edge })}
-              >
-                <Trash2 />
-                Remove edge
-              </Button>
+              <div className="flex flex-col gap-3">
+                <ConditionEditor
+                  // Keyed so the builder starts from this edge's condition.
+                  key={`${edge.source}->${edge.target}`}
+                  value={edge.condition}
+                  onChange={(condition) =>
+                    onChange(setCondition(draft, edge.source, edge.target, condition))
+                  }
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onDelete({ type: "edge", ...edge })}
+                >
+                  <Trash2 />
+                  Remove edge
+                </Button>
+              </div>
             )}
           />
         </div>
@@ -321,6 +335,13 @@ function NodeControls({
           </ul>
         )}
       </div>
+      <NodeStructure
+        // Keyed so the fields start from the selected node's.
+        key={node.key}
+        node={node}
+        predecessors={edges.filter((e) => e.target === node.key).map((e) => e.source)}
+        onChange={(spec) => onChange(setNodeSpec(draft, node.key, spec))}
+      />
       <Button type="button" size="sm" variant="outline" onClick={onRemove}>
         <Trash2 />
         Remove node
@@ -328,3 +349,49 @@ function NodeControls({
     </div>
   );
 }
+
+/** What a node declares: its input template, and the schemas for what it takes and gives. */
+function NodeStructure({
+  node,
+  predecessors,
+  onChange,
+}: {
+  node: WorkflowNode;
+  predecessors: string[];
+  onChange: (spec: NodeSpec) => void;
+}) {
+  return (
+    <details className="flex flex-col gap-3 border-t pt-3" open={hasStructure(node)}>
+      <summary className="cursor-pointer text-xs font-medium">Structured input and output</summary>
+      <div className="mt-2 flex flex-col gap-3">
+        <TemplateField
+          value={node.input_template}
+          predecessors={predecessors}
+          onChange={(input_template) => onChange({ input_template })}
+        />
+        <JsonField
+          label="Output schema"
+          value={node.output_schema}
+          onChange={(output_schema) => onChange({ output_schema })}
+          placeholder='{"type": "object", "properties": {"score": {"type": "number"}}}'
+          hint={
+            node.kind === "agent"
+              ? "JSON Schema. The agent then gives structured output that fits it; conditions can read its fields."
+              : "JSON Schema the subworkflow's output is checked against."
+          }
+        />
+        <JsonField
+          label="Input schema"
+          value={node.input_schema}
+          onChange={(input_schema) => onChange({ input_schema })}
+          hint="JSON Schema its input is checked against; a mismatch fails the step."
+        />
+      </div>
+    </details>
+  );
+}
+
+const hasStructure = (node: WorkflowNode) =>
+  [node.input_schema, node.output_schema, node.input_template].some(
+    (v) => v !== null && v !== undefined,
+  );

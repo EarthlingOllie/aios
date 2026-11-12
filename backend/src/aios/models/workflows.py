@@ -33,3 +33,7 @@ class WorkflowStepStatus(enum.StrEnum):
     waiting = "waiting"
     succeeded = "succeeded"
     failed = "failed"
+    # No active path reached it: none of its incoming edges is active (its sources were
+    # skipped, or their conditions were false). Recorded with no agent run; its successors
+    # may be skipped in turn (`aios.workflows.advance`).
+    skipped = "skipped"

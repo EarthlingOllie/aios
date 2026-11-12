@@ -37,6 +37,7 @@ import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versio
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
+import { JsonField, SchemaInputForm } from "@/components/workflow/structured";
 import { RunStatusBadge } from "@/components/workflow/status";
 import {
   api,
@@ -45,10 +46,11 @@ import {
   type WorkflowSummary,
   type WorkflowVersion,
   type InvocableBy,
+  type JsonValue,
   type Limits,
 } from "@/lib/api";
 import { plural } from "@/lib/utils";
-import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
+import { fromVersion, setSchemas, toInput, type Draft, type Target } from "@/lib/editor";
 import {
   nameAndDescription,
   NAME_SORT,
@@ -230,6 +232,20 @@ function WorkflowDetailView({ id }: { id: number }) {
     }
   };
 
+  // A workflow with an input schema starts from a form made from it.
+  const onStartStructured = async (input: JsonValue) => {
+    setStarting(true);
+    setActionError(undefined);
+    try {
+      const run = await api.createWorkflowRun(id, { json: input });
+      navigate(listHref(`/workflows/${id}/runs/${run.id}`));
+    } catch (err) {
+      setActionError(describeError(err));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <DetailPage
       wide
@@ -299,7 +315,15 @@ function WorkflowDetailView({ id }: { id: number }) {
           onArchived={onArchived}
         />
       )}
-      {runInput !== undefined && (
+      {runInput !== undefined && current.input_schema !== null && current.input_schema !== undefined && (
+        <SchemaInputForm
+          schema={current.input_schema}
+          submitting={starting}
+          onSubmit={onStartStructured}
+          onCancel={() => setRunInput(undefined)}
+        />
+      )}
+      {runInput !== undefined && (current.input_schema === null || current.input_schema === undefined) && (
         <form className="flex flex-col gap-2 rounded-md border p-4" onSubmit={onStartRun}>
           <label htmlFor="run-input" className="text-sm font-medium">
             Input
@@ -640,6 +664,23 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
         </div>
         <Section title="Graph">
           <GraphEditor draft={draft} onChange={setDraft} targets={targets} />
+        </Section>
+        <Section title="Input and output">
+          <div className="grid gap-4 md:grid-cols-2">
+            <JsonField
+              label="Input schema"
+              value={draft.input_schema}
+              onChange={(input_schema) => setDraft(setSchemas(draft, { input_schema }))}
+              placeholder='{"type": "object", "properties": {"topic": {"type": "string"}}}'
+              hint="JSON Schema. Runs whose input doesn't fit are refused, and the start form asks for its fields. Blank: any text."
+            />
+            <JsonField
+              label="Output schema"
+              value={draft.output_schema}
+              onChange={(output_schema) => setDraft(setSchemas(draft, { output_schema }))}
+              hint="JSON Schema the run's output is checked against: one final node's output, or an object of several's by node."
+            />
+          </div>
         </Section>
         <GuardFields
           kind="workflow"

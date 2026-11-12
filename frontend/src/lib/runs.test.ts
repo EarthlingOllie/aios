@@ -123,6 +123,35 @@ describe("edgeStates", () => {
   });
 });
 
+describe("skipped steps and conditions", () => {
+  it("leaves an edge idle when its condition didn't hold or its target was skipped", () => {
+    const branch = [
+      { source: "score", target: "high" },
+      { source: "score", target: "low" },
+      { source: "low", target: "notify" },
+    ];
+    const steps = [
+      { ...step(["score"], "succeeded"), conditions: { high: true, low: false } },
+      step(["high"], "succeeded"),
+      step(["low"], "skipped"),
+      step(["notify"], "skipped"),
+    ];
+    expect(edgeStates(branch, steps, [])).toEqual({
+      "score->high": "taken",
+      "score->low": "idle",
+      "low->notify": "idle",
+    });
+    expect(nodeStates(["low"], steps, [], false)).toEqual({ low: "skipped" });
+  });
+
+  it("counts skipped nodes as done", () => {
+    expect(nodesDone(["a", "b"], [step(["a"], "succeeded"), step(["b"], "skipped")])).toEqual({
+      done: 2,
+      total: 2,
+    });
+  });
+});
+
 describe("nodesDone", () => {
   it("counts the run's own nodes that have succeeded, not those inside a subworkflow", () => {
     const steps = [

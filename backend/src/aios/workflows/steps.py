@@ -28,6 +28,7 @@ from aios.models import (
 )
 from aios.runner import build_agent, run_title
 from aios.ui_stream import error_text
+from aios.workflows import structured
 from aios.workflows.validation import AgentNode, Node, RunError
 
 log = logging.getLogger(__package__)
@@ -114,12 +115,41 @@ def _start_step(
     return step
 
 
+def _record_step(
+    store: Session,
+    run_id: int,
+    path: tuple[str, ...],
+    node: Node,
+    status: WorkflowStepStatus,
+    text: str = "",
+    error: str | None = None,
+) -> WorkflowRunStep:
+    """Record, in an advance's transaction, a node's step that ended as it was reached, with no
+    agent run: skipped (no active path reached it), or failed before it could start (its input
+    couldn't be built)."""
+    step = WorkflowRunStep(
+        run_id=run_id,
+        path=list(path),
+        kind=node.kind,
+        status=status,
+        input=text,
+        error=error,
+        agent_run_id=None,
+        finished_at=func.now(),
+    )
+    store.add(step)
+    store.flush()
+    store.refresh(step, ["finished_at"])
+    return step
+
+
 def _finish_step(
     data_store_id: uuid.UUID,
     step_id: int,
     status: WorkflowStepStatus,
     output: str | None,
     error: str | None,
+    output_json: Any = None,
 ) -> None:
     with store_session(data_store_id) as db:
         # Not once the run has ended without it (`_end_runs`), e.g. its node finished after the
@@ -129,7 +159,13 @@ def _finish_step(
             .where(
                 WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
             )
-            .values(status=status, output=output, error=error, finished_at=func.now())
+            .values(
+                status=status,
+                output=output,
+                output_json=output_json,
+                error=error,
+                finished_at=func.now(),
+            )
         )
         db.commit()
 
@@ -178,8 +214,14 @@ async def _run_agent(
     text: str,
     *,
     resuming: bool = False,
-) -> str:
-    """One turn of the node's agent run, with `text` as the user's message; the reply's text.
+    output_schema: Any = None,
+) -> tuple[str, Any]:
+    """One turn of the node's agent run, with `text` as the user's message; the reply's text,
+    and its structured output (None without an `output_schema`).
+
+    With an `output_schema`, the agent gives structured output (`structured.output_format`),
+    validated against it; one that doesn't fit is shown to the model with what's wrong, in the
+    same turn, once. A second that doesn't fails the node (`RunError`) with the path and message.
 
     Raises `NodeWaiting` if the agent asked for a schema change and waits for it to be decided
     (`request_schema_change`). `resuming`, the turn carries on from where it waited instead, on
@@ -215,6 +257,9 @@ async def _run_agent(
             instructions=agent.instructions,
             tools=agent.tools,
             checkpointer=saver,
+            response_format=None
+            if output_schema is None
+            else structured.output_format(output_schema),
         )
         resume = Resume()
         latest = await asyncio.to_thread(_latest_turn, store_id, agent_run_id)
@@ -264,20 +309,28 @@ async def _run_agent(
             if turn_id is not None:
                 charge = await asyncio.to_thread(usage.for_turn, store_id, turn_id)
             limit = usage.recursion_limit(charge)
+            invoke_config = config if limit is None else {**config, "recursion_limit": limit}
+            context = ChatDeps(
+                user_id=run.created_by,
+                run_id=agent_run_id,
+                data_store_id=run.data_store_id,
+            )
             try:
                 with usage.charging(charge):
+                    # As in a chat turn: checkpointed step by step, so a failed turn's history
+                    # is kept.
                     await graph.ainvoke(
-                        graph_input,
-                        config if limit is None else {**config, "recursion_limit": limit},
-                        context=ChatDeps(
-                            user_id=run.created_by,
-                            run_id=agent_run_id,
-                            data_store_id=run.data_store_id,
-                        ),
-                        # As in a chat turn: checkpointed step by step, so a failed turn's
-                        # history is kept.
-                        durability="sync",
+                        graph_input, invoke_config, context=context, durability="sync"
                     )
+                    if output_schema is not None:
+                        retry = _retry_message(await graph.aget_state(config), output_schema)
+                        if retry is not None:
+                            await graph.ainvoke(
+                                {"messages": [HumanMessage(retry)]},
+                                invoke_config,
+                                context=context,
+                                durability="sync",
+                            )
                 error = None
             except asyncio.CancelledError:
                 cancelled = True
@@ -308,7 +361,38 @@ async def _run_agent(
     request_id = _waits_on(state)
     if request_id is not None:
         raise NodeWaiting(request_id)
-    return state.values["messages"][-1].text
+    if output_schema is None:
+        return state.values["messages"][-1].text, None
+    value, errors = _structured_output(state, output_schema)
+    if errors:
+        raise RunError(
+            "The structured output doesn't fit the node's output schema: "
+            + structured.describe(errors)
+        )
+    return structured.compact(value), value
+
+
+def _structured_output(state, schema: Any) -> tuple[Any, list[tuple[str, str]]]:
+    """The structured output the turn gave, and where and why it doesn't fit `schema`."""
+    response = state.values.get("structured_response")
+    if response is None:
+        return None, [("/", "No structured output was given")]
+    value = structured.output_value(response, schema)
+    return value, structured.schema_errors(value, schema)
+
+
+def _retry_message(state, schema: Any) -> str | None:
+    """What to tell the model when its structured output doesn't fit (and it isn't waiting on
+    a decision); None if it fits."""
+    if _waits_on(state) is not None:
+        return None
+    _, errors = _structured_output(state, schema)
+    if not errors:
+        return None
+    return (
+        f"Your structured output doesn't fit the schema: {structured.describe(errors)}. "
+        f"Call {structured.OUTPUT_TOOL} again with output that fits."
+    )
 
 
 # Nothing (left) for a turn to run.

@@ -14,6 +14,7 @@ export const statusLabel: Record<WorkflowRunStatus | ChatInvocationStatus | Node
   waiting: "Waiting for you",
   pending: "Not started",
   "not-run": "Didn't run",
+  skipped: "Skipped",
 };
 
 const runningClass = "border-sky-500 text-sky-700 dark:text-sky-300";
@@ -29,6 +30,7 @@ export function StateBadge({ state }: { state: NodeState }) {
         state === "waiting" && waitingClass,
         state === "succeeded" && "border-emerald-500 text-emerald-700 dark:text-emerald-300",
         state === "failed" && "border-red-500 text-red-700 dark:text-red-300",
+        state === "skipped" && "text-muted-foreground border-dashed",
       )}
     >
       {state === "running" && (

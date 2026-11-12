@@ -171,3 +171,17 @@ def tool_output(message: ToolMessage) -> Any:
         return json.loads(content)
     except (TypeError, ValueError):
         return content
+
+
+def node_input(message: BaseMessage) -> str:
+    """A workflow node's input as its agent's model got it, out of the untrusted block its
+    predecessors' outputs come in (`aios.workflows.advance.derived`): for scripts that echo
+    what each node was given. Anything else is left as it is."""
+    from aios.jev import _WRAPPED, unwrap
+    from aios.workflows.advance import DERIVED
+
+    text = message.content if isinstance(message.content, str) else str(message.content)
+    found = _WRAPPED.match(text)
+    if found is not None and text.startswith(f'<untrusted source="{DERIVED}'):
+        return unwrap(text)
+    return text

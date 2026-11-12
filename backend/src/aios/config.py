@@ -204,6 +204,11 @@ class Settings(BaseSettings):
     # model or tool call leaves the loop free, so it isn't affected. Well over a lease
     # (`queue_lease_seconds`), so an item can hold the loop for a minute or two and carry on.
     workflow_run_no_progress_limit: float = 5 * 60
+    # Structured workflows (`aios.workflows.structured`): the largest schema, template or
+    # condition saved (bytes of compact JSON), and the most parts (operators and values) in a
+    # condition.
+    workflow_schema_max_bytes: int = Field(default=64 * 1024, ge=1)
+    workflow_condition_max_nodes: int = Field(default=200, ge=1)
 
     # Agents' memories (`aios.memory`): the longest one `remember` stores (characters), and how
     # many each agent may keep.

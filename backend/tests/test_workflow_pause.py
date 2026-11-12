@@ -38,6 +38,7 @@ from aios.testing.fake_model import (
     instructions,
     last_tool_results,
     model,
+    node_input,
     tool_output,
     use_model,
 )
@@ -88,7 +89,7 @@ class Flow:
         self.results: list = []
 
     async def __call__(self, messages, info):
-        name, text = instructions(messages), messages[-1].content
+        name, text = instructions(messages), node_input(messages[-1])
         if not name.startswith("builder"):
             yield f"{name}({text})"
             return
@@ -739,3 +740,67 @@ def test_a_waiting_run_whose_organisation_cant_be_resolved_on_resume_fails(
     out = read(api, workflow, waiting["id"])
     assert (out["status"], out["error"]) == ("failed", "store unavailable")
     assert out["finished_at"]
+
+
+def test_a_resumed_run_rebuilds_its_skips_and_conditions_from_its_steps(
+    api, builder, store, queued
+):
+    from aios.datastores.models import WorkflowRunStep
+
+    scorer = make_agent(api, "Scorer", base_prompt="scorer")
+    high = make_agent(api, "High", base_prompt="high")
+    low = make_agent(api, "Low", base_prompt="low")
+    score = {"type": "object", "properties": {"score": {"type": "number"}}}
+    above = {">": [{"var": "output.score"}, 5]}
+    body = workflow_body(
+        "Branches",
+        [
+            {**agent_node("score", scorer), "output_schema": score},
+            agent_node("build", builder),
+            agent_node("high", high),
+            agent_node("low", low),
+        ],
+    )
+    body["edges"] = [
+        {"source": "score", "target": "high", "condition": above},
+        {"source": "score", "target": "low", "condition": {"!": [above]}},
+        {"source": "build", "target": "high"},
+    ]
+    resp = api.post("/api/workflows", json=body)
+    assert resp.status_code == 201, resp.text
+    workflow = resp.json()
+    flow = Flow()
+
+    async def script(messages, info):
+        if instructions(messages) == "scorer":
+            yield ToolCall("workflow_output", {"score": 9})
+            return
+        async for item in flow(messages, info):
+            yield item
+
+    waiting = start(api, queued, workflow, script)
+    assert waiting["status"] == "waiting", waiting["error"]
+    by_path = steps(waiting)
+    assert by_path["score"]["conditions"] == {"high": True, "low": False}
+    assert by_path["low"]["status"] == "skipped"
+    assert "high" not in by_path
+
+    # Were the condition evaluated again, it would now be false: it isn't, so high still runs.
+    with store_session(store.id) as db:
+        db.execute(
+            update(WorkflowRunStep)
+            .where(WorkflowRunStep.id == by_path["score"]["id"])
+            .values(output_json={"score": 1})
+        )
+        db.commit()
+    [request] = api.get("/api/schema-changes").json()
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 200
+    with use_model(model(script)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    by_path = steps(out)
+    assert by_path["high"]["status"] == "succeeded"
+    assert by_path["low"] == steps(waiting)["low"]
+    assert len(out["steps"]) == 4
