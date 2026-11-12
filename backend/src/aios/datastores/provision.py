@@ -331,6 +331,8 @@ DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
     "aios.sandbox_sessions": ("secret",),
     # Free-form: agents read the rest, and the reporting view (`reporting.audit_log`).
     "aios.audit_log": ("details",),
+    # A webhook trigger's token hash and encrypted signing secret (`aios.webhooks`).
+    "aios.triggers": ("webhook_token_hash", "webhook_secret"),
 }
 
 # What the read-write role, the platform's own, may only insert and read: the audit log is

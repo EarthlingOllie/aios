@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { Link } from "react-router";
-import { Bot, CalendarClock, Pencil, Plus, Trash2, Workflow, Zap } from "lucide-react";
+import { Bot, CalendarClock, KeyRound, Pencil, Plus, Trash2, Workflow, Zap } from "lucide-react";
 
 import { ErrorBanner, Field, formatDate, RoleNote, Section, selectClass, useLoad } from "@/components/crud";
 import { ProvenanceLine } from "@/components/provenance";
@@ -11,12 +11,15 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   describeError,
+  type AuthorKind,
+  type EventType,
   type SchedulePreview,
   type Trigger,
   type TriggerFilter,
   type TriggerInput,
   type TriggerStatus,
   type TriggerTargetKind,
+  type WriteOperation,
 } from "@/lib/api";
 import { useRefusal } from "@/lib/current-user";
 import { browserKnowsTimeZone, formatInTimeZone } from "@/lib/timezones";
@@ -64,7 +67,12 @@ export function triggerInput(t: Trigger, changes: Partial<TriggerInput> = {}): T
     cron: t.cron,
     timezone: t.timezone ?? "UTC",
     ...(t.kind === "event"
-      ? { event_type: t.event_type, filter: t.filter, fire_on_own_events: t.fire_on_own_events }
+      ? {
+          event_type: t.event_type,
+          filter: t.filter,
+          fire_on_own_events: t.fire_on_own_events,
+          debounce_seconds: t.debounce_seconds,
+        }
       : {}),
     deliver_to: t.deliver_to?.id ?? null,
     ...changes,
@@ -126,8 +134,21 @@ function DeliverToPicker({
   );
 }
 
-/** The event types a trigger can be made for so far, as the form offers them. */
-export const EVENT_TYPES = [{ value: "document_ingested", label: "A document is ingested" }] as const;
+/** The event types a trigger can be made for, as the form offers them. */
+export const EVENT_TYPES: { value: EventType; label: string }[] = [
+  { value: "document_ingested", label: "A document is ingested" },
+  { value: "table_written", label: "A data table is written" },
+  { value: "schema_change_applied", label: "A schema change is applied" },
+  { value: "chat_message", label: "A message is posted in a chat" },
+  { value: "webhook_received", label: "Its webhook is called" },
+];
+
+const OPERATIONS: WriteOperation[] = ["insert", "upsert", "update", "delete"];
+const AUTHOR_KINDS: { value: AuthorKind; label: string }[] = [
+  { value: "user", label: "People" },
+  { value: "agent", label: "Agents" },
+  { value: "workflow", label: "Workflows" },
+];
 
 /** A comma-separated list as typed, as a filter's values: trimmed, without the empty ones. */
 export function listOf(typed: string): string[] {
@@ -138,12 +159,54 @@ export function listOf(typed: string): string[] {
 }
 
 /** What an event trigger's filter matches, in plain English ("" for everything). */
-export function describeFilter(filter: TriggerFilter, sourceNames: Map<number, string> = new Map()) {
+export function describeFilter(
+  filter: TriggerFilter,
+  sourceNames: Map<number, string> = new Map(),
+  chatNames: Map<number, string> = new Map(),
+) {
   const parts: string[] = [];
+  if (filter.chat_id) parts.push(`in ${chatNames.get(filter.chat_id) ?? `chat ${filter.chat_id}`}`);
+  if (filter.tables?.length) parts.push(`to ${filter.tables.join(", ")}`);
+  if (filter.operations?.length) parts.push(`by ${filter.operations.join(", ")}`);
   if (filter.content_types?.length) parts.push(`of type ${filter.content_types.join(", ")}`);
   if (filter.sources?.length)
     parts.push(`from ${filter.sources.map((id) => sourceNames.get(id) ?? `source ${id}`).join(", ")}`);
+  if (filter.author_kinds?.length) parts.push(`written by ${filter.author_kinds.join(", ")}`);
+  if (filter.mentions?.length) parts.push(`mentioning ${filter.mentions.join(", ")}`);
+  if (filter.keywords?.length) parts.push(`saying ${filter.keywords.map((k) => `"${k}"`).join(" or ")}`);
   return parts.join(" ");
+}
+
+/** The filter an event trigger's form sends for its event type: only that type's fields, the
+ * typed lists split on commas. */
+export function filterFor(
+  eventType: EventType,
+  filter: TriggerFilter,
+  typed: { contentTypes: string; tables: string; mentions: string; keywords: string },
+): TriggerFilter {
+  switch (eventType) {
+    case "document_ingested":
+      return { sources: filter.sources ?? [], content_types: listOf(typed.contentTypes) };
+    case "table_written":
+      return { tables: listOf(typed.tables), operations: filter.operations ?? [] };
+    case "schema_change_applied":
+      return { tables: listOf(typed.tables) };
+    case "chat_message":
+      return {
+        ...(filter.chat_id ? { chat_id: filter.chat_id } : {}),
+        author_kinds: filter.author_kinds ?? [],
+        mentions: listOf(typed.mentions),
+        keywords: listOf(typed.keywords),
+      };
+    case "webhook_received":
+      return {};
+  }
+}
+
+/** A list of `values` to toggle `value` in or out of. */
+function toggled<T>(values: T[] | undefined, value: T, on: boolean): T[] {
+  const rest = (values ?? []).filter((v) => v !== value);
+  return on ? [...rest, value] : rest;
 }
 
 /** What the cron expression means, and when it next runs; checked by the server as it's typed. */
@@ -427,16 +490,22 @@ export function EventTriggerEditor({
         },
   );
   const [contentTypes, setContentTypes] = useState((form.filter?.content_types ?? []).join(", "));
+  const [tables, setTables] = useState((form.filter?.tables ?? []).join(", "));
+  const [mentions, setMentions] = useState((form.filter?.mentions ?? []).join(", "));
+  const [keywords, setKeywords] = useState((form.filter?.keywords ?? []).join(", "));
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const eventType: EventType = form.event_type ?? "document_ingested";
   const sources = useLoad(api.listSources);
+  const chats = useLoad(useCallback(() => api.listChats(), []));
   const set = (patch: Partial<TriggerInput>) => setForm((f) => ({ ...f, ...patch }));
-  const chosenSources = form.filter?.sources ?? [];
+  const setFilter = (patch: Partial<TriggerFilter>) => set({ filter: { ...form.filter, ...patch } });
+  const filter = form.filter ?? {};
+  const chosenSources = filter.sources ?? [];
   const isAgent = form.target_kind === "agent";
 
   function toggleSource(sourceId: number, on: boolean) {
-    const next = on ? [...chosenSources, sourceId] : chosenSources.filter((s) => s !== sourceId);
-    set({ filter: { ...form.filter, sources: next } });
+    setFilter({ sources: toggled(chosenSources, sourceId, on) });
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -445,7 +514,7 @@ export function EventTriggerEditor({
     setError(undefined);
     const body: TriggerInput = {
       ...form,
-      filter: { ...form.filter, content_types: listOf(contentTypes) },
+      filter: filterFor(eventType, filter, { contentTypes, tables, mentions, keywords }),
     };
     try {
       onSaved(trigger ? await api.updateTrigger(trigger.id, body) : await api.createTrigger(body));
@@ -468,8 +537,8 @@ export function EventTriggerEditor({
         <select
           id={`${id}-event`}
           className={selectClass}
-          value={form.event_type ?? "document_ingested"}
-          onChange={(e) => set({ event_type: e.target.value as TriggerInput["event_type"] })}
+          value={eventType}
+          onChange={(e) => set({ event_type: e.target.value as EventType, filter: {} })}
         >
           {EVENT_TYPES.map((t) => (
             <option key={t.value} value={t.value}>
@@ -478,32 +547,150 @@ export function EventTriggerEditor({
           ))}
         </select>
       </Field>
+      {eventType === "document_ingested" && (
+        <>
+        <Field
+          label="Content types"
+          htmlFor={`${id}-types`}
+          hint="Comma-separated, e.g. application/pdf, text/*. Leave empty for any."
+        >
+          <Input
+            id={`${id}-types`}
+            value={contentTypes}
+            onChange={(e) => setContentTypes(e.target.value)}
+            placeholder="Any"
+          />
+        </Field>
+        <fieldset className="flex flex-col gap-1">
+          <legend className="mb-1 text-sm font-medium">Sources</legend>
+          <p className="text-muted-foreground text-xs">Leave all unticked for any source.</p>
+          {sources.data?.map((source) => (
+            <label key={source.id} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={chosenSources.includes(source.id)}
+                onChange={(e) => toggleSource(source.id, e.target.checked)}
+              />
+              {source.name}
+            </label>
+          ))}
+        </fieldset>
+        </>
+      )}
+      {(eventType === "table_written" || eventType === "schema_change_applied") && (
+        <Field
+          label="Tables"
+          htmlFor={`${id}-tables`}
+          hint="Comma-separated data table names, e.g. orders, invoices. Leave empty for any."
+        >
+          <Input id={`${id}-tables`} value={tables} onChange={(e) => setTables(e.target.value)} placeholder="Any" />
+        </Field>
+      )}
+      {eventType === "table_written" && (
+        <fieldset className="flex flex-col gap-1">
+          <legend className="mb-1 text-sm font-medium">Operations</legend>
+          <p className="text-muted-foreground text-xs">Leave all unticked for any operation.</p>
+          {OPERATIONS.map((op) => (
+            <label key={op} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={(filter.operations ?? []).includes(op)}
+                onChange={(e) => setFilter({ operations: toggled(filter.operations, op, e.target.checked) })}
+              />
+              {op}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {eventType === "chat_message" && (
+        <>
+          <Field
+            label="Chat"
+            htmlFor={`${id}-chat`}
+            hint="Any of the organisation's chats, whether or not you're in it. Saving adds this trigger's agent or workflow to it."
+          >
+            <select
+              id={`${id}-chat`}
+              required
+              className={selectClass}
+              value={filter.chat_id ?? ""}
+              onChange={(e) => setFilter({ chat_id: e.target.value ? Number(e.target.value) : undefined })}
+            >
+              <option value="" disabled>
+                Choose a chat…
+              </option>
+              {chats.data
+                ?.filter((c) => !c.archived_at || c.id === filter.chat_id)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <fieldset className="flex flex-col gap-1">
+            <legend className="mb-1 text-sm font-medium">Written by</legend>
+            <p className="text-muted-foreground text-xs">Leave all unticked for anyone.</p>
+            {AUTHOR_KINDS.map((k) => (
+              <label key={k.value} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={(filter.author_kinds ?? []).includes(k.value)}
+                  onChange={(e) =>
+                    setFilter({ author_kinds: toggled(filter.author_kinds, k.value, e.target.checked) })
+                  }
+                />
+                {k.label}
+              </label>
+            ))}
+          </fieldset>
+          <Field
+            label="Keywords"
+            htmlFor={`${id}-keywords`}
+            hint="Comma-separated. Matches whole words, ignoring case: outage doesn't match outages. Leave empty for any message."
+          >
+            <Input
+              id={`${id}-keywords`}
+              value={keywords}
+              onChange={(e) => setKeywords(e.target.value)}
+              placeholder="Any"
+            />
+          </Field>
+          <Field
+            label="Mentions"
+            htmlFor={`${id}-mentions`}
+            hint="Comma-separated, e.g. agent:3, user:7. Leave empty for any."
+          >
+            <Input
+              id={`${id}-mentions`}
+              value={mentions}
+              onChange={(e) => setMentions(e.target.value)}
+              placeholder="Any"
+            />
+          </Field>
+        </>
+      )}
+      {eventType === "webhook_received" && (
+        <p className="text-muted-foreground text-sm">
+          It gets its own URL and signing secret, shown once it's created. Callers sign each call;
+          Jev checks every body before anything fires.
+        </p>
+      )}
       <Field
-        label="Content types"
-        htmlFor={`${id}-types`}
-        hint="Comma-separated, e.g. application/pdf, text/*. Leave empty for any."
+        label="Gather events for (seconds)"
+        htmlFor={`${id}-debounce`}
+        hint="Optional. Matches within this window start one run, with all of them (up to 500). Leave empty to run on each."
       >
         <Input
-          id={`${id}-types`}
-          value={contentTypes}
-          onChange={(e) => setContentTypes(e.target.value)}
-          placeholder="Any"
+          id={`${id}-debounce`}
+          type="number"
+          min={1}
+          max={86400}
+          value={form.debounce_seconds ?? ""}
+          onChange={(e) => set({ debounce_seconds: e.target.value ? Number(e.target.value) : null })}
+          placeholder="Run on each"
         />
       </Field>
-      <fieldset className="flex flex-col gap-1">
-        <legend className="mb-1 text-sm font-medium">Sources</legend>
-        <p className="text-muted-foreground text-xs">Leave all unticked for any source.</p>
-        {sources.data?.map((source) => (
-          <label key={source.id} className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={chosenSources.includes(source.id)}
-              onChange={(e) => toggleSource(source.id, e.target.checked)}
-            />
-            {source.name}
-          </label>
-        ))}
-      </fieldset>
       <Field
         label={isAgent ? "Instructions" : "Input template"}
         htmlFor={`${id}-input`}
@@ -538,7 +725,10 @@ export function EventTriggerEditor({
         Enabled
       </label>
       <div className="flex gap-2">
-        <Button type="submit" disabled={saving || !form.target_id}>
+        <Button
+          type="submit"
+          disabled={saving || !form.target_id || (eventType === "chat_message" && !filter.chat_id)}
+        >
           {trigger ? "Save trigger" : "Create trigger"}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
@@ -581,20 +771,62 @@ function runHref(t: Trigger): string | undefined {
   return undefined;
 }
 
+/**
+ * A webhook trigger's signing secret, shown once: as it's made, and as it's rotated. Callers
+ * sign each call with it; it can't be shown again.
+ */
+export function WebhookSecret({ trigger, onDone }: { trigger: Trigger; onDone: () => void }) {
+  return (
+    <section
+      role="region"
+      aria-label="Webhook secret"
+      className="flex flex-col gap-2 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm"
+    >
+      <p className="font-medium">Copy the signing secret now: it won't be shown again.</p>
+      <Field label="URL" htmlFor={`webhook-url-${trigger.id}`}>
+        <Input id={`webhook-url-${trigger.id}`} readOnly className="font-mono text-xs" value={trigger.webhook_url ?? ""} />
+      </Field>
+      <Field label="Signing secret" htmlFor={`webhook-secret-${trigger.id}`}>
+        <Input
+          id={`webhook-secret-${trigger.id}`}
+          readOnly
+          className="font-mono text-xs"
+          value={trigger.webhook_secret ?? ""}
+        />
+      </Field>
+      <p className="text-muted-foreground text-xs">
+        POST JSON to the URL with <code>X-Aios-Timestamp</code> (Unix seconds) and{" "}
+        <code>X-Aios-Signature: sha256=&lt;hex&gt;</code>, the HMAC-SHA256 of{" "}
+        <code>&lt;timestamp&gt;.&lt;body&gt;</code> keyed by the secret. An optional{" "}
+        <code>X-Aios-Delivery</code> id makes retries safe.
+      </p>
+      <div>
+        <Button type="button" size="sm" onClick={onDone}>
+          I've copied it
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 export function ScheduleRow({
   trigger,
   showTarget,
   sourceNames,
+  chatNames,
   busy,
   onEdit,
   onToggle,
   onDelete,
+  onRotate,
   refusal,
 }: {
   trigger: Trigger;
   showTarget?: boolean;
   /** Sources' names by id, for an event trigger's filter. */
   sourceNames?: Map<number, string>;
+  /** Chats' names by id, for a chat message trigger's filter. */
+  chatNames?: Map<number, string>;
   busy?: boolean;
   /** Why the signed-in member can't change it (`useRefusal`): the switch is disabled, saying so,
    * and editing and deleting are hidden. */
@@ -602,6 +834,8 @@ export function ScheduleRow({
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  /** Rotate a webhook trigger's secret. */
+  onRotate?: () => void;
 }) {
   const t = trigger;
   const TargetIcon = t.target_kind === "agent" ? Bot : Workflow;
@@ -611,7 +845,7 @@ export function ScheduleRow({
   const isEvent = t.kind === "event";
   const KindIcon = isEvent ? Zap : CalendarClock;
   const what = isEvent ? "trigger" : "schedule";
-  const filter = isEvent ? describeFilter(t.filter, sourceNames) : "";
+  const filter = isEvent ? describeFilter(t.filter, sourceNames, chatNames) : "";
   const shownError = t.last_status && t.last_status !== "running" && t.last_status !== "succeeded";
   return (
     <li
@@ -638,6 +872,22 @@ export function ScheduleRow({
           )}
         </div>
         {t.input && <p className="text-muted-foreground truncate text-xs">“{t.input}”</p>}
+        {t.debounce_seconds && (
+          <p className="text-muted-foreground text-xs" data-testid="debounce">
+            Gathers events for {t.debounce_seconds}s into one run
+          </p>
+        )}
+        {t.webhook_url && (
+          <p className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs" data-testid="webhook-url">
+            <code className="bg-muted rounded px-1 break-all">{t.webhook_url}</code>
+            {!refusal && onRotate && (
+              <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={onRotate} disabled={busy}>
+                <KeyRound className="size-3" />
+                Rotate secret
+              </Button>
+            )}
+          </p>
+        )}
         {t.deliver_to && (
           <p className="text-muted-foreground text-xs" data-testid="deliver-to">
             Delivers to{" "}
@@ -713,7 +963,12 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
   // Names for event triggers' source filters; without them, sources show by id.
   const sources = useLoad(api.listSources);
   const sourceNames = new Map((sources.data ?? []).map((s) => [s.id, s.name]));
+  // Names for chat message triggers' chats.
+  const chats = useLoad(useCallback(() => api.listChats(), []));
+  const chatNames = new Map((chats.data ?? []).map((c) => [c.id, c.name]));
   const [editing, setEditing] = useState<number | "new" | "new-event">();
+  // A webhook trigger just made or rotated, whose secret is shown until it's dismissed.
+  const [revealed, setRevealed] = useState<Trigger>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const refusal = useRefusal("build");
@@ -731,8 +986,9 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
     }
   }
 
-  const saved = () => {
+  const saved = (t: Trigger) => {
     setEditing(undefined);
+    if (t.webhook_secret) setRevealed(t);
     triggers.reload();
   };
 
@@ -740,6 +996,7 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
     <div className="flex flex-col gap-3">
       <ErrorBanner message={error ?? triggers.error} onDismiss={() => setError(undefined)} />
       <RoleNote refusal={refusal} />
+      {revealed && <WebhookSecret trigger={revealed} onDone={() => setRevealed(undefined)} />}
       {editing === "new" ? (
         <ScheduleEditor target={target} onSaved={saved} onCancel={() => setEditing(undefined)} />
       ) : editing === "new-event" ? (
@@ -798,6 +1055,7 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
                 trigger={t}
                 showTarget={!target}
                 sourceNames={sourceNames}
+                chatNames={chatNames}
                 busy={busy}
                 refusal={refusal}
                 onEdit={() => setEditing(t.id)}
@@ -807,6 +1065,14 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
                 onDelete={() => {
                   const what = t.kind === "event" ? "trigger" : "schedule";
                   if (window.confirm(`Delete this ${what}?`)) act(() => api.deleteTrigger(t.id));
+                }}
+                onRotate={() => {
+                  if (
+                    window.confirm(
+                      "Rotate the secret? The URL and secret in use stop working at once.",
+                    )
+                  )
+                    act(async () => setRevealed(await api.rotateWebhookSecret(t.id)));
                 }}
               />
             ),

@@ -48,6 +48,7 @@ from aios.models.triggers import (
     TriggerKind,
     TriggerStatus,
     TriggerTargetKind,
+    WebhookToken,
 )
 from aios.models.usage import (
     InvocableBy,
@@ -87,6 +88,7 @@ __all__ = [
     "TriggerTargetKind",
     "TriggerStatus",
     "ScheduleDue",
+    "WebhookToken",
     "WorkItem",
     "WorkKind",
     "WorkLane",

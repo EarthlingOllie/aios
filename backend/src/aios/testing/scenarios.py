@@ -57,6 +57,14 @@ WRITTEN_SLOWLY = "Written, slowly."
 CLASSIFY = "Classify the spend."
 SPEND = {"risk": "high", "amount": 250}
 REPLY_WITH = "Reply with: "
+# The table written story's agent, by its instructions: a trigger on the notes table runs it,
+# and it appends a note of its own (whose table written event its own trigger refuses, as its
+# echo), then says so.
+APPEND = "Append to notes."
+# A message asking to note it again (the notes table made already) is written at once.
+AGAIN = "note again"
+APPENDED_NOTE = "Appended by the trigger."
+APPENDED = "Appended."
 
 
 def human_text(messages: list[BaseMessage]) -> str:
@@ -70,14 +78,25 @@ def human_text(messages: list[BaseMessage]) -> str:
 
 async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[str | ToolCall]:
     """Asks for a `notes` table; once it's applied, writes the message to it as a note and
-    replies "Saved."; says why if the table was refused or the write failed. Asked to take its
-    time, it does, and replies "Written, slowly." (asking for nothing).
+        replies "Saved."; says why if the table was refused or the write failed. Asked to take its
+        time, it does, and replies "Written, slowly." (asking for nothing). Asked to note it again,
+    it writes it to the `notes` table it asked for before, and replies "Saved.".
 
-    In a workflow, an agent told to classify a spend gives `SPEND` as its structured output, and
-    one told "Reply with: <text>" replies <text>."""
+        In a workflow, an agent told to classify a spend gives `SPEND` as its structured output, and
+        one told "Reply with: <text>" replies <text>. One told to append to notes (run by a table
+        written trigger) writes `APPENDED_NOTE` to the notes table, and replies "Appended."."""
     from aios.workflows.structured import OUTPUT_TOOL
 
     told = instructions(messages)
+    if told == APPEND:
+        if not last_tool_results(messages):
+            yield ToolCall(
+                "write_data",
+                {"table": "notes", "operation": "insert", "rows": [{"body": APPENDED_NOTE}]},
+            )
+        else:
+            yield APPENDED
+        return
     if told == CLASSIFY:
         yield ToolCall(OUTPUT_TOOL, SPEND)
         return
@@ -88,6 +107,12 @@ async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[st
     if SLOWLY in human_text(messages):
         await asyncio.sleep(SLOW_SECONDS)
         yield WRITTEN_SLOWLY
+        return
+    if not results and AGAIN in human_text(messages):
+        yield ToolCall(
+            "write_data",
+            {"table": "notes", "operation": "insert", "rows": [{"body": human_text(messages)}]},
+        )
         return
     if not results:
         yield ToolCall(

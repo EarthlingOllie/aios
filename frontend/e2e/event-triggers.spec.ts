@@ -1,8 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { type ChatUser, fakeApi, inOrg, WEBHOOK_URL } from "./fake-api";
 
-/** Event triggers' forms: document ingested triggers, with their filters, and how they last went. */
+/** Event triggers' forms: each event type's filters, debounce, webhooks' URL and secret, and how
+ * they last went. */
+
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("an editor makes a document ingested trigger with filters on an agent's Schedule tab", async ({
   page,
@@ -97,4 +100,91 @@ test("a participant can't make or change triggers", async ({ page }) => {
   await expect(page.getByTestId("event-trigger-row")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Edit trigger" })).toHaveCount(0);
   await expect(page.getByRole("checkbox", { name: "Pause trigger" })).toBeDisabled();
+});
+
+test("a table written trigger filters by table and operation, and gathers a burst", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Reader");
+  await page.goto(inOrg(`/agents/${agent.id}/schedule`));
+
+  await page.getByRole("button", { name: "Add event trigger" }).click();
+  const form = page.getByRole("form", { name: "New event trigger" });
+  await form.getByLabel("When").selectOption("table_written");
+  // Only this event type's fields.
+  await expect(form.getByLabel("Content types")).toHaveCount(0);
+  await form.getByLabel("Tables").fill("orders, data.Invoices");
+  await form.getByRole("checkbox", { name: "insert" }).check();
+  await form.getByLabel("Gather events for (seconds)").fill("60");
+  await form.getByRole("button", { name: "Create trigger" }).click();
+
+  const row = page.getByTestId("event-trigger-row");
+  await expect(row).toContainText("When a data table is written");
+  await expect(row).toContainText("to orders, invoices by insert");
+  await expect(row.getByTestId("debounce")).toHaveText("Gathers events for 60s into one run");
+  expect(api.schedules[0]).toMatchObject({
+    event_type: "table_written",
+    filter: { tables: ["orders", "invoices"], operations: ["insert"] },
+    debounce_seconds: 60,
+  });
+});
+
+test("a chat message trigger listens to a chat its creator isn't in, which adds its agent", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Watcher");
+  const chat = api.addChat("Incidents", { owner: sam });
+  await page.goto(inOrg("/scheduler"));
+
+  await page.getByRole("button", { name: "Add event trigger" }).click();
+  const form = page.getByRole("form", { name: "New event trigger" });
+  await form.getByLabel("Runs").selectOption(`agent:${agent.id}`);
+  await form.getByLabel("When").selectOption("chat_message");
+  // A chat is required.
+  await expect(form.getByRole("button", { name: "Create trigger" })).toBeDisabled();
+  await form.getByLabel("Chat", { exact: true }).selectOption(String(chat.id));
+  await form.getByRole("checkbox", { name: "People" }).check();
+  await form.getByLabel("Keywords").fill("outage, down");
+  await form.getByRole("button", { name: "Create trigger" }).click();
+
+  const row = page.getByTestId("event-trigger-row");
+  await expect(row).toContainText("When a message is posted in a chat");
+  await expect(row).toContainText('in Incidents written by user saying "outage" or "down"');
+  expect(api.schedules[0]).toMatchObject({
+    event_type: "chat_message",
+    filter: { chat_id: chat.id, author_kinds: ["user"], keywords: ["outage", "down"] },
+  });
+  expect(chat.members.some((m) => m.kind === "agent" && "target_id" in m && m.target_id === agent.id)).toBe(true);
+  expect(chat.members.some((m) => m.kind === "user" && "user" in m && m.user.id === api.me.id)).toBe(false);
+});
+
+test("a webhook trigger shows its URL and secret once, and the secret can be rotated", async ({ page }) => {
+  const api = await fakeApi(page);
+  const workflow = api.addWorkflow("Orders");
+  await page.goto(inOrg(`/workflows/${workflow.id}/schedule`));
+
+  await page.getByRole("button", { name: "Add event trigger" }).click();
+  const form = page.getByRole("form", { name: "New event trigger" });
+  await form.getByLabel("When").selectOption("webhook_received");
+  await form.getByRole("button", { name: "Create trigger" }).click();
+
+  const [made] = api.schedules;
+  const secret = page.getByRole("region", { name: "Webhook secret" });
+  await expect(secret.getByLabel("URL")).toHaveValue(`${WEBHOOK_URL}token-${made.id}`);
+  await expect(secret.getByLabel("Signing secret")).toHaveValue(`whsec_${made.id}_1`);
+  await secret.getByRole("button", { name: "I've copied it" }).click();
+  await expect(secret).toHaveCount(0);
+
+  // The row shows the URL, never the secret.
+  const row = page.getByTestId("event-trigger-row");
+  await expect(row).toContainText("When its webhook is called");
+  await expect(row.getByTestId("webhook-url")).toContainText(`${WEBHOOK_URL}token-${made.id}`);
+  await expect(row).not.toContainText("whsec_");
+
+  page.on("dialog", (dialog) => dialog.accept());
+  await row.getByRole("button", { name: "Rotate secret" }).click();
+  await expect(secret.getByLabel("Signing secret")).toHaveValue(`whsec_${made.id}_2`);
+  await expect(secret.getByLabel("URL")).toHaveValue(`${WEBHOOK_URL}token-${made.id}-2`);
+  await secret.getByRole("button", { name: "I've copied it" }).click();
+  await expect(row.getByTestId("webhook-url")).toContainText(`${WEBHOOK_URL}token-${made.id}-2`);
 });

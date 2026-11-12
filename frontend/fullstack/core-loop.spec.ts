@@ -18,6 +18,10 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * A third story runs a workflow that branches on an agent's structured output, pauses at an
  * approval node for an admin, and resumes on the decision made in the Data page's Approvals list.
  *
+ * A fourth runs a table written trigger: once the core loop's notes table is shared with an agent
+ * that appends to it, a trigger on the table runs that agent once when the core loop notes
+ * something again; the agent's own note is its echo, which the dispatcher's loop rules refuse.
+ *
  * Later steps add their stories here, each a scenario of the scripted model.
  */
 
@@ -277,4 +281,66 @@ test("a workflow branches on structured output, pauses at an approval node, and 
     decision: "approved",
     needs_role: "admin",
   });
+});
+
+test("a table written trigger fires once, and its echo is refused", async ({ page }) => {
+  const { api, link, chat } = await setUp(page);
+  await page.goto(link(`/chats/${chat.id}`));
+
+  // The core loop asks for its notes table; approved, it writes its first note.
+  await mention(page, "buy milk");
+  const pending = async () => (await (await page.request.get(api("/approvals"))).json()) as { id: number }[];
+  await expect.poll(async () => (await pending()).length, { timeout: 60_000 }).toBe(1);
+  const [approval] = await pending();
+  const approved = await page.request.post(api(`/approvals/${approval.id}/approve`));
+  expect(approved.status(), await approved.text()).toBe(200);
+  await expect(messageList(page).getByRole("article").filter({ hasText: "Saved." })).toBeVisible({ timeout: 60_000 });
+
+  // An agent that appends to notes (`APPEND` in the scenario), sharing the table, and a trigger
+  // on the table that runs it.
+  const appender = await created<{ id: number }>(page.request, api("/agents"), {
+    name: "Appender",
+    base_prompt: "Append to notes.",
+    tools: NOTES_TOOLS,
+  });
+  await created(page.request, api("/data/tables/notes/shares"), { agent_id: appender.id });
+  await expect
+    .poll(
+      async () => {
+        const { tables } = (await (await page.request.get(api("/data/tables"))).json()) as {
+          tables: { name: string; pending: boolean }[];
+        };
+        return tables.find((t) => t.name === "notes")?.pending;
+      },
+      { message: "the share is applied", timeout: 60_000 },
+    )
+    .toBe(false);
+  const trigger = await created<{ id: number }>(page.request, api("/triggers"), {
+    kind: "event",
+    event_type: "table_written",
+    target_kind: "agent",
+    target_id: appender.id,
+    filter: { tables: ["notes"] },
+  });
+
+  // The core loop notes something again: the trigger runs the appender once, whose own note is
+  // refused as its echo.
+  await mention(page, "note again: buy eggs");
+  const trig = async () =>
+    (await (await page.request.get(api(`/triggers/${trigger.id}`))).json()) as {
+      last_status: string | null;
+      last_error: string | null;
+    };
+  await expect.poll(async () => (await trig()).last_status, { timeout: 90_000 }).toBe("refused");
+  expect((await trig()).last_error).toContain("own target");
+  const runs = (await (await page.request.get(api(`/agents/${appender.id}/runs`))).json()) as unknown[];
+  expect(runs).toHaveLength(1);
+
+  await page.goto(link("/data/tables?table=notes"));
+  await expect(page.getByRole("table", { name: "Rows of notes" }).getByRole("row")).toHaveText([
+    /id\s*body/,
+    /1\s*@Notes\s+buy milk/,
+    /2\s*@Notes\s+note again: buy eggs/,
+    /3\s*Appended by the trigger\./,
+  ]);
 });

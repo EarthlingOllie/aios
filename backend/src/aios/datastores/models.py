@@ -759,6 +759,15 @@ class Trigger(StoreBase):
     fire_on_own_events: Mapped[bool] = mapped_column(Boolean, server_default=sql_text("false"))
     # Why it was turned off, when the platform did it.
     disabled_reason: Mapped[str | None] = mapped_column(Text)
+    # Event triggers: gather the matching events of this many seconds into one firing (a
+    # debounce batch, `EventBatch`); null fires on each.
+    debounce_seconds: Mapped[int | None] = mapped_column(Integer)
+    # Webhook triggers: the SHA-256 of the token in its public endpoint's URL (the token isn't
+    # kept), and its signing secret, encrypted (`aios.webhooks`). Both on the deny list, so
+    # deferred: loaded only when read, which only the read-write role may (a read-only session
+    # loading a trigger, as the run service's sweep does, never asks for them).
+    webhook_token_hash: Mapped[str | None] = mapped_column(String(64), deferred=True)
+    webhook_secret: Mapped[str | None] = mapped_column(Text, deferred=True)
     # The chat its runs' results are delivered to (null: none, or the chat has gone), and the
     # member who chose it.
     destination_chat_id: Mapped[int | None] = mapped_column(
@@ -817,6 +826,7 @@ class Trigger(StoreBase):
         ),
         Index("ix_triggers_agent_id", "agent_id"),
         Index("ix_triggers_workflow_id", "workflow_id"),
+        Index("uq_triggers_webhook_token_hash", "webhook_token_hash", unique=True),
         # What the stall sweep looks at.
         Index(
             "ix_triggers_running",
@@ -1105,6 +1115,52 @@ class Event(StoreBase):
             postgresql_where=sql_text("dispatched_at IS NOT NULL"),
         ),
         {"comment": "The outbox: what happened in the store, for event triggers"},
+    )
+
+
+class EventBatch(StoreBase):
+    """A debounce batch (`aios.dispatcher`): the events an event trigger with a debounce window
+    has matched since the first of them, until it closes, when the trigger fires once with them
+    and the batch is deleted. One open per trigger; at most `event_batch_cap` events, the rest
+    only counted."""
+
+    __tablename__ = "event_batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trigger_id: Mapped[int] = mapped_column(ForeignKey("triggers.id", ondelete="CASCADE"))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    closes_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    event_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), default=list, server_default=sql_text("'{}'::bigint[]")
+    )
+    # Matching events past the cap, left out.
+    dropped: Mapped[int] = mapped_column(Integer, default=0, server_default=sql_text("0"))
+
+    __table_args__ = (
+        Index("uq_event_batches_trigger_id", "trigger_id", unique=True),
+        Index("ix_event_batches_closes_at", "closes_at"),
+        {"comment": "Debounce batches: events gathered for one firing of a trigger"},
+    )
+
+
+class WebhookDelivery(StoreBase):
+    """A delivery id a webhook trigger's endpoint has accepted (`aios.api.webhooks`): the same id
+    again within `webhook_dedupe_hours` is accepted without writing another event. Pruned by
+    the event sweep."""
+
+    __tablename__ = "webhook_deliveries"
+
+    trigger_id: Mapped[int] = mapped_column(
+        ForeignKey("triggers.id", ondelete="CASCADE"), primary_key=True
+    )
+    delivery_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_webhook_deliveries_received_at", "received_at"),
+        {"comment": "Webhook delivery ids seen, for de-duplication"},
     )
 
 

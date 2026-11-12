@@ -42,6 +42,8 @@ PLATFORM_TABLES = {
     "data_stores",
     "notifications",
     "schedule_due",
+    # Where each webhook trigger's token leads (`aios.webhooks`): token hashes and store ids.
+    "webhook_tokens",
     # Platform-side audit entries on their way to their store's audit log (`aios.audit`).
     "audit_outbox",
     # The run service's work queue (`aios.run_service`): store ids, deleted once done.

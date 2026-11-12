@@ -39,7 +39,7 @@ from aios.testing import fake_model
 
 # The first segments of the API's unscoped paths (`aios.api.scoping`): what's the person's, not
 # any one organisation's. `o` is the organisation prefix itself.
-UNSCOPED = {"auth", "dev", "me", "invites", "tools", "organisations", "o"}
+UNSCOPED = {"auth", "dev", "me", "invites", "tools", "organisations", "o", "webhooks"}
 
 
 def unscoped(path: str) -> bool:

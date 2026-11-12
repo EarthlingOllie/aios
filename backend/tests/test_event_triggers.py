@@ -70,8 +70,7 @@ def test_an_event_trigger_needs_an_event_type_it_can_fire_on(api):
     body = document_trigger("agent", agent["id"])
     del body["event_type"]
     assert api.post("/api/triggers", json=body).status_code == 422
-    # Not yet: phase 3's later events.
-    body["event_type"] = "table_written"
+    body["event_type"] = "no_such_event"
     assert api.post("/api/triggers", json=body).status_code == 422
 
 

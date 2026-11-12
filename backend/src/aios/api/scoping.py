@@ -55,6 +55,9 @@ UNSCOPED: set[tuple[str, str]] = {
     # The tool library and the timezones schedules can use: the same for everyone.
     ("GET", "/api/tools"),
     ("GET", "/api/triggers/timezones"),
+    # Webhook triggers' public endpoint: no one signs in; the token leads to the organisation
+    # (`aios.api.webhooks`).
+    ("POST", "/api/webhooks/{token}"),
 }
 
 
