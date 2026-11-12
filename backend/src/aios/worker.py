@@ -67,6 +67,7 @@ celery_app.conf.update(
         "aios.purge_dropped": {"queue": ROUTINE},
         "aios.expire_schema_change_requests": {"queue": ROUTINE},
         "aios.prune_retention": {"queue": ROUTINE},
+        "aios.reconcile_spend_totals": {"queue": ROUTINE},
         "aios.sweep_events": {"queue": ROUTINE},
         "aios.publish_queue_metrics": {"queue": ROUTINE},
         "aios.check_stored_content_sweep": {"queue": ROUTINE},
@@ -135,6 +136,13 @@ celery_app.conf.beat_schedule = {
     "prune-retention": {
         "task": "aios.prune_retention",
         "schedule": crontab(minute=0, hour=settings.retention_prune_hour),
+        "options": {"expires": 24 * 60 * 60},
+    },
+    # Budgets' running spend totals, put right against the usage ledger, nightly at the same
+    # quiet hour (`aios.budgets.reconcile_all`).
+    "reconcile-spend-totals": {
+        "task": "aios.reconcile_spend_totals",
+        "schedule": crontab(minute=30, hour=settings.retention_prune_hour),
         "options": {"expires": 24 * 60 * 60},
     },
     # Stored content awaiting Jev's check, or checked by an older version of it
@@ -495,6 +503,15 @@ def prune_retention_task() -> None:
             notifications.prune()
         finally:
             quota.prune_samples()
+
+
+@celery_app.task(name="aios.reconcile_spend_totals")
+def reconcile_spend_totals_task() -> None:
+    """Put every store's budget totals right against its usage ledger, logging any drift
+    (`aios.budgets.reconcile_all`)."""
+    from aios import budgets
+
+    budgets.reconcile_all()
 
 
 @celery_app.task(name="aios.expire_schema_change_requests")

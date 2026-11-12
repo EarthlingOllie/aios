@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from aios.config import get_settings
 from aios.datastores.connections import (
     DataStoreBusy,
     DataStoreNotFound,
@@ -38,6 +39,8 @@ from aios.models import (
 )
 from aios.notifications import (
     APPROVAL_NEEDED,
+    BUDGET_REACHED,
+    BUDGET_WARNING,
     CHAT_KINDS,
     MENTION,
     ORGANISATION_DELETION_CANCELLED,
@@ -64,6 +67,13 @@ RELEASED_DETAIL = "{name} is waiting for Jev to check it again, and isn't search
 SCHEDULED_TITLE = "{name} is scheduled for deletion."
 SCHEDULED_DETAIL = "Its creator can cancel it until then."
 CANCELLED_TITLE = "{name} will no longer be deleted."
+BUDGET_WARNING_TITLE = "{name} has used {share}% of its monthly budget"
+BUDGET_WARNING_DETAIL = "New work is refused once it reaches the budget, until next month."
+BUDGET_REACHED_TITLE = "{name} has reached its monthly budget"
+BUDGET_REACHED_DETAIL = (
+    "New work is refused until next month, or until an admin raises the budget. Work already"
+    " going finishes."
+)
 CHAT_TITLES = {
     MENTION: "{author} mentioned you in {chat}",
     REPLY: "{author} replied in {chat}",
@@ -128,6 +138,15 @@ def describe(
             found[n.id] = Description(SCHEDULED_TITLE.format(name=org.name), SCHEDULED_DETAIL)
         elif n.kind == ORGANISATION_DELETION_CANCELLED:
             found[n.id] = Description(CANCELLED_TITLE.format(name=org.name))
+        elif n.kind == BUDGET_WARNING:
+            share = round(get_settings().budget_warning_threshold * 100)
+            found[n.id] = Description(
+                BUDGET_WARNING_TITLE.format(name=org.name, share=share), BUDGET_WARNING_DETAIL
+            )
+        elif n.kind == BUDGET_REACHED:
+            found[n.id] = Description(
+                BUDGET_REACHED_TITLE.format(name=org.name), BUDGET_REACHED_DETAIL
+            )
         else:
             in_store[n.organisation_id].append(n)
     for organisation_id, theirs in in_store.items():

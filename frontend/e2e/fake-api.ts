@@ -932,6 +932,24 @@ export class FakeApi {
   approvalExpiryDays = 7;
   /** Whether Insights shows usage by person to everyone (`PUT /api/organisation/insights-people`). */
   insightsPeopleVisible = false;
+  /** The budget (`GET` and `PUT /api/organisation/budget`): the monthly budget (null: none),
+   * this month's spend, each role's allowance, members' own allowances and their spend, by user
+   * id (`PUT .../organisation/members/{id}/allowance`). */
+  budget: {
+    month: string;
+    budget: number | null;
+    spent: number;
+    role_allowances: Record<Role, number | null>;
+    allowances: Record<number, number | null>;
+    spends: Record<number, number>;
+  } = {
+    month: "2026-11",
+    budget: null,
+    spent: 0,
+    role_allowances: { admin: null, editor: null, participant: null },
+    allowances: {},
+    spends: {},
+  };
   /** Each Insights panel's data (`GET /api/insights/{panel}`), whatever the range; by grouping
    * for the grouped ones; and the path and query of each read. */
   insights: InsightsData = emptyInsights();
@@ -1109,6 +1127,27 @@ export class FakeApi {
       insights_people_visible: this.insightsPeopleVisible,
       limits: { defaults: { ...DEFAULT_LIMITS }, overrides: { ...this.limits }, in_force: this.limitsInForce() },
     };
+  }
+
+  /** The budget as `GET /api/organisation/budget` answers: every member's spend for an admin, or
+   * for anyone when usage by person is shown to everyone; else only `me`'s. */
+  private budgetOut() {
+    const everyone = this.roleOf(this.me.id) === "admin" || this.insightsPeopleVisible;
+    const members = this.organisation.members
+      .filter((m) => everyone || m.user.id === this.me.id)
+      .map((m) => {
+        const role = this.roleOf(m.user.id);
+        const allowance = this.budget.allowances[m.user.id] ?? null;
+        return {
+          user: m.user,
+          role,
+          allowance,
+          allowance_in_force: allowance ?? this.budget.role_allowances[role],
+          spent: this.budget.spends[m.user.id] ?? 0,
+        };
+      });
+    const { allowances: _a, spends: _s, ...rest } = this.budget;
+    return { ...rest, role_allowances: { ...rest.role_allowances }, warning_threshold: 0.8, members, everyone };
   }
 
   /** The organisation's caps in force: its overrides, else the deployment's. */
@@ -3414,6 +3453,35 @@ export class FakeApi {
         end: url.searchParams.get("end") ?? "2026-10-14",
         totals: this.usage[group] ?? [],
       });
+    }
+    if (path === "/api/organisation/budget") {
+      if (method === "GET") return reply(200, this.budgetOut());
+      if (method === "PUT") {
+        const refused = this.refuseUnlessAdmin();
+        if (refused) return fail(403, refused);
+        const amount = (v: unknown) => v === null || v === undefined || (typeof v === "number" && v >= 0);
+        const allowances = (body?.role_allowances ?? {}) as Record<string, unknown>;
+        if (!amount(body?.budget) || !Object.values(allowances).every(amount)) return fail(422, "Invalid amount");
+        this.budget.budget = (body.budget as number | null) ?? null;
+        this.budget.role_allowances = {
+          admin: (allowances.admin as number | null) ?? null,
+          editor: (allowances.editor as number | null) ?? null,
+          participant: (allowances.participant as number | null) ?? null,
+        };
+        return reply(200, this.budgetOut());
+      }
+    }
+    if ((m = path.match(/^\/api\/organisation\/members\/(\d+)\/allowance$/)) && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      const userId = Number(m[1]);
+      if (!this.organisation.members.some((x) => x.user.id === userId)) {
+        return fail(404, "They aren't a member of this organisation.");
+      }
+      const value = body?.allowance;
+      if (!(value === null || (typeof value === "number" && value >= 0))) return fail(422, "Invalid allowance");
+      this.budget.allowances[userId] = value as number | null;
+      return reply(200, this.budgetOut());
     }
     if (path === "/api/organisation/insights-people" && method === "PUT") {
       const refused = this.refuseUnlessAdmin();

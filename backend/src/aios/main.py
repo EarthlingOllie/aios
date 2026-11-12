@@ -33,6 +33,7 @@ from aios.api import (
 from aios.api import approval_rules as approval_rules_api
 from aios.api import approvals as approvals_api
 from aios.api import audit as audit_api
+from aios.api import budget as budget_api
 from aios.api import connectors as connectors_api
 from aios.api import flagged as flagged_api
 from aios.api import insights as insights_api
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_api.router)
     app.include_router(usage_api.router)
     app.include_router(insights_api.router)
+    app.include_router(budget_api.router)
     app.include_router(flagged_api.router)
     app.include_router(approval_rules_api.router)
     app.include_router(dropped.router)

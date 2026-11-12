@@ -22,6 +22,8 @@ const HEADINGS: Record<string, string> = {
   source_attention: "A source needs attention",
   organisation_deletion_scheduled: "An organisation is scheduled for deletion.",
   organisation_deletion_cancelled: "An organisation will no longer be deleted.",
+  budget_warning: "An organisation is nearing its monthly budget",
+  budget_reached: "An organisation has reached its monthly budget",
 };
 
 /** Where a notification opens, in its organisation: what it's about, or nowhere for a kind this
@@ -48,6 +50,9 @@ export function notificationPath({ kind, ref }: Notification): string | null {
       return "/organisation/settings";
     case "organisation_deletion_cancelled":
       return "/organisation";
+    case "budget_warning":
+    case "budget_reached":
+      return "/organisation/settings";
     default:
       return null;
   }

@@ -553,7 +553,8 @@ def post_message(
     rules (`aios.api.chats.rules`): an archived chat is a 409; the mention guards: a mention of
     an agent or workflow the chat doesn't include is a 422 naming it; a
     mention the poster may not make (its target's invocable-by) is posted refused, its card
-    saying why; past the poster's mention rate, a 429 with when to try again. Then Jev
+    saying why; past the poster's mention rate, a 429 with when to try again; the organisation
+    at its budget, or the poster at their allowance, posts every mention refused. Then Jev
     (`check_with_jev`): flagged is a 422 with the reason, unchecked a 503. None of those writes
     anything: no message, membership, invocation, search item or notification. The people it
     mentions are notified (`mention`), never the poster."""
@@ -571,7 +572,8 @@ def post_message(
     mentions = resolve_mentions(db, store, chat, body.mentions)
     refused = guards.refusals(store, role, targets)
     guards.check_rate(org.id, user.id, len([t for t in targets if t not in refused]))
-    guards.check_budget()
+    if set(targets) - set(refused) and (reason := guards.check_budget(store, org.id, user.id)):
+        refused |= {t: reason for t in targets if t not in refused}
     check_with_jev(body.body)
     # Held until the store has committed the message (and the poster's joining by it): one
     # leaving the organisation as they post waits, and is a 404 (`organisations.holds_member`).

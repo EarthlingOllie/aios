@@ -6,7 +6,7 @@ says whose they are.
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
@@ -16,6 +16,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Computed,
+    Date,
     DateTime,
     Double,
     Enum,
@@ -1037,6 +1038,10 @@ class Invocation(StoreBase):
     # `created_by`); the schedule that fired it (cleared if it's deleted); the invocation it's a
     # part of (a workflow agent node's: its workflow run's).
     requested_by: Mapped[int | None] = mapped_column(Integer)
+    # Who its spending is charged to (`aios.budgets`): its chain of causes' root person, whoever
+    # mentioned, started by hand, or posted the message that fired a chat-message trigger; null
+    # for a chain a schedule or an event with no person behind it began.
+    charged_to: Mapped[int | None] = mapped_column(Integer)
     trigger_id: Mapped[int | None] = mapped_column(ForeignKey("triggers.id", ondelete="SET NULL"))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("invocations.id", ondelete="SET NULL"))
     # An event trigger's: the event that fired it (cleared once the event is pruned).
@@ -2019,3 +2024,21 @@ class UsageEntry(StoreBase):
         Index("ix_usage_workflow_run_id", "workflow_run_id"),
         {"comment": "The usage ledger: one row per billable unit, priced in GBP. Never pruned."},
     )
+
+
+class SpendTotal(StoreBase):
+    """A running total of the usage ledger's cost for a calendar month in UTC (`aios.budgets`):
+    the organisation's (`person_id` 0) and each person's. Updated in the same transaction as each
+    ledger entry, and reconciled against the ledger nightly. The organisation's row also records
+    when admins were warned it passed the warning threshold, and told it reached the budget, so
+    each is once a month."""
+
+    __tablename__ = "spend_totals"
+
+    month: Mapped[date] = mapped_column(Date, primary_key=True)
+    # The person charged (aios.people.id), or 0 for the whole organisation.
+    person_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cost: Mapped[float] = mapped_column(Double, default=0, server_default=sql_text("0"))
+    warned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

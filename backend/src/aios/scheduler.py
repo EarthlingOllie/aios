@@ -30,6 +30,9 @@ trigger (`aios.run_service.work`).
   from then on it shows how the run is going (`aios.api.triggers.last_outcome`). One that can't
   start (no nodes, an agent that can't run, the queue down) records that it failed, without a
   run.
+- At the organisation's monthly budget (`aios.budgets`), a firing is refused before its run
+  starts: the trigger shows it refused, with why, and the audit log records it
+  (`trigger.refused`). A schedule has no person behind it, so allowances don't count.
 - A schedule's run is started by no member (its `created_by` is null): it executes for its
   agent's or workflow's organisation, over the organisation's store, so it goes on working
   whoever made the schedule or its target, and whether or not they're still a member.
@@ -54,7 +57,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import cron
+from aios import audit, cron, guards
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.datastores import (
@@ -83,6 +86,11 @@ BATCH = 50
 
 # Why a firing is failed if it was dropped (see `_claimed`) without its schedule being edited.
 CHANGED = "The schedule was changed as it fired; it runs as changed next time."
+
+
+class _Refused(Exception):
+    """The firing was refused: the organisation has reached its budget (`aios.budgets`)."""
+
 
 # A schedule claimed to fire: its store, and its id there.
 Claim = tuple[uuid.UUID, int]
@@ -310,6 +318,9 @@ def _start(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime) -> que
         except _Gone:
             return None
         message = trigger.input
+        # A schedule has no person behind it: only the organisation's budget counts.
+        if reason := guards.check_budget(store, _organisation(data_store_id), None):
+            raise _Refused(reason)
         try:
             if trigger.target_kind == TriggerTargetKind.workflow:
                 advance = _start_workflow_run(store, trigger, fired_at)
@@ -344,10 +355,39 @@ def _record(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime, error
         store.commit()
 
 
+def _refuse(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime, reason: str) -> None:
+    """Record the refused firing on the trigger (`refused`, with why) and in the audit log, as
+    an event trigger's refusals are (`aios.dispatcher`); a no-op if it has fired again."""
+    with store_session(data_store_id) as store:
+        refused = store.execute(
+            update(Trigger)
+            .where(Trigger.id == trigger_id, Trigger.last_fired_at == fired_at)
+            .values(
+                last_status=TriggerStatus.refused,
+                last_error=reason,
+                last_run_id=None,
+                last_workflow_run_id=None,
+            )
+        ).rowcount
+        if refused:
+            audit.record(
+                store,
+                audit.SYSTEM,
+                "trigger.refused",
+                "trigger",
+                trigger_id,
+                {"rule": "budget", "reason": reason},
+            )
+        store.commit()
+
+
 def _fire(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime) -> queue.Work | None:
     error = None
     try:
         return _start(data_store_id, trigger_id, fired_at)
+    except _Refused as exc:
+        _refuse(data_store_id, trigger_id, fired_at, str(exc))
+        return None
     except CantStart as exc:
         error = str(exc)
     except HTTPException as exc:

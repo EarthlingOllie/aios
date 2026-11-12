@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, turns, ui_stream
+from aios import checkpoints, guards, invocations, turns, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
 from aios.api.approvals import SchemaChangeOut, run_requests, waiting_on
 from aios.api.provenance import UserOut, started_by
@@ -322,7 +322,10 @@ def new_agent_run(
 def create_run(
     agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
+    """Start a run of the agent by hand: a 409 with why at the organisation's budget or the
+    person's allowance (`aios.budgets`)."""
     agent = get_org_agent(store, agent_id)
+    guards.refuse_at_budget(store, org.id, user.id)
     run = new_agent_run(store, org.id, agent, created_by=user.id)
     store.commit()
     return run_summary(db, org.id, store, run.id)

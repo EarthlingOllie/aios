@@ -230,7 +230,7 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
                 agent_id=invocation.agent_id,
                 workflow_id=invocation.workflow_id,
                 invocation_id=invocation.id,
-                person_id=invocation.requested_by,
+                person_id=usage.person_of(invocation),
                 cause=invocation.cause,
             ),
             metadata=tracing.trace_metadata(

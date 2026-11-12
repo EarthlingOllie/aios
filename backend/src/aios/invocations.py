@@ -64,7 +64,7 @@ from sqlalchemy import event as sa_event
 from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, jev, limits, notifications, outbox, search_index, streams
+from aios import budgets, checkpoints, jev, limits, notifications, outbox, search_index, streams
 from aios.config import get_settings
 from aios.datastores import store_id_of
 from aios.datastores.models import (
@@ -172,9 +172,13 @@ def for_run(
         deliver_to = store.scalar(
             select(Trigger.destination_chat_id).where(Trigger.id == trigger_id)
         )
+    charged_to = budgets.root_person(
+        store, requested_by=requested_by, parent=parent, started_by=started_by, event=event
+    )
     invocation = Invocation(
         cause=cause,
         requested_by=requested_by,
+        charged_to=charged_to,
         trigger_id=trigger_id,
         parent_id=None if parent is None else parent.id,
         event_id=None if event is None else event.id,
@@ -230,6 +234,7 @@ def create(
             chat_id=message.chat_id,
             message_id=message.id,
             requested_by=message.author_user_id,
+            charged_to=message.author_user_id,
             target_kind=kind,
             agent_id=target_id if is_agent else None,
             workflow_id=None if is_agent else target_id,
@@ -761,6 +766,31 @@ def fail_unstarted(store: Session, invocation_id: int, error: str) -> None:
         f"Couldn't start the run: {error}",
         error,
     )
+
+
+def refuse_unstarted(store: Session, invocation_id: int, reason: str) -> None:
+    """Refuse an invocation that hasn't started (its budget reached since it was queued,
+    `aios.budgets`), with why, which its card says instead of its acknowledgement; before any
+    handoff, so no model is called for it. The next mention of the agent queued behind it in
+    the chat is then started (`_start_next`). In the caller's transaction; a no-op once it has
+    started or finished."""
+    invocation = lock(store, invocation_id)
+    if invocation is None or invocation.status not in NOT_STARTED:
+        return
+    invocation.status = InvocationStatus.refused
+    invocation.refusal_reason = reason
+    invocation.finished_at = func.now()
+    store.execute(
+        update(ChatMessage)
+        .where(
+            ChatMessage.invocation_id == invocation_id,
+            ChatMessage.kind == ChatMessageKind.run_card,
+        )
+        .values(body=reason)
+    )
+    streams.invocation_changed(store, invocation_id)
+    # A mention refused at the head of its agent's queue in the chat frees the next one.
+    _start_next(store, invocation)
 
 
 def finish_workflow_runs(store: Session, runs: Sequence[WorkflowRun]) -> None:

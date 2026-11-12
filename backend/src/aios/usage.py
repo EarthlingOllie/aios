@@ -42,8 +42,8 @@ from sqlalchemy import Date, cast, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from aios import budgets, streams, turns
 from aios import limits as caps
-from aios import streams, turns
 from aios.config import get_settings
 from aios.datastores import store_id_of, store_session
 from aios.datastores.models import (
@@ -149,8 +149,8 @@ def record(
     cost: float | None = None,
     call_key: str | None = None,
 ) -> bool:
-    """Write one row (in the caller's transaction); False if one with `call_key` was already
-    written."""
+    """Write one row (in the caller's transaction), adding its cost to this month's running
+    totals (`aios.budgets.add`); False if one with `call_key` was already written."""
     values = {
         "kind": kind,
         "purpose": charge.purpose,
@@ -176,7 +176,11 @@ def record(
         .values(**values)
         .on_conflict_do_nothing(index_elements=[UsageEntry.call_key])
     )
-    return store.scalar(statement.returning(UsageEntry.id)) is not None
+    written = store.scalar(statement.returning(UsageEntry.id)) is not None
+    if written:
+        # This month's running totals, in the same transaction.
+        budgets.add(store, charge.person_id, cost)
+    return written
 
 
 def web_searches(response: AIMessage) -> int:
@@ -340,6 +344,14 @@ def organisation_limits(data_store_id: uuid.UUID) -> dict:
         )
 
 
+def person_of(invocation: Invocation) -> int | None:
+    """Who an invocation's usage is charged to: its chain's root person (`aios.budgets`), or
+    whoever asked for it."""
+    if invocation.charged_to is not None:
+        return invocation.charged_to
+    return invocation.requested_by
+
+
 def _invocation_charge(store: Session, invocation: Invocation | None) -> dict[str, Any]:
     """What an invocation charges: its cause and who asked, and the workflow run it's part of,
     for an agent node's (its parent's)."""
@@ -348,7 +360,7 @@ def _invocation_charge(store: Session, invocation: Invocation | None) -> dict[st
     values: dict[str, Any] = {
         "invocation_id": invocation.id,
         "cause": invocation.cause,
-        "person_id": invocation.requested_by,
+        "person_id": person_of(invocation),
     }
     if invocation.workflow_run_id is not None:
         values |= {

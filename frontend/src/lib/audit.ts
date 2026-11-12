@@ -61,6 +61,7 @@ export const AUDIT_ACTIONS = [
   "approval.decided",
   "approval_rule.changed",
   "member.role_changed",
+  "member.allowance_changed",
   "member.joined",
   "member.left",
   "invitation.created",

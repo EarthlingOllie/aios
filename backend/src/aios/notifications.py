@@ -22,6 +22,9 @@ holds content: what a notification says is read from the organisation's store wh
   admin, once (on the change, not on each failed sync).
 - `organisation_deletion_scheduled` and `_cancelled`: the organisation itself (`{}`); every
   member.
+- `budget_warning` and `budget_reached`: the month (`month`, `YYYY-MM`) the organisation's
+  spending passed the warning threshold of its budget, or reached it (`aios.budgets`); every
+  admin, once a month each.
 
 At most one is unread per person, organisation, kind and reference: a repeat adds nothing
 (`notify`). **Mark all read** clears a person's (`mark_all_read`); leaving an organisation
@@ -62,6 +65,8 @@ RELEASED_ITEM_CHANGED = "released_item_changed"
 SOURCE_ATTENTION = "source_attention"
 ORGANISATION_DELETION_SCHEDULED = "organisation_deletion_scheduled"
 ORGANISATION_DELETION_CANCELLED = "organisation_deletion_cancelled"
+BUDGET_WARNING = "budget_warning"
+BUDGET_REACHED = "budget_reached"
 # What reading a chat past a message clears.
 CHAT_KINDS = (MENTION, REPLY, RUN_FAILED)
 
