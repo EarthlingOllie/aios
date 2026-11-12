@@ -1,7 +1,10 @@
+import { useEffect, useState } from "react";
+
 import { Field } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import type { AgentTool, ToolInfo } from "@/lib/api";
+import { api, type AgentTool, type SchemaProperty, type ToolInfo, type WorkflowSummary } from "@/lib/api";
+import { workflowOptions } from "@/lib/tools";
 
 type Config = Record<string, unknown>;
 
@@ -31,7 +34,16 @@ export function ToolSettingsFields({
           });
         const current = value[name];
         let input: React.ReactNode;
-        if (prop.type === "boolean") {
+        if (prop["x-picker"] === "workflows") {
+          return (
+            <WorkflowPicker
+              key={name}
+              prop={prop}
+              value={Array.isArray(current) ? (current as number[]) : []}
+              onChange={set}
+            />
+          );
+        } else if (prop.type === "boolean") {
           input = (
             <input
               id={id}
@@ -90,6 +102,54 @@ export function ToolSettingsFields({
         );
       })}
     </div>
+  );
+}
+
+/** Picks workflows by id (`start_workflow`'s allowed workflows): the organisation's live
+ * workflows, and any picked since archived or deleted, so they can be removed. */
+function WorkflowPicker({
+  prop,
+  value,
+  onChange,
+}: {
+  prop: SchemaProperty;
+  value: number[];
+  onChange: (value: number[]) => void;
+}) {
+  const [lists, setLists] = useState<[WorkflowSummary[], WorkflowSummary[]]>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    Promise.all([api.listWorkflows(), api.listWorkflows(true)])
+      .then((found) => live && setLists(found))
+      .catch(() => live && setError("Couldn't load the workflows."));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const options = lists ? workflowOptions(lists[0], lists[1], value) : [];
+  const toggle = (id: number, on: boolean) =>
+    onChange(on ? [...value.filter((v) => v !== id), id] : value.filter((v) => v !== id));
+  return (
+    <fieldset className="flex flex-col gap-1">
+      <legend className="text-sm font-medium">{prop.title ?? "Workflows"}</legend>
+      {prop.description && <p className="text-muted-foreground text-xs">{prop.description}</p>}
+      {error && <p className="text-destructive text-xs">{error}</p>}
+      {lists && options.length === 0 && (
+        <p className="text-muted-foreground text-xs">There are no workflows yet.</p>
+      )}
+      {options.map((option) => (
+        <label key={option.id} className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={option.checked}
+            onChange={(e) => toggle(option.id, e.target.checked)}
+          />
+          <span>{option.name}</span>
+          {option.note && <Badge variant="secondary">{option.note}</Badge>}
+        </label>
+      ))}
+    </fieldset>
   );
 }
 

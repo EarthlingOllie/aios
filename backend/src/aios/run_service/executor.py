@@ -188,13 +188,29 @@ class Executor:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+# The executors draining in this process (`drain_once`), with their loops, for `nudge`.
+_draining: dict[Executor, asyncio.AbstractEventLoop] = {}
+
+
+def nudge() -> None:
+    """Have the executors draining in this process (`drain_once`) look for work now, rather than
+    only once one of their items finishes: for an item that enqueues work and waits for it (an
+    agent's `start_workflow`, `aios.tools.start_workflow`). A process run forever is woken
+    through Redis instead (`queue.wake`)."""
+    for executor, loop in list(_draining.items()):
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(executor.changed.set)
+
+
 async def drain_once(
     concurrency: int | None = None, reserve: int | None = None, sources_limit: int | None = None
 ) -> None:
-    """Run every ready item to completion in this process, and what they enqueue as they finish,
-    until nothing ready is left. Items handed back for later aren't waited for."""
+    """Run every ready item to completion in this process, and what they enqueue as they finish
+    (or as they `nudge` it), until nothing ready is left. Items handed back for later aren't
+    waited for."""
     executor = Executor(concurrency, reserve, sources_limit)
     extending = asyncio.create_task(executor.extend_forever())
+    _draining[executor] = asyncio.get_running_loop()
     try:
         while True:
             # Cleared before claiming: an item that finishes (and enqueues more) while the claim
@@ -205,6 +221,7 @@ async def drain_once(
                 return
             await executor.changed.wait()
     finally:
+        _draining.pop(executor, None)
         extending.cancel()
         await asyncio.gather(extending, return_exceptions=True)
 

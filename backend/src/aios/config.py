@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     # How many messages one turn may post into other chats with `post_message`
     # (`aios.tools.post_message`); it's refused past it.
     post_message_posts_per_turn: int = Field(default=20, ge=1)
+    # `start_workflow` (`aios.tools.start_workflow`): how many workflow runs one agent may start
+    # a minute in an organisation, as a `limits` string counted in Redis (refused past it), and
+    # how often a call waiting for its run looks to see whether it has ended.
+    start_workflow_rate_per_agent: str = "30/minute"
+    start_workflow_poll_seconds: float = Field(default=0.5, gt=0)
     # Caps (`aios.limits`): a turn stops before a model call that would pass one, and so does a
     # workflow run's agent node. Admins override them for an organisation; agents and workflows
     # may lower them (and an admin raise them). Costs are in pounds sterling.

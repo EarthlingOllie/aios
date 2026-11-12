@@ -132,16 +132,21 @@ def for_run(
     trigger_id: int | None = None,
     parent: Invocation | None = None,
     event: Event | None = None,
+    started_by: Invocation | None = None,
     status: InvocationStatus = InvocationStatus.queued,
 ) -> Invocation:
     """Add (and flush) the invocation of a run of the agent or workflow (kind, id) that no
     mention started: a workflow agent node's (`parent`, its workflow run's invocation, whose
     cause it takes), an event trigger's (`trigger_id` and the `event` it fired on, whose chain
-    of causes it continues), a schedule's (`trigger_id`), else one started by hand by
-    `requested_by`. The caller links the run to it; in the caller's transaction."""
+    of causes it continues), an agent's `start_workflow` call's (`started_by`, the calling
+    turn's invocation, whose chain it continues), a schedule's (`trigger_id`), else one started
+    by hand by `requested_by`. The caller links the run to it; in the caller's transaction."""
     if parent is not None:
         cause = parent.cause
         ancestors = [*parent.ancestor_ids, parent.id]
+    elif started_by is not None:
+        cause = InvocationCause.start_workflow
+        ancestors = [*started_by.ancestor_ids, started_by.id]
     elif event is not None:
         cause = InvocationCause.event
         ancestors = list(event.chain)

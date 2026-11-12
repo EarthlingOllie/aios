@@ -11,10 +11,11 @@ full output, in the transaction that ends it, and a handback item is enqueued on
 service's interactive lane once that commits (`after_store_commit`); the requeue sweep puts back
 one whose enqueue was lost (`aios.run_service.work.lost`).
 
-**The call** (`hand_back`, the item's handler) is sent the asking message (the mention, or the
-trigger's message), the brief, and the output cut to `handback_input_limit` characters keeping
-its start and end, each in an untrusted block (`aios.jev.wrap`): all are people's text or derived
-from it. It answers in about 150 words, in the voice of the agent or workflow.
+**The call** (`hand_back`, the item's handler) is sent the asking message (the mention, the
+trigger's message, or the input an agent started a workflow with, `start_workflow`), the brief,
+and the output cut to `handback_input_limit` characters keeping its start and end, each in an
+untrusted block (`aios.jev.wrap`): all are people's text or derived from it. It answers in
+about 150 words, in the voice of the agent or workflow.
 
 **Posting.** The summary is posted as the result (`aios.invocations.post_handback`), stored on
 the invocation, which succeeds. The full output stays on the invocation, behind the card's
@@ -42,15 +43,23 @@ from sqlalchemy.orm import Session
 from aios import invocations, jev, llm, model_rate_limit, tracing, usage
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.datastores.models import Agent, ChatMessage, Invocation, Trigger, Workflow
+from aios.datastores.models import (
+    Agent,
+    ChatMessage,
+    Invocation,
+    Trigger,
+    Workflow,
+    WorkflowRun,
+)
 from aios.db import SessionLocal
-from aios.models import DataStore, InvocationStatus, UsagePurpose
+from aios.models import DataStore, InvocationCause, InvocationStatus, UsagePurpose
 
 log = logging.getLogger(__name__)
 
 # Where each part of what the handback is sent says it's from, in its untrusted block.
 ASKING = invocations.CHAT_MESSAGE
 SCHEDULED = "trigger message"
+STARTED_WITH = "start_workflow input"
 BRIEF = "brief"
 OUTPUT = "output"
 
@@ -131,8 +140,8 @@ def _organisation(data_store_id: uuid.UUID) -> int | None:
 
 
 def _asking(store: Session, invocation: Invocation) -> tuple[str, str] | None:
-    """What the run was asked, and where that's from: the mentioning message, or the trigger's
-    message for a trigger's run."""
+    """What the run was asked, and where that's from: the mentioning message, the trigger's
+    message for a trigger's run, or the input an agent started it with (`start_workflow`)."""
     if invocation.message_id is not None:
         body = store.scalar(select(ChatMessage.body).where(ChatMessage.id == invocation.message_id))
         if body is not None:
@@ -141,6 +150,12 @@ def _asking(store: Session, invocation: Invocation) -> tuple[str, str] | None:
         message = store.scalar(select(Trigger.input).where(Trigger.id == invocation.trigger_id))
         if message:
             return message, SCHEDULED
+    if invocation.cause == InvocationCause.start_workflow and invocation.workflow_run_id:
+        given = store.scalar(
+            select(WorkflowRun.input).where(WorkflowRun.id == invocation.workflow_run_id)
+        )
+        if given:
+            return given, STARTED_WITH
     return None
 
 

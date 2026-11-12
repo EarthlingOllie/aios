@@ -37,6 +37,10 @@ class ToolSpec[C: BaseModel]:
     # there (they belong to another organisation, say), or None if they can. Tools whose
     # settings are the same everywhere have none.
     check: Callable[[C, ToolOrganisation], str | None] | None = None
+    # Builds what the run is given from what the organisation it runs in holds (the workflows a
+    # tool may start, say, for its description), in place of `build` whenever that organisation
+    # is known. Tools that need nothing of the organisation's to be built have none.
+    build_in: Callable[[C, ToolOrganisation], list[AgentTool]] | None = None
 
 
 TOOLS: dict[str, ToolSpec] = {}
@@ -128,4 +132,6 @@ def build_tool(
     (`ToolSpec.check`)."""
     spec, parsed = _parse(key, config, stored=True)
     _check(spec, parsed, org)
+    if org is not None and spec.build_in is not None:
+        return spec.build_in(parsed, org)
     return spec.build(parsed)

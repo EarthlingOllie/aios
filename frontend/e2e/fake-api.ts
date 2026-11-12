@@ -487,6 +487,8 @@ export type RunRow = {
   trigger_id: number | null;
   steps: StepRow[];
   stale_pins: StalePinRow[];
+  /** For a run an agent started (`start_workflow`): that agent, and its run. */
+  started_by_agent?: { agent_id: number; name: string; run_id: number | null } | null;
 };
 
 /** Someone who can sign in, as the API keeps them (the password in the clear: it's a fake). */
@@ -1632,9 +1634,9 @@ export class FakeApi {
     return skill;
   }
 
-  /** Adds a tool, with no settings, to the library. */
-  addTool(key: string, name: string) {
-    this.tools.push({ key, name, description: `${name}.`, config_schema: {}, default_config: {} });
+  /** Adds a tool to the library: with no settings, unless given their schema and defaults. */
+  addTool(key: string, name: string, config_schema: object = {}, default_config: object = {}) {
+    this.tools.push({ key, name, description: `${name}.`, config_schema, default_config });
   }
 
   /** Gives `agent`'s current version the tool `key`. */
@@ -4629,6 +4631,7 @@ export class FakeApi {
       version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
       steps: run.steps,
       stale_pins: run.stale_pins,
+      started_by_agent: run.started_by_agent ?? null,
     };
   }
 
