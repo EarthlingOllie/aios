@@ -47,7 +47,7 @@ def expiry() -> timedelta:
 
 
 def expire(queued: list) -> None:  # noqa: F811
-    """The scheduled task, as the provisioning worker's beat runs it."""
+    """The scheduled task, as the routine worker's beat runs it."""
     worker.expire_schema_change_requests_task.run()
 
 
@@ -287,7 +287,7 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
     assert request["status"] == "cancelled"
 
 
-def test_the_provisioning_workers_beat_expires_requests_every_so_often():
+def test_the_routine_workers_beat_expires_requests_every_so_often():
     [entry] = [
         e
         for e in worker.celery_app.conf.beat_schedule.values()
@@ -295,7 +295,7 @@ def test_the_provisioning_workers_beat_expires_requests_every_so_often():
     ]
     assert entry["schedule"] == get_settings().schema_change_expiry_check_seconds == 3600
     assert worker.celery_app.conf.task_routes["aios.expire_schema_change_requests"] == {
-        "queue": "provisioning"
+        "queue": "routine"
     }
 
 

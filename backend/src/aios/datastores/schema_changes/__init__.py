@@ -23,11 +23,12 @@ The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
    platform, naming the request by its id and store).
 2. A member approves or rejects it (only users who pass `resolve.can_approve`), which clears
    its notifications once the store has the decision (`clear_notifications`).
-3. `apply`, on the provisioning worker (only it has the provisioner's credentials), runs an
-   approved request's SQL as the store's owner, in one transaction under a `lock_timeout`
-   (`SCHEMA_CHANGE_LOCK_TIMEOUT`), and appends it to `aios.schema_history`, which bumps the
-   revision. If the revision has moved on since the request was made, the spec is checked
-   again first, and a request that no longer applies is marked `stale` instead.
+3. `apply`, on the urgent worker (only the maintenance workers have the provisioner's
+   credentials), runs an approved request's SQL as the store's owner, in one transaction
+   under a `lock_timeout` (`SCHEMA_CHANGE_LOCK_TIMEOUT`), and appends it to
+   `aios.schema_history`, which bumps the revision. If the revision has moved on since the
+   request was made, the spec is checked again first, and a request that no longer applies is
+   marked `stale` instead.
 4. The run that asked is resumed with the `outcome`.
 
 Split into `spec`, `compile`, `apply` and `expiry`. Every name is re-exported here, where callers

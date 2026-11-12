@@ -12,7 +12,7 @@ they left (`left_at`): what they made still names them, as a former member.
   commits, each is brought up to date (`refresh`). A store not ready yet is left to its
   provisioning, which fills it (`provision`), as the store migration command fills an existing
   store's once it has the table. A write that fails is logged, and left to the repair sweep.
-- **The repair sweep** (`repair`, on the provisioning worker's beat) brings every ready store's
+- **The repair sweep** (`repair`, on the routine worker's beat) brings every ready store's
   mirror to match the memberships, and reports what it fixed: rows it added (a lost or deleted
   one), updated (a stale one) and marked left.
 - **Reading it.** "Made by" and "changed by" resolve through it (`resolve`): a person's name, and

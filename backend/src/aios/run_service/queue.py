@@ -6,7 +6,11 @@
   1. *Choose candidates.* Count each organisation's items in flight (leased, unexpired), rank
      its ready items (chat first, then by readiness), and keep only as many as its cap leaves
      room for (`Organisation.in_flight_cap`, else `queue_in_flight_cap`). Order the candidates
-     interactive lane first, then by fewest in flight, then oldest.
+     interactive lane first; within each lane (interactive, background, `sources`), fairly
+     between organisations: fewest of that lane's items in flight first, then fewest in flight
+     at all, then oldest. Background and sources items together take at most the room the
+     caller leaves them (interactive work's reserve is never theirs), and sources items at most
+     their own share of it.
   2. *Lease them.* Lock the candidates still free, skipping locked rows, and lease them: a new
      token, `queue_lease_seconds` from now, one more attempt.
 
@@ -125,20 +129,36 @@ def _free():
     return or_(WorkItem.leased_until.is_(None), WorkItem.leased_until <= func.now())
 
 
-def claim(db: Session, limit: int, background_limit: int | None = None) -> list[Claimed]:
-    """Claim up to `limit` ready items, at most `background_limit` of them background ones
-    (None: no separate limit), fairly across organisations (see the module docstring). Commits;
-    returns them in the order chosen."""
+def claim(
+    db: Session,
+    limit: int,
+    background_limit: int | None = None,
+    sources_limit: int | None = None,
+) -> list[Claimed]:
+    """Claim up to `limit` ready items, at most `background_limit` of them background or sources
+    ones, and at most `sources_limit` sources ones (None: no separate limit), fairly across
+    organisations within each lane (see the module docstring). Commits; returns them in the
+    order chosen."""
     settings = get_settings()
     if background_limit is None:
         background_limit = limit
+    background_limit = min(background_limit, limit)
+    sources_limit = background_limit if sources_limit is None else min(sources_limit, limit)
+    sources_limit = min(sources_limit, background_limit)
     if limit <= 0:
         return []
+    leased = WorkItem.leased_until > func.now()
     in_flight = (
         select(WorkItem.organisation_id, func.count().label("n"))
-        .where(WorkItem.leased_until > func.now())
+        .where(leased)
         .group_by(WorkItem.organisation_id)
         .subquery("in_flight")
+    )
+    in_lane = (
+        select(WorkItem.organisation_id, WorkItem.lane, func.count().label("n"))
+        .where(leased)
+        .group_by(WorkItem.organisation_id, WorkItem.lane)
+        .subquery("in_lane")
     )
     n = func.coalesce(in_flight.c.n, 0)
     interactive_first = case((WorkItem.lane == WorkLane.interactive, 0), else_=1)
@@ -148,6 +168,7 @@ def claim(db: Session, limit: int, background_limit: int | None = None) -> list[
             WorkItem.lane,
             WorkItem.ready_at,
             n.label("n"),
+            func.coalesce(in_lane.c.n, 0).label("n_lane"),
             interactive_first.label("lane_order"),
             func.coalesce(Organisation.in_flight_cap, literal(settings.queue_in_flight_cap))
             .cast(Integer)
@@ -161,22 +182,59 @@ def claim(db: Session, limit: int, background_limit: int | None = None) -> list[
         )
         .join(Organisation, Organisation.id == WorkItem.organisation_id)
         .outerjoin(in_flight, in_flight.c.organisation_id == WorkItem.organisation_id)
+        .outerjoin(
+            in_lane,
+            and_(
+                in_lane.c.organisation_id == WorkItem.organisation_id,
+                in_lane.c.lane == WorkItem.lane,
+            ),
+        )
         .where(WorkItem.ready_at <= func.now(), _free())
         .subquery("ranked")
     )
-    candidates = db.execute(
-        select(ranked.c.id, ranked.c.lane)
+    # Within each lane: the organisation with the fewest of that lane's items in flight first,
+    # then the fewest in flight at all, then the oldest; as many of each lane as it has room for.
+    fair = (ranked.c.n_lane, ranked.c.n, ranked.c.ready_at, ranked.c.id)
+    eligible = (
+        select(
+            ranked.c.id,
+            ranked.c.lane,
+            ranked.c.lane_order,
+            *fair[:3],
+            func.row_number().over(partition_by=ranked.c.lane, order_by=fair).label("in_lane"),
+        )
         .where(ranked.c.rank <= ranked.c.cap - ranked.c.n)
-        .order_by(ranked.c.lane_order, ranked.c.n, ranked.c.ready_at, ranked.c.id)
-        .limit(limit)
+        .subquery("eligible")
+    )
+    room = case(
+        (eligible.c.lane == WorkLane.interactive, limit),
+        (eligible.c.lane == WorkLane.sources, sources_limit),
+        else_=background_limit,
+    )
+    candidates = db.execute(
+        select(eligible.c.id, eligible.c.lane)
+        .where(eligible.c.in_lane <= room)
+        .order_by(
+            eligible.c.lane_order,
+            eligible.c.n_lane,
+            eligible.c.n,
+            eligible.c.ready_at,
+            eligible.c.id,
+        )
     ).all()
     chosen: list[int] = []
-    background = 0
+    shared = sources = 0
     for item_id, lane in candidates:
-        if lane == WorkLane.background:
-            if background >= background_limit:
+        if len(chosen) >= limit:
+            break
+        if lane != WorkLane.interactive:
+            if shared >= background_limit:
                 continue
-            background += 1
+            if lane == WorkLane.sources:
+                if sources >= sources_limit:
+                    continue
+                sources += 1
+            shared += 1
         chosen.append(item_id)
     if not chosen:
         db.rollback()

@@ -279,7 +279,7 @@ def test_the_repair_sweep_runs_on_the_maintenance_workers_beat(monkeypatch):
     worker.repair_stores_task()
 
     assert swept == [True]
-    assert worker.celery_app.conf.task_routes["aios.repair_stores"] == {"queue": "provisioning"}
+    assert worker.celery_app.conf.task_routes["aios.repair_stores"] == {"queue": "routine"}
     scheduled = {e["task"] for e in worker.celery_app.conf.beat_schedule.values()}
     assert "aios.repair_stores" in scheduled
 

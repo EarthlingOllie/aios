@@ -939,7 +939,7 @@ def test_the_workflow_worker_its_queue_and_its_tasks_are_gone():
     assert not {"aios.run_workflow", "aios.resume_agent_run"} & set(celery_app.tasks)
     routes = celery_app.conf.task_routes
     assert "workflows" not in {r["queue"] for r in routes.values()}
-    assert queue("aios.ingest_document") == "celery"
+    assert queue("aios.ingest_document") == "ingest"
 
 
 def test_a_run_ended_elsewhere_starts_nothing_more(api, queued):

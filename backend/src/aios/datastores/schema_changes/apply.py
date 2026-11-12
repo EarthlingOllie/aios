@@ -1,5 +1,5 @@
 """A request's life on the store: reading its schema, proposing a change (`propose`), applying
-an approved one on the provisioning worker (`apply`), and the outcome the run is resumed with."""
+an approved one on the urgent worker (`apply`), and the outcome the run is resumed with."""
 
 import logging
 import uuid

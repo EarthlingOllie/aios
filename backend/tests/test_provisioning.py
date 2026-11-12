@@ -738,11 +738,11 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     assert store_row(db, lost).status == DataStoreStatus.ready
     # Its own provisioning task may still be trying: it's left to that.
     assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
-    # The provisioning worker runs it (`celery worker -B`), as the provisioner.
+    # The routine worker runs it (`celery worker -B`), as the provisioner.
     scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
     assert "aios.retry_unfinished_data_stores" in scheduled
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
-        "queue": "provisioning"
+        "queue": "routine"
     }
 
 
@@ -761,7 +761,7 @@ def test_runs_of_a_store_at_once_wait_for_each_other(db, new_user):
 def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short(
     db, new_user, monkeypatch
 ):
-    """The provisioning worker's time limits stop the whole run, not just one store's."""
+    """The routine worker's time limits stop the whole run, not just one store's."""
     stores = [store_of(new_user()) for _ in range(2)]
     for store_id in stores:
         provision.fail(store_id, "OperationalError: the instance is down")
@@ -825,7 +825,7 @@ def test_running_migrate_all_as_a_module_gives_no_import_warning():
 
 
 def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user):
-    """New stores' provisioning queues behind it on the one provisioning worker: it mustn't
+    """New stores' provisioning queues behind it on the one routine worker: it mustn't
     wait for a deploy's migrate-all, say, to finish a store."""
     busy, other = [store_of(new_user()) for _ in range(2)]
     for store_id in (busy, other):

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # stores and migrates them (`aios.datastores.provision`). New stores are created on its
     # instance, which must be DATABASE_URL's: the app reaches them at DATABASE_URL's address
     # (they may know the instance by different names, as in Compose). On AWS only the
-    # provisioning worker (and the deploy's store migration) has it.
+    # maintenance workers (urgent and routine, and the deploy's store migration) have it.
     data_store_provisioner_url: str = (
         "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
     )
@@ -91,18 +91,18 @@ class Settings(BaseSettings):
     data_store_dropped_retention_days: float = Field(default=30, ge=0)
     # A schema change request nobody has decided after this many days expires, which counts as
     # a rejection: the run that asked carries on, told so. Checked every
-    # `schema_change_expiry_check_seconds` by the provisioning worker's beat.
+    # `schema_change_expiry_check_seconds` by the routine worker's beat.
     schema_change_request_expiry_days: float = Field(default=7, gt=0)
     schema_change_expiry_check_seconds: float = Field(default=60 * 60, gt=0)
     # An organisation scheduled for deletion is deleted this many days later, unless its creator
-    # cancels (`aios.organisations`); the provisioning worker's beat looks for those whose grace
+    # cancels (`aios.organisations`); the routine worker's beat looks for those whose grace
     # period is over every `organisation_deletion_check_seconds`.
     organisation_deletion_grace_days: float = Field(default=14, ge=0)
     organisation_deletion_check_seconds: float = Field(default=10 * 60, gt=0)
-    # Platform-side audit entries wait in the platform's outbox until the provisioning worker's
+    # Platform-side audit entries wait in the platform's outbox until the routine worker's
     # beat delivers them to their organisation's store, this often (`aios.audit.drain`).
     audit_drain_seconds: float = Field(default=10, gt=0)
-    # The hour (UTC, 0-23) the provisioning worker's beat prunes runs and chat history past
+    # The hour (UTC, 0-23) the routine worker's beat prunes runs and chat history past
     # each organisation's retention (`aios.retention`): a quiet one.
     retention_prune_hour: int = Field(default=3, ge=0, le=23)
     redis_url: str = "redis://localhost:6379/0"
@@ -297,6 +297,9 @@ class Settings(BaseSettings):
     # `run_service_shutdown_grace_seconds`, then hands the rest back to the queue.
     run_service_concurrency: int = Field(default=50, ge=1)
     run_service_interactive_reserve: int = Field(default=10, ge=0)
+    # Of the slots background work may take, sources work (phase 4's syncs) takes at most this
+    # many, so a big sync waits on its own share (`aios.run_service.queue`).
+    run_service_sources_limit: int = Field(default=20, ge=0)
     run_service_idle_poll_seconds: float = Field(default=5, gt=0)
     run_service_shutdown_grace_seconds: float = Field(default=25, ge=0)
     # The queue: a claimed item's lease lasts `queue_lease_seconds`, extended while it runs; an
@@ -311,6 +314,10 @@ class Settings(BaseSettings):
     queue_in_flight_cap: int = Field(default=20, ge=1)
     queue_chat_start_target_seconds: float = Field(default=5, gt=0)
     queue_requeue_after_seconds: float = Field(default=60, gt=0)
+    # Queue metrics (`aios.queue_metrics`): published by the beat this often, and sent to
+    # CloudWatch under this namespace where it's set (on AWS); logged either way.
+    queue_metrics_interval_seconds: float = Field(default=30, gt=0)
+    queue_metrics_namespace: str | None = None
 
     # A run's turns take turns through a lease on the run (`aios.turn_lease`): a turn holds it
     # for this long (seconds) at a time, refreshed by its heartbeat while it runs, so a process

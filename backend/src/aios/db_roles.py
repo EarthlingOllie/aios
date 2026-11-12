@@ -7,7 +7,7 @@
   database stays the master user's, so the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
   `CREATEROLE`, for creating and migrating data stores (`aios.datastores.provision`). Only the
-  provisioning worker and the deploy's store migration have its credentials.
+  maintenance workers (urgent and routine) and the deploy's store migration have its credentials.
 
 It also keeps every other role (data stores' roles included) from connecting to the platform
 database, `postgres` and `template1`, and makes the template data stores are copied from.

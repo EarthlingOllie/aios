@@ -10,7 +10,7 @@ of truth. The index is a derived copy, written after the store commits and idemp
 - **Claiming one** moves its row on with the trigger, in the claim's own transaction
   (`aios.scheduler.claim_due`), which re-reads the trigger in the store under its row lock and
   acts on that: a row that's out of date only makes the scheduler look at the trigger early.
-- **The repair sweep** (`repair`, on the provisioning worker's beat, with the people mirror's)
+- **The repair sweep** (`repair`, on the routine worker's beat, with the people mirror's)
   rebuilds every ready store's rows from its triggers, and reports what it fixed: rows it added
   (a lost one), updated (a stale one) and removed (a schedule disabled or gone).
 """

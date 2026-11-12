@@ -32,7 +32,7 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 | Role | Attributes | Used by |
 | --- | --- | --- |
 | `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (it did for the checkpointer's `langgraph`, which is in each store now). It doesn't own the database, so it can't drop or reconfigure it. |
-| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating and migrating stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker and the migrate-stores task only. |
+| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating and migrating stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the routine worker and the migrate-stores task only. |
 
 `python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
 else reads), taking each role's name and password from its URL. It also creates the `vector`
@@ -71,7 +71,7 @@ dependency), and a run uses its agent's or workflow's organisation's. A user in 
 organisation finds none of it (404). Each document records who uploaded it (`uploaded_by`, a
 user id: a store has no users table). Signing up makes the new organisation's store's row
 (`data_stores`, `owner_organisation_id`, status `provisioning`) and queues
-`aios.provision_data_store` on the `provisioning` queue, which only the provisioning worker
+`aios.provision_data_store` on the `routine` queue, which only the routine worker
 reads. That task, as `aios_provisioner`:
 
 - creates the roles `ds_<id>_owner` (no login), `ds_<id>_rw` and `ds_<id>_ro`, named after the
@@ -93,13 +93,13 @@ reads. That task, as `aios_provisioner`:
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After six failed tries (the first and five retries, over about half an hour) the store is marked
-`failed`. The provisioning worker's beat (`-B`) tries `failed` stores again every ten minutes,
+`failed`. The routine worker's beat (`-B`) tries `failed` stores again every ten minutes,
 along with any still `provisioning` five minutes after they were made (their task was lost with a
 worker, say). Until a store is `ready`, uploads, the document list and search answer 409 ("being
 set up"), and the UI says so.
 
 A store whose organisation is deleted (an empty one, on accepting an invitation) goes `deleting`,
-with no organisation, in the same transaction. The provisioning worker's sweep
+with no organisation, in the same transaction. The routine worker's sweep
 (`aios.delete_data_stores`, queued then, and on the beat every ten minutes) disposes of its own
 engines on the store, drops its database and roles (ending any sessions still on it), deletes its
 files under `stores/<id>/` and marks it `deleted`, keeping the row. Each step can be run again,
@@ -121,7 +121,7 @@ command exits non-zero. Store migrations run while the previous release is still
 each must work with the code before it (expand now, contract in a later release). The code,
 though, needs its own head: a ready store behind it (the previous release made it after
 migrate-all ran, or migrating it failed) answers 409 ("being upgraded") and holds its ingests
-back, until the provisioning worker's beat brings it to head with the retries above.
+back, until the routine worker's beat brings it to head with the retries above.
 
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
@@ -172,7 +172,7 @@ role change mark the organisation's mirror as changed on the platform's session
 store not ready yet is filled by its provisioning (a step before it's marked ready, as the
 owner), and the store migration command fills an existing store's as it brings it to the
 revision that makes the table (`0008`). A write that fails is logged and left to the **repair
-sweep** (`aios.repair_stores`, on the provisioning worker's beat every ten minutes), which brings
+sweep** (`aios.repair_stores`, on the routine worker's beat every ten minutes), which brings
 every ready store's mirror to match its organisation's memberships and logs and returns what it
 fixed: rows it added (one deleted, or never written), updated (stale) and marked left.
 
@@ -307,7 +307,7 @@ read it (`provision.APPEND_ONLY`). Its details are on the deny list.
   `write_data` call (its table, operation, row count, run and agent).
 - **Platform-side actions** (role changes, joining and leaving, invitation links, renames,
   settings, deletion scheduled or cancelled) write an outbox row on the platform
-  (`audit_outbox`) in their own transaction. The provisioning worker's beat drains it into each
+  (`audit_outbox`) in their own transaction. The routine worker's beat drains it into each
   store every `AUDIT_DRAIN_SECONDS` (10), idempotently by outbox id (`audit_log.outbox_id` is
   unique), so a store that's briefly unavailable gets its entries once it's back, each once.
 
@@ -402,7 +402,7 @@ answer 507 (as does an upload that wouldn't fit) and `write_data` refuses insert
 updates, telling the model; reads, searches, downloads and deletes carry on. The checks measure
 the store as the write comes in. What each store uses is also recorded on its `data_stores` row
 for the Data page's Overview, which shows both against their caps, warning from 80%: the
-provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
+routine worker's beat measures every ready store every five minutes, as its `_ro` role,
 and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
 makes room at once; the Overview shows rows' room at the next measurement. The checks first read
 the database's size, which is never less than the data, and only measure the data once that
@@ -420,8 +420,8 @@ refused until they're restored or purged), so it's gone from `describe_data`, `q
 and `write_data` while its data stays. The card and the Changes section show what a drop
 would remove (row counts, the columns affected), and approving it takes the tables' names
 typed (refused by the server otherwise). The Data page's Dropped section lists what's
-dropped with when it's purged, and restores it (on the provisioning worker,
-`aios.restore_dropped`), refused if its name has been taken since. The provisioning worker's
+dropped with when it's purged, and restores it (on the urgent worker,
+`aios.restore_dropped`), refused if its name has been taken since. The routine worker's
 beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hour
 (`aios.purge_dropped`). Restores and purges are logged in `aios.schema_history` too.
 
@@ -432,7 +432,7 @@ Two settings on the organisation, in the platform database (`organisations.run_r
 and `.chat_retention_days`, platform revision `0067`), from 1 to 36,500 days; null, the default,
 keeps everything. Admins set them on the Organisation page's Settings tab
 (`PUT /api/o/{org}/organisation/retention`, audited as `settings.changed`); everyone else sees
-them read-only. The provisioning worker's beat prunes every ready store with a setting nightly
+them read-only. The routine worker's beat prunes every ready store with a setting nightly
 at `RETENTION_PRUNE_HOUR` (UTC, 3 by default; `aios.prune_retention`), 1,000 rows per
 transaction:
 
@@ -464,7 +464,7 @@ organisation can find everything.
 
 Embedding happens in the background: an item is written with no embedding, and found by keyword
 until the store's sweep embeds it (`aios.embed_search_items`, queued for every ready store by
-the provisioning worker's beat every `SEARCH_EMBED_INTERVAL_SECONDS`, on the default queue),
+the routine worker's beat every `SEARCH_EMBED_INTERVAL_SECONDS`, on the `ingest` queue),
 for at most `SEARCH_EMBED_BUDGET_SECONDS` per store per sweep. An item is embedded by its first
 `EMBED_MAX_CHARS` characters, and never while a store session is held. Its `text_hash` keeps
 unchanged text from being embedded again: an item written again with the same text keeps its

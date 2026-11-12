@@ -2,7 +2,7 @@
 `request_schema_change`, its turn ends waiting for the owner, who approves or rejects it (in the
 chat, or from the Data page's list), and the run carries on with the outcome.
 
-The queued tasks (applying on the provisioning worker, resuming the run on the workflow worker)
+The queued tasks (applying on the urgent worker, resuming the run on the workflow worker)
 are run here by hand, in order, standing in for the workers."""
 
 import asyncio

@@ -1,5 +1,5 @@
 """Retention: how long an organisation keeps its runs and its chat history, and the nightly job
-that prunes what's older (`prune_all`, on the provisioning worker's beat at
+that prunes what's older (`prune_all`, on the routine worker's beat at
 `retention_prune_hour`).
 
 Two settings on the organisation (`Organisation.run_retention_days`, `.chat_retention_days`),

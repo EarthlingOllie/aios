@@ -32,8 +32,8 @@ anything real.
 
 Database credentials are in three secrets (see [Stores](stores.md#database-roles)):
 `<name>/app`'s `DATABASE_URL` is `aios_app`'s, given to the api, the workers and migrations;
-`<name>/provisioner` is `aios_provisioner`'s, for the `provisioning-worker` service and the
-`migrate-stores` task only (their execution role is the only one that can read it); `<name>/app`
+`<name>/provisioner` is `aios_provisioner`'s, for the `urgent-worker` and `routine-worker`
+services and the `migrate-stores` task only (their execution role is the only one that can read it); `<name>/app`
 also holds `DATA_STORE_CREDENTIALS_KEY`, which encrypts stores' passwords; and
 `<name>/db-master` is the RDS master user's, for break-glass access. Only the `db-roles` task
 (whose execution role is the only one that can read it) is given the master user's, to create the

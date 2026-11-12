@@ -33,8 +33,8 @@ resource "aws_secretsmanager_secret_version" "app" {
 }
 
 # The provisioner's role (CREATEDB, CREATEROLE). A secret of its own so that only the
-# provisioning worker and the migrate-stores task are given it (through an execution role of
-# their own): the shared execution role can't read it.
+# maintenance workers (urgent and routine) and the migrate-stores task are given it (through an
+# execution role of their own): the shared execution role can't read it.
 resource "aws_secretsmanager_secret" "provisioner" {
   name                    = "${var.name}/provisioner"
   recovery_window_in_days = 0

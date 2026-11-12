@@ -155,7 +155,7 @@ def test_delivering_an_outbox_row_again_records_it_once(api, db, user):
     assert outbox_of(db, user) == []
 
 
-def test_the_provisioning_workers_beat_drains_the_outbox_every_ten_seconds(monkeypatch):
+def test_the_routine_workers_beat_drains_the_outbox_every_ten_seconds(monkeypatch):
     from aios import worker
 
     drained = []
@@ -164,9 +164,7 @@ def test_the_provisioning_workers_beat_drains_the_outbox_every_ten_seconds(monke
     worker.drain_audit_outbox_task()
 
     assert drained == [True]
-    assert worker.celery_app.conf.task_routes["aios.drain_audit_outbox"] == {
-        "queue": "provisioning"
-    }
+    assert worker.celery_app.conf.task_routes["aios.drain_audit_outbox"] == {"queue": "routine"}
     (entry,) = [
         e
         for e in worker.celery_app.conf.beat_schedule.values()

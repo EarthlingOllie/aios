@@ -185,12 +185,12 @@ def test_the_schedule_measures_every_ready_store_and_skips_one_that_fails(
     assert store_row(db, broken).usage_measured_at is None
 
 
-def test_the_schedule_runs_every_few_minutes_on_the_provisioning_worker():
+def test_the_schedule_runs_every_few_minutes_on_the_routine_worker():
     entry = worker.celery_app.conf.beat_schedule["measure-data-store-usage"]
     assert entry["task"] == "aios.measure_data_store_usage"
     assert entry["schedule"] == worker.MEASURE_USAGE_EVERY <= 15 * 60
     route = worker.celery_app.conf.task_routes["aios.measure_data_store_usage"]
-    assert route == {"queue": "provisioning"}
+    assert route == {"queue": "routine"}
 
 
 def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
@@ -319,7 +319,7 @@ def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
 
 
 def test_measuring_leaves_no_connection_open_on_the_stores(db, user, monkeypatch):
-    """The provisioning worker measures every store, and would otherwise keep a connection to
+    """The routine worker measures every store, and would otherwise keep a connection to
     each (up to the engines it caches) between runs. Reached directly, so the store's sessions
     are this process's own (a pooler keeps its server connections for the next client)."""
     monkeypatch.setattr(get_settings(), "data_store_pooler_address", "")

@@ -14,6 +14,19 @@ from aios.datastores import (
 
 settings = get_settings()
 
+# Celery's queues, each with its own worker service (`docker-compose.yml`, `infra/terraform`):
+# document ingest; urgent maintenance (applying approved changes, restores), which never waits
+# behind routine maintenance (provisioning, migrations, measuring, purging, expiry, retention,
+# sweeps). The routine worker runs the beat, which only enqueues.
+INGEST = "ingest"
+URGENT = "urgent"
+ROUTINE = "routine"
+QUEUES = (INGEST, URGENT, ROUTINE)
+# Queues nothing is sent to any more, that the routine worker drains of what was left on them
+# from before (`aios.queue_metrics` publishes their depth): the provisioning queue, split into
+# urgent and routine. Once one stays empty, it's dropped from here and from the routine worker.
+RETIRED_QUEUES = ("provisioning",)
+
 # Fire-and-forget tasks: no result backend; progress lives on the documents (in data stores).
 # Agents' turns and workflow runs are the run service's (`aios.run_service`), not Celery's.
 celery_app = Celery("aios", broker=settings.redis_url)
@@ -31,30 +44,41 @@ celery_app.conf.update(
     task_soft_time_limit=settings.ingest_time_limit,
     task_time_limit=settings.ingest_time_limit + 60,
     broker_transport_options={"visibility_timeout": 2 * (settings.ingest_time_limit + 60) + 600},
+    # Unrouted tasks are ingest's: documents, their checks and their embeddings.
+    task_default_queue=INGEST,
     task_routes={
-        # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
-        "aios.provision_data_store": {"queue": "provisioning"},
-        "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
-        "aios.delete_data_stores": {"queue": "provisioning"},
-        # The repair sweep: upkeep of what the platform copies into stores.
-        "aios.repair_stores": {"queue": "provisioning"},
-        # Delivering the audit outbox to stores: quick, and never behind long ingests.
-        "aios.drain_audit_outbox": {"queue": "provisioning"},
-        # Run by the provisioning worker's beat; it queues the stores' teardown there too.
-        "aios.delete_due_organisations": {"queue": "provisioning"},
-        # Not for the credentials: it's quick, and there it never waits behind long ingests.
-        "aios.measure_data_store_usage": {"queue": "provisioning"},
-        "aios.apply_schema_change": {"queue": "provisioning"},
-        "aios.restore_dropped": {"queue": "provisioning"},
-        "aios.purge_dropped": {"queue": "provisioning"},
-        # Run by the provisioning worker's beat, next to the store retries.
-        "aios.expire_schema_change_requests": {"queue": "provisioning"},
-        # Nightly, by the same beat; it deletes in small batches, so it's never in the way.
-        "aios.prune_retention": {"queue": "provisioning"},
+        # Urgent maintenance: what someone is waiting on, so never behind migrations or sweeps.
+        # Its worker, and the routine one, are the only ones with the provisioner's credentials
+        # (`aios.datastores`).
+        "aios.apply_schema_change": {"queue": URGENT},
+        "aios.restore_dropped": {"queue": URGENT},
+        # Routine maintenance: provisioning and its retries, the stores' migrations, measuring,
+        # purging, expiry, retention, the event sweep and reconciliation, and what the beat
+        # fans out from here.
+        "aios.provision_data_store": {"queue": ROUTINE},
+        "aios.retry_unfinished_data_stores": {"queue": ROUTINE},
+        "aios.delete_data_stores": {"queue": ROUTINE},
+        "aios.delete_due_organisations": {"queue": ROUTINE},
+        "aios.repair_stores": {"queue": ROUTINE},
+        "aios.drain_audit_outbox": {"queue": ROUTINE},
+        "aios.measure_data_store_usage": {"queue": ROUTINE},
+        "aios.purge_dropped": {"queue": ROUTINE},
+        "aios.expire_schema_change_requests": {"queue": ROUTINE},
+        "aios.prune_retention": {"queue": ROUTINE},
+        "aios.sweep_events": {"queue": ROUTINE},
+        "aios.publish_queue_metrics": {"queue": ROUTINE},
+        "aios.check_stored_content_sweep": {"queue": ROUTINE},
+        "aios.embed_pending_search": {"queue": ROUTINE},
+        "aios.check_jev_health": {"queue": ROUTINE},
+        # Ingest: documents, and the per-store work the routine sweeps queue for it.
+        "aios.ingest_document": {"queue": INGEST},
+        "aios.check_document": {"queue": INGEST},
+        "aios.check_stored_content": {"queue": INGEST},
+        "aios.embed_search_items": {"queue": INGEST},
     },
 )
 
-# Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
+# Stores whose provisioning gave up are tried again this often (seconds), by the routine
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
 # Stores being deleted (their organisations were) are swept this often (seconds), by the same
@@ -140,6 +164,13 @@ celery_app.conf.beat_schedule = {
     },
     # Stores whose events pending stamp was lost, and old dispatched events
     # (`aios.dispatcher.sweep`).
+    # Run service lanes' and Celery queues' depth and oldest ready age (`aios.queue_metrics`),
+    # for autoscaling. One that waited past the next is stale.
+    "publish-queue-metrics": {
+        "task": "aios.publish_queue_metrics",
+        "schedule": settings.queue_metrics_interval_seconds,
+        "options": {"expires": settings.queue_metrics_interval_seconds},
+    },
     "sweep-events": {
         "task": "aios.sweep_events",
         "schedule": settings.event_sweep_interval_seconds,
@@ -256,7 +287,7 @@ PROVISION_RETRIES = 5
 
 
 # Provisioning a store takes seconds: these stop a stuck run (waiting on a lock, say) holding
-# the provisioning worker for ingest's half hour. A run cut short is finished by running it again.
+# the routine worker for ingest's half hour. A run cut short is finished by running it again.
 PROVISION_TIME_LIMIT = 5 * 60
 
 
@@ -451,6 +482,14 @@ def sweep_events_task() -> None:
     from aios import dispatcher
 
     dispatcher.sweep()
+
+
+@celery_app.task(name="aios.publish_queue_metrics")
+def publish_queue_metrics_task() -> None:
+    """Publish the run service lanes' and Celery queues' metrics (`aios.queue_metrics`)."""
+    from aios import queue_metrics
+
+    queue_metrics.publish()
 
 
 @celery_app.task(name="aios.prune_retention")
