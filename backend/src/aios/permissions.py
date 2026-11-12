@@ -31,7 +31,7 @@ class Action(enum.StrEnum):
     decide = "approve or reject schema change requests"
     restore = "restore dropped tables and columns"
     tables = "share, unshare or transfer data tables"
-    sources = "add, change, pause or remove sources"
+    sources = "add, change, sync, pause or remove sources"
     run_organisation = (
         "change the organisation's roles, invitations, name or settings, or delete it"
     )

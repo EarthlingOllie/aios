@@ -278,6 +278,28 @@ class Settings(BaseSettings):
     jev_health_interval_seconds: float = Field(default=30, gt=0)
     jev_sweep_interval_seconds: float = Field(default=300, gt=0)
 
+    # Syncing sources (`aios.sync`). Each source syncs on its own interval (`sync_interval_seconds`
+    # unless an admin sets another, never under `sync_min_interval_seconds`), with a full listing
+    # (reconciliation) every `sync_reconcile_interval_seconds`. After `sync_failures_before_failing`
+    # failures in a row a source is failing, and is tried only every
+    # `sync_failing_retry_seconds`. A message item's text is cut at `sync_message_text_cap_bytes`;
+    # each transaction writes at most `sync_batch_items` items. Sync records go after
+    # `sync_history_days`. The run service looks for sources due every `sync_poll_seconds`; a
+    # running sync not heard from for `sync_stale_seconds` is taken to have died.
+    sync_interval_seconds: int = Field(default=15 * 60, ge=1)
+    sync_min_interval_seconds: int = Field(default=5 * 60, ge=1)
+    sync_reconcile_interval_seconds: float = Field(default=24 * 3600, gt=0)
+    sync_failures_before_failing: int = Field(default=5, ge=1)
+    sync_failing_retry_seconds: float = Field(default=6 * 3600, gt=0)
+    sync_message_text_cap_bytes: int = Field(default=256 * 1024, ge=1)
+    sync_batch_items: int = Field(default=200, ge=1)
+    sync_history_days: float = Field(default=90, gt=0)
+    sync_poll_seconds: float = Field(default=60, gt=0)
+    sync_stale_seconds: float = Field(default=3600, gt=0)
+    # The test provider (`aios.source_providers.test`): a source fed from in-process feeds, for
+    # development and tests only. Compose turns it on; production never does.
+    sources_test_provider_enabled: bool = False
+
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.
     sandbox_backend: str = ""

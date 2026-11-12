@@ -1151,6 +1151,11 @@ class Source(StoreBase):
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Syncs failed in a row.
     failure_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    next_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        comment="When it's next due to sync: its interval after the last, or a slow retry while"
+        " failing. Null for Uploads, and for a source not synced yet (due at once).",
+    )
     # The member who added it, by platform user id; null for Uploads.
     created_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1366,9 +1371,156 @@ class Document(StoreBase):
         order_by="Chunk.ordinal",
     )
 
+    # A synced document's synced item (`aios.sync`); null for an upload.
+    synced_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("synced_items.id"), comment="A synced file's synced item; null for an upload."
+    )
+
     __table_args__ = (
         Index("ix_documents_source_id", "source_id"),
         Index("ix_documents_verdict", "verdict"),
+        UniqueConstraint("synced_item_id", name="uq_documents_synced_item_id"),
+    )
+
+
+class SyncedItemKind(enum.StrEnum):
+    # Text kept on the item, indexed straight into search.
+    message = "message"
+    # A file, which becomes a document.
+    file = "file"
+
+
+class SyncedItem(StoreBase):
+    """A searchable copy of content whose system of record is a source outside aios
+    (`aios.sync`): written by its source's syncs by its external id, and removed when its
+    source no longer has it. A message item keeps its text (cut at `sync_message_text_cap_bytes`),
+    indexed as `source_item` search items; a file item is a document (`Document.synced_item_id`).
+    Jev's verdict is stored on it and copied onto its search items (a file item's is its
+    document's)."""
+
+    __tablename__ = "synced_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), comment="The source it was synced from."
+    )
+    external_id: Mapped[str] = mapped_column(Text, comment="Its id at its source.")
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("synced_items.id", ondelete="SET NULL"),
+        comment="The item it belongs to at its source (a reply's thread), if any.",
+    )
+    kind: Mapped[SyncedItemKind] = mapped_column(
+        Enum(SyncedItemKind, name="synced_item_kind"), comment="message or file."
+    )
+    title: Mapped[str] = mapped_column(Text, comment="Its title, or a name for it.")
+    url: Mapped[str | None] = mapped_column(Text, comment="Where it is at its source.")
+    author_name: Mapped[str | None] = mapped_column(
+        Text, comment="Who wrote it, as its source names them."
+    )
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="When it last changed at its source."
+    )
+    content_hash: Mapped[str] = mapped_column(
+        Text, comment="The SHA-256 (hex) of its content: unchanged content isn't indexed again."
+    )
+    text: Mapped[str | None] = mapped_column(Text, comment="A message item's text.")
+    truncated: Mapped[bool] = mapped_column(
+        Boolean, server_default=false(), comment="Whether its text was cut at the cap."
+    )
+    verdict: Mapped[Verdict] = mapped_column(
+        VERDICT,
+        server_default=Verdict.awaiting_check.value,
+        default=Verdict.awaiting_check,
+        comment="Jev's verdict: awaiting_check, clean, flagged or released.",
+    )
+    verdict_reason: Mapped[str | None] = mapped_column(Text, comment="Why Jev flagged it.")
+    verdict_version: Mapped[str | None] = mapped_column(
+        Text, comment="The version of Jev (model and policy) that judged it."
+    )
+    checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="When Jev last judged it."
+    )
+    released_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The admin who released it (aios.people.id)."
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="When it was released."
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="When a sync last found it at its source.",
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_id", name="uq_synced_items_source_id_external_id"),
+        Index("ix_synced_items_verdict", "verdict"),
+        {"comment": "Copies of what sources hold, kept in step with them by their syncs"},
+    )
+
+
+class SyncKind(enum.StrEnum):
+    # On its interval: the changes since its cursor.
+    incremental = "incremental"
+    # Everything in scope, removing what's gone (reconciliation): daily, or a full resync.
+    full = "full"
+    # Sync now: the changes since its cursor, asked for by an admin.
+    manual = "manual"
+
+
+class SyncStatus(enum.StrEnum):
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class SourceSync(StoreBase):
+    """One sync of a source (`aios.sync`), with what it did. At most one runs per source at a
+    time. Pruned after `sync_history_days`."""
+
+    __tablename__ = "source_syncs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
+    kind: Mapped[SyncKind] = mapped_column(
+        Enum(SyncKind, name="sync_kind"), comment="incremental, full or manual."
+    )
+    status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="sync_status"), server_default=SyncStatus.running.value
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    added: Mapped[int] = mapped_column(Integer, server_default="0")
+    updated: Mapped[int] = mapped_column(Integer, server_default="0")
+    removed: Mapped[int] = mapped_column(Integer, server_default="0")
+    skipped: Mapped[int] = mapped_column(
+        Integer, server_default="0", comment="New items left out: the store was full."
+    )
+    dropped: Mapped[int] = mapped_column(
+        Integer, server_default="0", comment="Items left out: too big, or unreadable."
+    )
+    awaiting_check: Mapped[int] = mapped_column(
+        Integer, server_default="0", comment="Its source's items still waiting for Jev after it."
+    )
+    storage_full: Mapped[bool] = mapped_column(
+        Boolean, server_default=false(), comment="Whether it met the store's storage cap."
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_source_syncs_source_id_started_at", "source_id", "started_at"),
+        # One sync of a source at a time.
+        Index(
+            "uq_source_syncs_running",
+            "source_id",
+            unique=True,
+            postgresql_where=sql_text("status = 'running'"),
+        ),
+        {"comment": "Each source's syncs, with what each added, updated, removed and skipped"},
     )
 
 
@@ -1453,6 +1605,7 @@ class SearchItemKind(enum.StrEnum):
     run_message = "run_message"
     brief = "brief"
     memory = "memory"
+    source_item = "source_item"
 
 
 class SearchItem(StoreBase):
@@ -1489,6 +1642,10 @@ class SearchItem(StoreBase):
     )
     memory_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("memories.id", ondelete="CASCADE"), comment="A memory's memory."
+    )
+    synced_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("synced_items.id", ondelete="CASCADE"),
+        comment="A source item's synced item (its place in it is its position).",
     )
     # Extra reference data: a chunk's headings and pages, a run message's role.
     ref: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"), default=dict)
@@ -1527,8 +1684,13 @@ class SearchItem(StoreBase):
             " AND (kind = 'chat_message') = (message_id IS NOT NULL)"
             " AND (kind = 'run_message') = (turn_id IS NOT NULL AND position IS NOT NULL)"
             " AND (kind = 'brief') = (invocation_id IS NOT NULL)"
-            " AND (kind::text = 'memory') = (memory_id IS NOT NULL)",
+            " AND (kind::text = 'memory') = (memory_id IS NOT NULL)"
+            " AND (kind::text = 'source_item')"
+            " = (synced_item_id IS NOT NULL AND position IS NOT NULL)",
             name="ck_search_items_source",
+        ),
+        UniqueConstraint(
+            "synced_item_id", "position", name="uq_search_items_synced_item_id_position"
         ),
         UniqueConstraint("chunk_id", name="uq_search_items_chunk_id"),
         UniqueConstraint("message_id", name="uq_search_items_message_id"),

@@ -275,6 +275,44 @@ the store, and with `make seed` for development stores); a partial unique index 
 only one. Every document belongs to a source (`documents.source_id`, required): uploads to
 Uploads. Uploads can't be paused, changed or removed (409).
 
+**Syncing** (`aios.sync`, store revision `0026`). Every other source syncs through one loop,
+whatever its kind, plugged in through an adapter (`aios.source_providers`: changes since a
+cursor, a full listing, fetching an item, scope options). So far the only provider is the
+development-only test provider (`SOURCES_TEST_PROVIDER_ENABLED`, on in Compose), fed from
+in-process feeds (`aios.source_providers.test`). What a source brings in are **synced items**
+(`aios.synced_items`, one per external id per source):
+
+- a **message item** keeps its text (cut at `SYNC_MESSAGE_TEXT_CAP_BYTES`, marked as cut), is
+  checked by Jev, and is indexed straight into search as `source_item` pieces;
+- a **file item** becomes a document (`documents.synced_item_id`), stored in S3 as uploads are
+  and ingested by the same pipeline; deleting it on the Documents tab is refused (409): it's
+  removed at its source.
+
+A sync writes items idempotently by external id, `SYNC_BATCH_ITEMS` per transaction, fetches and
+indexes again only items whose content hash changed, and moves the source's cursor only when it
+commits, so one failing part way is resumed by the next without duplicates or re-embedding. A
+full sync (a source's first, daily reconciliation, or Full resync) removes what the listing no
+longer has, with its document, chunks and search entries. At the storage cap new items are
+skipped (counted, "storage full") while updates and removals still apply. Each sync is recorded
+(`aios.source_syncs`, pruned after `SYNC_HISTORY_DAYS`); a partial unique index keeps one
+running per source. Syncs run on the run service's `sources` lane: each process enqueues the
+sources due every `SYNC_POLL_SECONDS`, and Sync now (admins) enqueues one at once, or answers
+409 while one runs.
+
+**Health** is derived from the source's status and recent syncs: healthy, delayed (its last sync
+failed, or none succeeded for two intervals), failing (`SYNC_FAILURES_BEFORE_FAILING` failures in
+a row; retried only every `SYNC_FAILING_RETRY_SECONDS`) or needs reconnecting (a final
+authorisation failure). Becoming failing or needing reconnecting tells every admin once
+(`source_attention`).
+
+**Jev.** Message items are classified as they're written and whenever their content changes;
+file items are classified as documents by ingest, their verdict copied onto the item. Flagged
+items are stored but never found by search; they're on the flagged list, where admins release
+them (audited). Items Jev can't check stay `awaiting_check`, unsearchable, and the next sync
+checks them again (the sync record counts those still waiting). A released item that changes
+goes back to `awaiting_check`, and admins are told (`released_item_changed`). A synced document's
+document ingested event waits until it's found clean; releasing fires nothing.
+
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so

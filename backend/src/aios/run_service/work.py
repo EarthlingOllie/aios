@@ -14,6 +14,9 @@
 - **Embedding sweep**: a store's search items waiting for an embedding, embedded under a time
   budget (`aios.search_index.embed_pending`); every process enqueues one per ready store each
   `search_embed_interval_seconds` (`aios.run_service.sweep.enqueue_embedding`).
+- **Source sync**: one sync of a source (`aios.sync.run_sync`), in the `sources` lane; every
+  process enqueues each ready store's sources due every `sync_poll_seconds`
+  (`aios.run_service.sweep.enqueue_syncs`), and Sync now enqueues one at once.
 
 Every handler can be run again for the same item: its process may have died part way, and the
 item is then claimed again (`aios.run_service.queue`). So each reads where its invocation got
@@ -42,6 +45,7 @@ from aios import (
     outbox,
     search_index,
     streams,
+    sync,
     turn_lease,
     turns,
     workflows,
@@ -62,6 +66,7 @@ from aios.datastores.models import (
     Event,
     Invocation,
     SchemaChangeRequest,
+    SyncKind,
     Trigger,
     Turn,
     Workflow,
@@ -541,8 +546,9 @@ def _fail(item: Claimed) -> None:
 
 async def fail(item: Claimed) -> Outcome:
     """Give up on the item, its attempts used up (see each kind's)."""
-    if item.kind == WorkKind.embedding_sweep:
-        # Nothing waits on it: the next sweep embeds what's left.
+    if item.kind in (WorkKind.embedding_sweep, WorkKind.source_sync):
+        # Nothing waits on it: the next sweep embeds what's left; the next sync carries on
+        # from the source's cursor, and its running record is failed once it's stale.
         return Done()
     if item.kind in (WorkKind.workflow_advance, WorkKind.workflow_node):
         return Done(await run_in_threadpool(_fail_workflow, item))
@@ -662,6 +668,55 @@ async def embedding_sweep(item: Claimed) -> Outcome:
     return Done()
 
 
+def sync_key(data_store_id: uuid.UUID, source_id: int, kind: SyncKind) -> str:
+    return f"source-sync:{data_store_id}:{source_id}:{kind.value}"
+
+
+def sync_work(
+    organisation_id: int,
+    data_store_id: uuid.UUID,
+    source_id: int,
+    kind: SyncKind = SyncKind.incremental,
+) -> Work:
+    """One sync of the store's source: sources work, claimed under the organisation's fair share
+    of the `sources` lane; one queued per source and kind at a time."""
+    return Work(
+        organisation_id,
+        data_store_id,
+        WorkLane.sources,
+        WorkKind.source_sync,
+        {"source_id": source_id, "kind": kind.value},
+        dedup_key=sync_key(data_store_id, source_id, kind),
+    )
+
+
+def enqueue_sync(
+    organisation_id: int, data_store_id: uuid.UUID, source_id: int, kind: SyncKind
+) -> None:
+    """Enqueue a sync of the store's source (Sync now, or a new source's first sync), and wake
+    the run service for it."""
+    from aios import run_service
+
+    work = sync_work(organisation_id, data_store_id, source_id, kind)
+    with SessionLocal() as db:
+        queue.enqueue(db, [work])
+        db.commit()
+    run_service.wake(work.lane)
+
+
+def _sync(data_store_id: uuid.UUID, source_id: int, kind: SyncKind) -> None:
+    # Gone, going, behind or busy: the next poll enqueues it again, if it's still due.
+    with contextlib.suppress(DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        sync.run_sync(data_store_id, source_id, kind)
+
+
+async def source_sync(item: Claimed) -> Outcome:
+    """One sync of a source (`aios.sync.run_sync`); skipped if another of it is running."""
+    kind = SyncKind(item.payload.get("kind", SyncKind.incremental.value))
+    await run_in_threadpool(_sync, item.data_store_id, item.payload["source_id"], kind)
+    return Done()
+
+
 HANDLERS = {
     WorkKind.invocation_start: start_invocation,
     WorkKind.agent_turn: agent_turn,
@@ -669,6 +724,7 @@ HANDLERS = {
     WorkKind.workflow_node: workflow_node,
     WorkKind.resume_turn: resume_turn,
     WorkKind.embedding_sweep: embedding_sweep,
+    WorkKind.source_sync: source_sync,
 }
 
 

@@ -27,6 +27,8 @@ x-backend: &backend
     # Jev, the prompt-injection classifier (`aios.jev`): its fake unless .env names one, hosted
     # (with JEV_API_KEY) or the `jev` service below (`JEV_URL=http://jev:8000`).
     JEV_URL: ${JEV_URL:-fake}
+    # The test provider's sources (`aios.source_providers.test`): development only.
+    SOURCES_TEST_PROVIDER_ENABLED: "true"
   depends_on:
     db:
       condition: service_healthy

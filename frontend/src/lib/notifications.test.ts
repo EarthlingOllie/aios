@@ -71,6 +71,15 @@ describe("describeNotification", () => {
     ).toBe("/data/documents");
   });
 
+  it("opens a source that needs attention on its page, and a changed released item on the flagged list", () => {
+    const attention = describeNotification(notification({ kind: "source_attention", ref: { source_id: 7 }, title: null }));
+    expect(attention.to).toBe("/data/sources/7");
+    expect(attention.heading).toBe("A source needs attention");
+    expect(describeNotification(notification({ kind: "released_item_changed", ref: { synced_item_id: 3 } })).to).toBe(
+      "/organisation/settings",
+    );
+  });
+
   it("opens an organisation's deletion on its Organisation page", () => {
     expect(describeNotification(notification({ kind: "organisation_deletion_scheduled", ref: {} })).to).toBe(
       "/organisation/settings",

@@ -143,6 +143,19 @@ def upload_refusal(store: Session, filename: str, size: int) -> str | None:
     return None
 
 
+def room_for(store: Session, file_bytes: int = 0) -> bool:
+    """Whether a sync may add an item (`aios.sync`): the store's data is under its cap, and its
+    documents' files with `file_bytes` more (a file item's) would be within theirs. Updates and
+    removals don't ask."""
+    settings = get_settings()
+    if _db_full(store, settings.data_store_db_quota_bytes) is not None:
+        return False
+    files_bytes = store.scalar(_FILES_BYTES)
+    if files_bytes >= settings.data_store_files_quota_bytes:
+        return False
+    return files_bytes + file_bytes <= settings.data_store_files_quota_bytes
+
+
 def write_refusal(store: Session) -> str | None:
     """Why `write_data` refuses an insert or update, for the model (which tells the user); None
     if there's room. `store` is a session on the store."""

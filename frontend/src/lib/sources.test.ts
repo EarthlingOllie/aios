@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import type { DocumentInfo, Source } from "@/lib/api";
-import { canChangeSource, documentsFrom, sourceKindLabel, sourceStatusLabel } from "@/lib/sources";
+import type { DocumentInfo, Source, SourceSync } from "@/lib/api";
+import {
+  canChangeSource,
+  canDeleteDocument,
+  documentsFrom,
+  intervalLabel,
+  sourceHealthLabel,
+  sourceKindLabel,
+  sourceStatusLabel,
+  syncSummary,
+} from "@/lib/sources";
 
 const uploads = { id: 1, kind: "upload", name: "Uploads" } as const;
 const prices = { id: 2, kind: "url", name: "Price page" } as const;
@@ -35,5 +44,53 @@ describe("canChangeSource", () => {
   it("never offers to pause or remove Uploads", () => {
     expect(canChangeSource({ kind: "upload" } as Source)).toBe(false);
     expect(canChangeSource({ kind: "url" } as Source)).toBe(true);
+  });
+});
+
+describe("health", () => {
+  it("labels each health", () => {
+    expect(sourceHealthLabel("healthy")).toBe("Healthy");
+    expect(sourceHealthLabel("delayed")).toBe("Delayed");
+    expect(sourceHealthLabel("failing")).toBe("Failing");
+    expect(sourceHealthLabel("needs_reconnecting")).toBe("Needs reconnecting");
+  });
+});
+
+describe("syncSummary", () => {
+  const sync = {
+    added: 2,
+    updated: 1,
+    removed: 0,
+    skipped: 0,
+    dropped: 0,
+    awaiting_check: 0,
+    storage_full: false,
+  } as SourceSync;
+
+  it("says what a sync did, leaving out what it didn't", () => {
+    expect(syncSummary(sync)).toBe("2 added · 1 updated");
+    expect(syncSummary({ ...sync, added: 0, updated: 0 })).toBe("No changes");
+  });
+
+  it("says when the store was full and what waits for Jev", () => {
+    expect(syncSummary({ ...sync, skipped: 3, storage_full: true, awaiting_check: 1 })).toBe(
+      "2 added · 1 updated · 3 skipped (storage full) · 1 awaiting check",
+    );
+  });
+});
+
+describe("intervalLabel", () => {
+  it("says how often a source syncs", () => {
+    expect(intervalLabel(900)).toBe("every 15 minutes");
+    expect(intervalLabel(3600)).toBe("every hour");
+    expect(intervalLabel(7200)).toBe("every 2 hours");
+    expect(intervalLabel(null)).toBe(null);
+  });
+});
+
+describe("canDeleteDocument", () => {
+  it("offers to delete only uploads: a synced document is removed at its source", () => {
+    expect(canDeleteDocument(doc(1, uploads))).toBe(true);
+    expect(canDeleteDocument(doc(2, { id: 3, kind: "connector", name: "Wiki" }))).toBe(false);
   });
 });

@@ -18,6 +18,8 @@ const HEADINGS: Record<string, string> = {
   run_failed: "A run failed",
   approval_needed: "A schema change is waiting for you",
   released_document_changed: "A document you released has changed",
+  released_item_changed: "A released item has changed at its source",
+  source_attention: "A source needs attention",
   organisation_deletion_scheduled: "An organisation is scheduled for deletion.",
   organisation_deletion_cancelled: "An organisation will no longer be deleted.",
 };
@@ -38,6 +40,10 @@ export function notificationPath({ kind, ref }: Notification): string | null {
       return null;
     case "released_document_changed":
       return "/data/documents";
+    case "released_item_changed":
+      return "/organisation/settings";
+    case "source_attention":
+      return `/data/sources/${id("source_id")}`;
     case "organisation_deletion_scheduled":
       return "/organisation/settings";
     case "organisation_deletion_cancelled":

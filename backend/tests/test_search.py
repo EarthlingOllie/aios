@@ -674,7 +674,7 @@ def test_the_tool_library_offers_search_and_keeps_the_old_search_keys(api):
     assert tools["search"]["name"] == "Search"
     assert tools["search"]["default_config"] == {
         "max_results": 8,
-        "kinds": ["document_chunk", "chat_message", "run_message", "brief"],
+        "kinds": ["document_chunk", "chat_message", "run_message", "brief", "source_item"],
     }
     max_results = tools["search"]["config_schema"]["properties"]["max_results"]
     assert (max_results["minimum"], max_results["maximum"]) == (1, 50)

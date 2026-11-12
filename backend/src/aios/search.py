@@ -1,6 +1,7 @@
 """Unified search: hybrid retrieval (pgvector cosine search + Postgres full-text search, fused
 with RRF) over a data store's search index (`aios.search_index`): its documents' chunks, its
-chat messages, its runs' messages, its briefs and its agents' memories, in its own database, as
+chat messages, its runs' messages, its briefs, its agents' memories and its sources' synced
+message items, in its own database, as
 its read-only role.
 
 Everyone in the organisation can find everything but memories, so nothing else here filters by
@@ -76,11 +77,15 @@ SEARCH_SQL = """
     SELECT f.id, f.score, f.semantic_rank, f.lexical_rank,
            i.kind, i.text, i.ref, i.created_at, i.document_id, i.chat_id, i.agent_id,
            i.agent_run_id, i.message_id, i.invocation_id, i.author_user_id, i.memory_id,
+           i.synced_item_id,
            d.filename, c.name AS chat_name, a.name AS agent_name,
-           r.title AS run_title, r.created_at AS run_created_at
+           r.title AS run_title, r.created_at AS run_created_at,
+           si.title AS item_title, si.url AS item_url, src.name AS source_name
     FROM fused f
     JOIN aios.search_items i ON i.id = f.id
     LEFT JOIN aios.documents d ON d.id = i.document_id
+    LEFT JOIN aios.synced_items si ON si.id = COALESCE(i.synced_item_id, d.synced_item_id)
+    LEFT JOIN aios.sources src ON src.id = si.source_id
     LEFT JOIN aios.chats c ON c.id = i.chat_id
     LEFT JOIN aios.agents a ON a.id = i.agent_id
     LEFT JOIN aios.agent_runs r ON r.id = i.agent_run_id
@@ -176,6 +181,12 @@ class SearchHit:
     invocation_id: int | None = None
     author_user_id: int | None = None
     memory_id: int | None = None
+    # A synced item's (a source item's, or a synced document's): its item, title, place at its
+    # source, and its source's name.
+    synced_item_id: int | None = None
+    item_title: str | None = None
+    item_url: str | None = None
+    source_name: str | None = None
 
 
 def vector_literal(vec: list[float]) -> str:
@@ -248,6 +259,10 @@ def search_with_vector(
             invocation_id=r["invocation_id"],
             author_user_id=r["author_user_id"],
             memory_id=r["memory_id"],
+            synced_item_id=r["synced_item_id"],
+            item_title=r["item_title"],
+            item_url=r["item_url"],
+            source_name=r["source_name"],
         )
         for r in rows
     ]
@@ -303,8 +318,12 @@ def item_result(hit: SearchHit) -> dict:
     if hit.kind == SearchItemKind.memory:
         # Its id, for `forget`.
         result["memory_id"] = hit.memory_id
+    elif hit.kind == SearchItemKind.source_item:
+        result |= {"source": hit.source_name, "title": hit.item_title, "url": hit.item_url}
     elif hit.kind == SearchItemKind.document_chunk:
         result |= {"source": hit.filename, "headings": hit.ref.get("headings", [])}
+        if hit.item_url:
+            result |= {"synced_from": hit.source_name, "url": hit.item_url}
     elif hit.kind == SearchItemKind.run_message:
         result |= {
             "run_id": hit.agent_run_id,

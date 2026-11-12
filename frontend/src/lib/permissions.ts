@@ -31,7 +31,7 @@ const TABLE: Record<Action, { roles: Role[]; does: string }> = {
   decide: { roles: BUILDERS, does: "approve or reject schema change requests" },
   restore: { roles: ADMINS, does: "restore dropped tables and columns" },
   tables: { roles: BUILDERS, does: "share, unshare or transfer data tables" },
-  sources: { roles: ADMINS, does: "add, change, pause or remove sources" },
+  sources: { roles: ADMINS, does: "add, change, sync, pause or remove sources" },
   run_organisation: {
     roles: ADMINS,
     does: "change the organisation's roles, invitations, name or settings, or delete it",

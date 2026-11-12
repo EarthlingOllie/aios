@@ -11,12 +11,13 @@ source is a foreign key that cascades):
   (`index_turn`);
 - the handoff indexes its brief (`index_brief`);
 - remembering, or a person's edit, indexes a memory (`index_memory`), found only by its own
-  agent (`aios.search.Filters`).
+  agent (`aios.search.Filters`);
+- a source's sync indexes a message item's text, split into pieces (`index_synced_item`).
 
 **Verdicts.** Each item carries its source's Jev verdict (`aios.verdicts`): a chunk its
-document's, a chat message its message's (`clean` for a person's, which Jev checks as it's
-posted), and the rest `derived` (what agents wrote). Search finds only clean, released and
-derived items.
+document's, a source item its synced item's, a chat message its message's (`clean` for a
+person's, which Jev checks as it's posted), and the rest `derived` (what agents wrote). Search
+finds only clean, released and derived items.
 
 **Embedding** is deferred: an item is written without one, and found by keyword until the
 store's sweep (`embed_pending`, background work on the run service, `aios.run_service`) embeds
@@ -34,7 +35,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.messages import BaseMessage
-from sqlalchemy import bindparam, case, select, text, update
+from sqlalchemy import bindparam, case, delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,7 @@ from aios.datastores.models import (
     Memory,
     SearchItem,
     SearchItemKind,
+    SyncedItem,
 )
 from aios.embeddings import embed_documents
 from aios.jev import Verdict
@@ -167,6 +169,37 @@ def index_memory(store: Session, memory: Memory) -> None:
         agent_id=memory.agent_id,
         text=memory.content,
         verdict=Verdict.derived,
+    )
+
+
+def pieces(text: str, size: int | None = None) -> list[str]:
+    """`text` split into pieces of at most `size` words (`chunk_max_tokens`), as a document is
+    chunked by tokens; none for blank text."""
+    size = size or get_settings().chunk_max_tokens
+    words = text.split()
+    return [" ".join(words[i : i + size]) for i in range(0, len(words), size)]
+
+
+def index_synced_item(store: Session, item: SyncedItem) -> None:
+    """Index a message item's text (flushed), split into pieces by position, with its verdict:
+    a piece whose text is unchanged keeps its embedding, and pieces past the new end go."""
+    store.flush()
+    found = pieces(item.text or "")
+    for position, piece in enumerate(found):
+        _write(
+            store,
+            ["synced_item_id", "position"],
+            kind=SearchItemKind.source_item,
+            synced_item_id=item.id,
+            position=position,
+            ref={"title": item.title},
+            text=piece,
+            verdict=item.verdict,
+        )
+    store.execute(
+        delete(SearchItem).where(
+            SearchItem.synced_item_id == item.id, SearchItem.position >= len(found)
+        )
     )
 
 

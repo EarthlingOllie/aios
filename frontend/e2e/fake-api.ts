@@ -291,12 +291,49 @@ export type SourceRow = {
   kind: "upload" | "url" | "webhook" | "email" | "connector";
   name: string;
   status: "active" | "paused" | "failing" | "needs_reauth" | "removing";
+  /** healthy, delayed, failing or needs_reconnecting; healthy unless set. */
+  health?: "healthy" | "delayed" | "failing" | "needs_reconnecting";
+  provider?: string | null;
+  interval_seconds?: number | null;
+  item_count?: number;
+  /** Its syncs, newest first. */
+  syncs?: SyncRow[];
   created_at: string;
+};
+
+/** One sync of a source. */
+export type SyncRow = {
+  id: number;
+  kind: "incremental" | "full" | "manual";
+  status: "running" | "succeeded" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  added: number;
+  updated: number;
+  removed: number;
+  skipped: number;
+  dropped: number;
+  awaiting_check: number;
+  storage_full: boolean;
+  error: string | null;
+};
+
+/** A synced message item Jev flagged, on the flagged list. */
+export type FlaggedItemRow = {
+  id: number;
+  title: string;
+  url: string | null;
+  source_id: number;
+  source_name: string;
+  reason: string | null;
+  checked_at: string | null;
+  created_at: string;
+  released?: boolean;
 };
 /** An item of the search index (GET /api/search), without its ranking, which the fake makes up. */
 export type SearchItemRow = {
   id: number;
-  kind: "document_chunk" | "chat_message" | "run_message" | "brief";
+  kind: "document_chunk" | "chat_message" | "run_message" | "brief" | "source_item";
   text: string;
   created_at: string;
   ref: { headings?: string[]; pages?: number[]; role?: "user" | "assistant" };
@@ -326,6 +363,8 @@ export type DocumentRow = {
   uploaded_by: ChatUser | null;
   /** The source it belongs to: Uploads unless it's set. */
   source: Pick<SourceRow, "id" | "kind" | "name">;
+  /** A synced document's place at its source. */
+  url?: string | null;
   created_at: string;
 };
 export type TableColumnRow = {
@@ -813,6 +852,12 @@ export class FakeApi {
   sources: SourceRow[] = [
     { id: 1, kind: "upload", name: "Uploads", status: "active", created_at: NOW },
   ];
+  /** The providers a source can be added with (GET /api/source-providers). */
+  sourceProviders: { provider: string; unavailable: string | null }[] = [{ provider: "test", unavailable: null }];
+  /** Each Sync now and Full resync asked for: the source's id, and whether it was full. */
+  syncRequests: { id: number; full: boolean }[] = [];
+  /** Synced message items Jev flagged. */
+  flaggedItems: FlaggedItemRow[] = [];
   /** The organisation's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
@@ -1230,15 +1275,59 @@ export class FakeApi {
 
   /** Adds a document, as if uploaded earlier. */
   /** Adds a source other than Uploads, as later kinds of source will. */
-  addSource(name: string, kind: SourceRow["kind"] = "url"): SourceRow {
-    const source: SourceRow = { id: this.id(), kind, name, status: "active", created_at: NOW };
+  addSource(name: string, kind: SourceRow["kind"] = "url", fields: Partial<SourceRow> = {}): SourceRow {
+    const source: SourceRow = {
+      id: this.id(),
+      kind,
+      name,
+      status: "active",
+      provider: kind === "connector" ? "test" : null,
+      interval_seconds: 900,
+      created_at: NOW,
+      ...fields,
+    };
     this.sources.push(source);
     return source;
   }
 
+  /** A sync, as a source's page lists it. */
+  sync(fields: Partial<SyncRow> = {}): SyncRow {
+    return {
+      id: this.id(),
+      kind: "incremental",
+      status: "succeeded",
+      started_at: NOW,
+      finished_at: NOW,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      skipped: 0,
+      dropped: 0,
+      awaiting_check: 0,
+      storage_full: false,
+      error: null,
+      ...fields,
+    };
+  }
+
   private sourceOut(source: SourceRow) {
     const document_count = this.documents.filter((d) => d.source.id === source.id).length;
-    return { ...source, document_count };
+    const { syncs = [], ...rest } = source;
+    const upload = source.kind === "upload";
+    return {
+      health: "healthy",
+      provider: null,
+      interval_seconds: upload ? null : 900,
+      item_count: 0,
+      next_sync_at: null,
+      ...rest,
+      document_count,
+      last_sync: syncs[0] ?? null,
+    };
+  }
+
+  private sourceDetail(source: SourceRow) {
+    return { ...this.sourceOut(source), syncs: source.syncs ?? [] };
   }
 
   addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
@@ -2928,6 +3017,7 @@ export class FakeApi {
       path.startsWith("/api/documents/") ||
       path === "/api/sources" ||
       path.startsWith("/api/sources/") ||
+      path === "/api/source-providers" ||
       path === "/api/search" ||
       path.startsWith("/api/data/")
     ) {
@@ -2992,23 +3082,77 @@ export class FakeApi {
       if (path === "/api/sources" && method === "GET") {
         return reply(200, this.sources.map((s) => this.sourceOut(s)));
       }
-      if ((m = path.match(/^\/api\/sources\/(\d+)$/))) {
+      if (path === "/api/source-providers" && method === "GET") return reply(200, this.sourceProviders);
+      const notAdmin = () => {
+        const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
+        return fail(403, `${who} can't add, change, sync, pause or remove sources. Ask an admin.`);
+      };
+      const tooOften = (seconds: unknown) =>
+        typeof seconds === "number" && seconds < 300
+          ? fail(422, "A source can sync at most every 5 minutes (300 seconds).")
+          : null;
+      if (path === "/api/sources" && method === "POST") {
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        const provider = this.sourceProviders.find((p) => p.provider === body.provider);
+        if (!provider || provider.unavailable) return fail(422, provider?.unavailable ?? "There's no such provider.");
+        const refused = tooOften(body.interval_seconds);
+        if (refused) return refused;
+        const source = this.addSource(String(body.name), "connector", {
+          provider: String(body.provider),
+          interval_seconds: (body.interval_seconds as number | undefined) ?? 900,
+          syncs: [this.sync({ kind: "full" })],
+        });
+        return reply(201, this.sourceDetail(source));
+      }
+      if ((m = path.match(/^\/api\/sources\/(\d+)\/sync$/)) && method === "POST") {
         const source = this.sources.find((s) => s.id === Number(m![1]));
         if (!source) return fail(404, "Not Found");
-        if (method === "GET") return reply(200, this.sourceOut(source));
-        if (this.roleOf(this.me.id) !== "admin") {
-          const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
-          return fail(403, `${who} can't add, change, pause or remove sources. Ask an admin.`);
-        }
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
         if (source.kind === "upload") {
           return fail(
             409,
             "Uploads can't be paused or removed: it's where every uploaded document goes, so uploading is always on.",
           );
         }
+        if (source.status === "paused") return fail(409, "This source is paused. Resume it to sync it.");
+        if (source.syncs?.some((x) => x.status === "running")) {
+          return fail(409, "This source is syncing now. Try again once it's finished.");
+        }
+        const full = Boolean(body?.full);
+        this.syncRequests.push({ id: source.id, full });
+        source.syncs = [this.sync({ kind: full ? "full" : "manual" }), ...(source.syncs ?? [])];
+        return reply(202, null);
+      }
+      if ((m = path.match(/^\/api\/sources\/(\d+)$/))) {
+        const source = this.sources.find((s) => s.id === Number(m![1]));
+        if (!source) return fail(404, "Not Found");
+        if (method === "GET") return reply(200, this.sourceDetail(source));
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        if (source.kind === "upload") {
+          return fail(
+            409,
+            "Uploads can't be paused or removed: it's where every uploaded document goes, so uploading is always on.",
+          );
+        }
+        if (method === "PATCH") {
+          const refused = tooOften(body.interval_seconds);
+          if (refused) return refused;
+          if (body.paused === true) source.status = "paused";
+          if (body.paused === false && source.status === "paused") source.status = "active";
+          if (typeof body.name === "string") source.name = body.name;
+          if (typeof body.interval_seconds === "number") source.interval_seconds = body.interval_seconds;
+          return reply(200, this.sourceDetail(source));
+        }
         return fail(404, "Not Found");
       }
       if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
+        const synced = this.documents.find((d) => d.id === Number(m![1]) && d.source.kind !== "upload");
+        if (synced) {
+          return fail(
+            409,
+            `This document is synced from ${synced.source.name}: remove it at its source, and its next sync removes it here. Deleted here, it would come back.`,
+          );
+        }
         const before = this.documents.length;
         this.documents = this.documents.filter((d) => d.id !== Number(m![1]));
         if (this.documents.length === before) return fail(404, "Not Found");
@@ -3105,6 +3249,19 @@ export class FakeApi {
       if (this.roleOf(this.me.id) !== "admin") {
         const role = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
         return fail(403, `${role} can't see flagged content or release it. Ask an admin.`);
+      }
+      if (path === "/api/flagged/synced-items" && method === "GET") {
+        return reply(
+          200,
+          this.flaggedItems.filter((i) => !i.released).map(({ released: _, ...item }) => item),
+        );
+      }
+      if ((m = path.match(/^\/api\/flagged\/synced-items\/(\d+)\/release$/)) && method === "POST") {
+        const item = this.flaggedItems.find((i) => i.id === Number(m![1]));
+        if (!item) return fail(404, "Not Found");
+        if (item.released) return fail(409, "Only a flagged item can be released.");
+        item.released = true;
+        return reply(200, { id: item.id, verdict: "released" });
       }
       if (path === "/api/flagged" && method === "GET") {
         return reply(

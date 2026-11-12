@@ -1,6 +1,6 @@
-"""Jev's flagged documents, for admins (`aios.verdicts`): the list, with Jev's reason, and
-releasing a false alarm, which makes it searchable (still wrapped as untrusted) and is recorded
-in the audit log. And Jev's health, for the notice everyone sees while it's down."""
+"""Jev's flagged documents and synced items, for admins (`aios.verdicts`): the list, with Jev's
+reason, and releasing a false alarm, which makes it searchable (still wrapped as untrusted) and
+is recorded in the audit log. And Jev's health, for the notice everyone sees while it's down."""
 
 from datetime import datetime
 
@@ -24,6 +24,20 @@ class FlaggedOut(BaseModel):
     reason: str | None
     checked_at: datetime | None
     uploaded_by: UserOut | None
+    created_at: datetime
+
+
+class FlaggedItemOut(BaseModel):
+    """A flagged synced message item (a synced file is on the list as its document)."""
+
+    id: int
+    title: str
+    url: str | None
+    source_id: int
+    source_name: str
+    # Jev's reason.
+    reason: str | None
+    checked_at: datetime | None
     created_at: datetime
 
 
@@ -73,6 +87,39 @@ def release_flagged(document_id: DbId, user: CurrentUser, store: CurrentStore):
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return ReleasedOut(id=doc.id, verdict=doc.verdict)
+
+
+@router.get(
+    "/flagged/synced-items",
+    response_model=list[FlaggedItemOut],
+    dependencies=[allow(Action.release)],
+)
+def list_flagged_items(store: CurrentStore):
+    """The organisation's flagged synced items, with Jev's reason, the most recently checked
+    first."""
+    return [
+        FlaggedItemOut.model_validate(f, from_attributes=True)
+        for f in verdicts.flagged_items(store)
+    ]
+
+
+@router.post(
+    "/flagged/synced-items/{item_id}/release",
+    response_model=ReleasedOut,
+    dependencies=[allow(Action.release)],
+)
+def release_flagged_item(item_id: DbId, user: CurrentUser, store: CurrentStore):
+    """Release a flagged synced item: it's found by search and reaches agents' context from now
+    on, still wrapped as untrusted, until it changes at its source. 409 if it isn't flagged."""
+    try:
+        item = verdicts.release_item(store, item_id, user.id)
+    except verdicts.NotFlagged:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Only a flagged item can be released."
+        ) from None
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return ReleasedOut(id=item.id, verdict=item.verdict)
 
 
 @router.get("/jev-status", response_model=JevStatusOut, dependencies=[allow(Action.read)])

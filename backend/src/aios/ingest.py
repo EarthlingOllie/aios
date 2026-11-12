@@ -147,14 +147,17 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
 
 def _ready(db: Session, document_id: int) -> None:
     """Mark the document ready, with its document ingested event (`aios.outbox`), in one
-    transaction, and commit."""
+    transaction, and commit. A synced document's event waits until Jev finds it clean."""
     doc = db.execute(
         update(Document)
         .where(Document.id == document_id)
         .values(status=DocumentStatus.ready, error=None)
-        .returning(Document.filename, Document.content_type, Document.source_id)
+        .returning(
+            Document.filename, Document.content_type, Document.source_id, Document.synced_item_id
+        )
     ).one_or_none()
-    if doc is not None:
+    # A synced document's waits for Jev to find it clean (`aios.verdicts.check_document`).
+    if doc is not None and doc.synced_item_id is None:
         outbox.emit(
             db,
             EventType.document_ingested,
