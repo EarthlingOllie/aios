@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import { Archive, ArchiveRestore, LogIn, LogOut, Pencil, Plus, UserMinus } from "lucide-react";
 
@@ -12,12 +12,10 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
-  POLL_MS,
   selectClass,
   useListHref,
   useLoad,
   usePoll,
-  useVisible,
   type ListContext,
 } from "@/components/crud";
 import { Tabs } from "@/components/tabs";
@@ -28,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   describeError,
+  openOrganisationId,
   type Chat,
   type ChatInput,
   type ChatListed,
@@ -41,12 +40,9 @@ import { archivedNotice, can } from "@/lib/chats";
 import { composerMentionables } from "@/lib/mentions";
 import { useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
+import { FALLBACK_READ_MS, useStream, type StreamEvent } from "@/lib/stream";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
-
-/** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
-export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
-const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
 
 // No sort menu: the list stays most recently active first.
 const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
@@ -69,9 +65,22 @@ export function ChatsSection() {
   const [params] = useSearchParams();
   const archived = params.get("filter") === "archived";
   const { data, error, reload } = useLoad(useCallback(() => api.listChats(archived), [archived]));
-  const visible = useVisible();
-  // Unread counts go up as others post, in chats other than the one open.
-  usePoll(data !== undefined, reload, visible ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
+  const refresh = useCoalesced(reload);
+  // Unread counts and the list itself change as others post, make, rename or archive chats: the
+  // person's stream says when, for this organisation's chats. Nothing polls.
+  const onEvent = useCallback(
+    ({ data: event }: StreamEvent) => {
+      if ((event as { organisation_id?: number } | null)?.organisation_id === openOrganisationId()) refresh();
+    },
+    [refresh],
+  );
+  const stream = useStream(data !== undefined ? api.personStreamUrl() : null, {
+    onEvent,
+    // What changed while it wasn't open.
+    onOpen: refresh,
+  });
+  // While it can't open, the list is read every few seconds until it does.
+  usePoll(data !== undefined && !stream.live && stream.gone === null, reload, FALLBACK_READ_MS);
   return (
     <MasterDetail
       title="Chats"
@@ -85,6 +94,36 @@ export function ChatsSection() {
       renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
+}
+
+/**
+ * `reload`, called as often as asked but never twice at once: asked while it's running, it runs
+ * once more when that's done.
+ */
+function useCoalesced(reload: () => Promise<unknown>): () => void {
+  const running = useRef(false);
+  const again = useRef(false);
+  const latest = useRef(reload);
+  latest.current = reload;
+  return useCallback(() => {
+    if (running.current) {
+      again.current = true;
+      return;
+    }
+    running.current = true;
+    const run = (): Promise<void> =>
+      latest.current().then(
+        () => undefined,
+        () => undefined,
+      ).then(() => {
+        if (again.current) {
+          again.current = false;
+          return run();
+        }
+        running.current = false;
+      });
+    void run();
+  }, []);
 }
 
 /** A chat in the list: its name, members (or that it's not joined) and unread count. */
@@ -303,6 +342,7 @@ export function ChatDetail() {
                 onPosted={chat.is_member ? reloadList : () => Promise.all([reload(), reloadList()])}
                 onInclude={onInclude}
                 onRead={chat.is_member ? onRead : undefined}
+                onChanged={reload}
                 draft={draft}
                 onDraftChange={setDraft}
               />

@@ -11,8 +11,8 @@ const list = (page: Page, name: string) => page.getByRole("list", { name });
 const links = (page: Page, name: string) => list(page, name).getByRole("link");
 const search = (page: Page, name: string) => page.getByRole("searchbox", { name: `Search ${name}` });
 
-// How often the chat list asks again (CHAT_LIST_POLL_MS).
-const CHAT_LIST_POLL_MS = 5000;
+// At most how long the chat list takes to follow a change, from the person's stream.
+const CHAT_LIST_UPDATE_MS = 5000;
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("typing narrows the agents by name or description, and shows how many are left", async ({
@@ -184,10 +184,10 @@ test("the chats list keeps the search as it refreshes", async ({ page }) => {
 
   await expect(links(page, "Chats")).toHaveText([/Support/]);
 
-  // Chats that arrive with the next refresh are searched too.
+  // Chats that arrive on the person's stream are searched too.
   api.addChat("Customer feedback", { owner: sam });
   api.addChat("Random", { owner: sam });
-  await expect(links(page, "Chats")).toHaveCount(2, { timeout: CHAT_LIST_POLL_MS + 2000 });
+  await expect(links(page, "Chats")).toHaveCount(2, { timeout: CHAT_LIST_UPDATE_MS + 2000 });
   await expect(links(page, "Chats").filter({ hasText: "Random" })).toHaveCount(0);
   await expect(search(page, "chats")).toHaveValue("customer");
   await expect(page.getByText("2 of 4")).toBeVisible();

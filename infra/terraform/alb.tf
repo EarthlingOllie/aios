@@ -11,7 +11,8 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   subnets            = aws_subnet.public[*].id
   security_groups    = [aws_security_group.alb.id]
-  # Long enough for streamed chat responses.
+  # Well above the live update streams' heartbeat (STREAM_HEARTBEAT_SECONDS, 15s), so a quiet
+  # stream (aios.api.streams) is never cut.
   idle_timeout = 300
 }
 

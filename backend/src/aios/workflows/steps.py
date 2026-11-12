@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, tracing, usage
+from aios import checkpoints, invocations, streams, tracing, usage
 
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
@@ -112,6 +112,7 @@ def _start_step(
     )
     store.add(step)
     store.flush()
+    streams.run_changed(store, workflow_run_id=run_id)
     return step
 
 
@@ -140,6 +141,7 @@ def _record_step(
     store.add(step)
     store.flush()
     store.refresh(step, ["finished_at"])
+    streams.run_changed(store, workflow_run_id=run_id)
     return step
 
 
@@ -154,7 +156,7 @@ def _finish_step(
     with store_session(data_store_id) as db:
         # Not once the run has ended without it (`_end_runs`), e.g. its node finished after the
         # run was failed for making no progress: the step stays failed with the run.
-        db.execute(
+        finished = db.execute(
             update(WorkflowRunStep)
             .where(
                 WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
@@ -166,20 +168,26 @@ def _finish_step(
                 error=error,
                 finished_at=func.now(),
             )
+            .returning(WorkflowRunStep.run_id)
         )
+        for (run_id,) in finished:
+            streams.run_changed(db, workflow_run_id=run_id)
         db.commit()
 
 
 def _wait_step(data_store_id: uuid.UUID, step_id: int, request_id: uuid.UUID | None) -> None:
     """Record that a running step waits (on `request_id`, for an agent node)."""
     with store_session(data_store_id) as db:
-        db.execute(
+        waiting = db.execute(
             update(WorkflowRunStep)
             .where(
                 WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
             )
             .values(status=WorkflowStepStatus.waiting, waiting_on_request_id=request_id)
+            .returning(WorkflowRunStep.run_id)
         )
+        for (run_id,) in waiting:
+            streams.run_changed(db, workflow_run_id=run_id)
         db.commit()
 
 

@@ -118,3 +118,28 @@ export function postRefusal(err: unknown): PostRefusal {
   }
   return { message: describeError(err), missing: [] };
 }
+
+/** Replies being written, by invocation id: the whole text so far, as the chat's stream sends it. */
+export type Drafts = Record<number, string>;
+
+/**
+ * The drafts to show, oldest invocation first: a draft goes once its reply is posted (the
+ * message replaces it, in the same place at the bottom) or its invocation has finished (a failed
+ * turn shows its failure instead). Drafts are never stored: a reload shows the stream's again.
+ */
+export function shownDrafts(
+  drafts: Drafts,
+  invocations: Invocations,
+  messages: ChatMessage[],
+): { invocationId: number; text: string; invocation: ChatInvocation | undefined }[] {
+  const replied = new Set(
+    messages.filter((m) => m.kind === "text" && m.invocation_id !== null).map((m) => m.invocation_id),
+  );
+  return Object.entries(drafts)
+    .map(([id, text]) => ({ invocationId: Number(id), text, invocation: invocations[Number(id)] }))
+    .filter(({ invocationId, text, invocation }) => {
+      if (!text || replied.has(invocationId)) return false;
+      return invocation === undefined || isLive(invocation);
+    })
+    .sort((a, b) => a.invocationId - b.invocationId);
+}

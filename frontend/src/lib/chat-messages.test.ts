@@ -13,6 +13,7 @@ import {
   MESSAGE_PAGE,
   newlyRead,
   postRefusal,
+  shownDrafts,
   unreadBadge,
 } from "@/lib/chat-messages";
 
@@ -245,5 +246,24 @@ describe("postRefusal", () => {
       missing: [],
     });
     expect(postRefusal(new Error("boom"))).toEqual({ message: "network error", missing: [] });
+  });
+});
+
+describe("shownDrafts", () => {
+  const reply = (id: number, invocationId: number) => ({ ...message(id, "Done."), invocation_id: invocationId });
+
+  it("shows the reply so far of each invocation still going, oldest first", () => {
+    const drafts = { 3: "Second", 2: "First" };
+    const invocations = { 2: invocation(2, "running"), 3: invocation(3, "running") };
+    expect(shownDrafts(drafts, invocations, [message(1)]).map((d) => [d.invocationId, d.text])).toEqual([
+      [2, "First"],
+      [3, "Second"],
+    ]);
+  });
+
+  it("drops a draft once its reply is posted or its invocation has finished", () => {
+    const drafts = { 2: "Replied", 3: "Failed", 4: "Going" };
+    const invocations = { 2: invocation(2, "running"), 3: invocation(3, "failed"), 4: invocation(4, "running") };
+    expect(shownDrafts(drafts, invocations, [message(1), reply(5, 2)]).map((d) => d.invocationId)).toEqual([4]);
   });
 });

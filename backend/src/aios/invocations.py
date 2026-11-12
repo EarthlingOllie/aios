@@ -53,7 +53,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, jev, limits, outbox, search_index
+from aios import checkpoints, jev, limits, outbox, search_index, streams
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -294,6 +294,7 @@ def mark_running(store: Session, invocation_id: int) -> None:
             started_at=func.coalesce(Invocation.started_at, func.now()),
         )
     )
+    streams.invocation_changed(store, invocation_id)
 
 
 def _finish(

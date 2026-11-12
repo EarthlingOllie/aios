@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
-import { ErrorBanner, formatDate, POLL_MS, useLoad, usePoll, useVisible } from "@/components/crud";
+import { ErrorBanner, formatDate, useLoad, usePoll, useVisible } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { RunCard } from "@/components/RunCard";
 import { Button } from "@/components/ui/button";
@@ -32,21 +32,20 @@ import {
   bodyShown,
   hasOlder,
   isAtBottom,
-  isLive,
   mergeInvocations,
   mergeMessages,
   newlyRead,
   postRefusal,
+  shownDrafts,
+  type Drafts,
   type Invocations,
   type PostRefusal,
 } from "@/lib/chat-messages";
 import { useCurrentUser } from "@/lib/current-user";
 import { mentionAt, mentionsIn, remarkMentions } from "@/lib/mentions";
 import { cn } from "@/lib/utils";
+import { FALLBACK_READ_MS, useStream, type StreamEvent } from "@/lib/stream";
 import { composerJevNotice } from "@/lib/verdicts";
-
-/** How often an open chat asks for what's new while its tab is hidden (ms). */
-export const CHAT_HIDDEN_POLL_MS = 30_000;
 
 /** How often the composer asks again whether Jev is up, while the page is visible (ms). */
 const JEV_POLL_MS = 60_000;
@@ -90,14 +89,19 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
 
 /**
  * An open chat's messages and its composer. Shows the latest page, scrolled to the newest, and
- * asks for what's new every `POLL_MS` (`CHAT_HIDDEN_POLL_MS` while the tab is hidden and no run is
- * live, and at once when it's shown again). Scrolling to the top loads the page before, keeping the reader's place;
+ * follows the chat's stream (`lib/stream`): new messages, run cards as their runs move on, and a
+ * reply being written, marked "writing…", which the posted reply replaces in place (a failed
+ * turn's draft goes, and its failure shows). Nothing polls: a stream that drops catches up from
+ * the newest message shown when it opens again, and while it can't open the chat reads what's
+ * new every `FALLBACK_READ_MS` until it can. Changes to the chat itself (archived, renamed, its
+ * members) go to `onChanged`. Leaving the organisation closes it for good, saying so. Scrolling
+ * to the top loads the page before, keeping the reader's place;
  * new messages scroll into view only when the reader is already at the bottom. `@` in the composer
  * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned agent's
- * or workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
- * which brings the state of every invocation still going. Whenever the reader is at the bottom of
- * the visible chat, `onRead` hears of the newest message, once each. The composer's unsent text is
- * held by the caller (`draft`), so it outlives the room, e.g. while another tab is open.
+ * or workflow's acknowledgement carries a card following its run. Whenever the reader is at the
+ * bottom of the visible chat, `onRead` hears of the newest message, once each. The composer's
+ * unsent text is held by the caller (`draft`), so it outlives the room, e.g. while another tab
+ * is open.
  *
  * Anyone in the organisation reads the chat and posts in it; posting joins them. A refused post
  * stays in the composer, with why: Jev flagged it, Jev couldn't check it (try again), or it
@@ -114,6 +118,7 @@ export function ChatRoom({
   onPosted,
   onInclude,
   onRead,
+  onChanged,
   draft,
   onDraftChange,
 }: {
@@ -136,12 +141,16 @@ export function ChatRoom({
    * fails, the same message is reported again the next time the reader is seen at the bottom.
    */
   onRead?: (messageId: number) => Promise<unknown>;
+  /** The chat's header or members changed (it was archived, say): read it again. */
+  onChanged?: () => unknown;
   /** What's in the composer, not yet sent. */
   draft: string;
   onDraftChange: Dispatch<SetStateAction<string>>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
+  // Replies being written, from the stream; never stored.
+  const [drafts, setDrafts] = useState<Drafts>({});
   const [older, setOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   // Set at once, unlike the state: scroll events come faster than renders.
@@ -201,27 +210,40 @@ export function ChatRoom({
   }, [read, show]);
 
   const loaded = messages !== undefined;
-  const poll = useCallback(
+  const readNew = useCallback(
     () =>
       read({ after: afterCursor(shown.current) }).then(
         (page) => show(page, followIfAtBottom(list.current)),
-        // A failed read is tried again at the next poll.
+        // A failed read is tried again at the next one.
         () => undefined,
       ),
     [read, show],
   );
-  // A run still going is followed every second, even while the tab is hidden.
-  const live = useMemo(
-    () => Object.values(invocations).some(isLive),
-    [invocations],
+  const onEvent = useCallback(
+    ({ event, data }: StreamEvent) => {
+      if (event === "message") show({ messages: [data as ChatMessage], invocations: [] }, followIfAtBottom(list.current));
+      else if (event === "invocation") setInvocations((current) => mergeInvocations(current, [data as ChatInvocation]));
+      else if (event === "draft") {
+        const { invocation_id, text } = data as { invocation_id: number; text: string };
+        intent.current = followIfAtBottom(list.current);
+        setDrafts((current) => ({ ...current, [invocation_id]: text }));
+      } else if (event === "chat" || event === "members") onChanged?.();
+    },
+    [show, onChanged],
   );
-  usePoll(loaded, poll, visible || live ? POLL_MS : CHAT_HIDDEN_POLL_MS);
-  const wasVisible = useRef(visible);
-  useEffect(() => {
-    // Shown again: what was posted meanwhile, now.
-    if (loaded && visible && !wasVisible.current) void poll();
-    wasVisible.current = visible;
-  }, [loaded, visible, poll]);
+  // Opened once the first page is shown, resuming after its newest message.
+  const stream = useStream(loaded ? api.chatStreamUrl(chatId) : null, {
+    onEvent,
+    lastEventId: () => afterCursor(shown.current),
+  });
+  const leftOrganisation = stream.gone === "left_organisation";
+  // While the stream can't open (or was replaced by newer tabs), what's new is read now and then.
+  const reading = loaded && !stream.live && !leftOrganisation && stream.gone !== "not_found";
+  usePoll(reading, readNew, FALLBACK_READ_MS);
+  const writing = useMemo(
+    () => shownDrafts(drafts, invocations, messages ?? []),
+    [drafts, invocations, messages],
+  );
 
   const loadOlder = useCallback(async () => {
     if (loadingOlderNow.current || !older || shown.current.length === 0) return;
@@ -248,7 +270,7 @@ export function ChatRoom({
     if (scroll.to === "bottom") el.scrollTop = el.scrollHeight;
     // History went in above: move down by as much, so what the reader was looking at stays put.
     else el.scrollTop = scroll.scrollTop + (el.scrollHeight - scroll.scrollHeight);
-  }, [messages]);
+  }, [messages, writing]);
 
   // What's shown now may have been read: after each render of new messages (scrolled by then),
   // on being shown again, and on joining (when there's someone to tell).
@@ -330,7 +352,20 @@ export function ChatRoom({
             invocation={message.invocation_id === null ? undefined : invocations[message.invocation_id]}
           />
         ))}
+        {writing.map(({ invocationId, text, invocation }) => (
+          <DraftItem key={`draft-${invocationId}`} text={text} invocation={invocation} messages={messages ?? []} />
+        ))}
       </div>
+      {leftOrganisation && (
+        <p role="status" aria-label="Not live" className="text-muted-foreground text-sm">
+          You've left this organisation, so this chat no longer updates.
+        </p>
+      )}
+      {reading && (
+        <p role="status" aria-label="Not live" className="text-muted-foreground text-sm">
+          Live updates are paused; new messages are checked every few seconds.
+        </p>
+      )}
       {refusal && (
         <div
           role="alert"
@@ -378,6 +413,37 @@ export function ChatRoom({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * A reply being written, marked "writing…": its agent's, from the card it belongs to. The posted
+ * reply takes its place.
+ */
+function DraftItem({
+  text,
+  invocation,
+  messages,
+}: {
+  text: string;
+  invocation: ChatInvocation | undefined;
+  messages: ChatMessage[];
+}) {
+  const card = messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation?.id);
+  const author = card?.author;
+  return (
+    <article aria-label="Reply being written" className="flex gap-2 opacity-80">
+      <div className="pt-0.5">
+        <ChatAvatar kind={author?.kind ?? "agent"} name={author?.name ?? ""} alt={author?.name ?? "Agent"} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2 text-sm">
+          <span className="font-medium">{author?.name ?? "Agent"}</span>
+          <span className="text-muted-foreground text-xs italic">writing…</span>
+        </div>
+        <MarkdownView className="text-sm">{text}</MarkdownView>
+      </div>
+    </article>
   );
 }
 

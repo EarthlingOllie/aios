@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import aliased
 
-from aios import assistant, audit, organisations
+from aios import assistant, audit, organisations, streams
 from aios.api.chats import rules
 from aios.api.chats.common import (
     CHAT_NAME_INDEX,
@@ -133,6 +133,8 @@ def create_chat(
     )
     store.add(chat)
     with unique_name(store, "a chat", CHAT_NAME_INDEX):
+        store.flush()
+        streams.chat_changed(store, chat.id, streams.APPEARED)
         store.commit()
     db.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id, role)
@@ -179,6 +181,7 @@ def update_chat(
     chat.name = body.name
     chat.description = body.description
     chat.updated_by = user.id
+    streams.chat_changed(store, chat.id, streams.RENAMED)
     with unique_name(store, "a chat", CHAT_NAME_INDEX):
         store.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id, role)
@@ -211,6 +214,7 @@ def archive_chat(
         audit.record(
             store, audit.person(user.id), "chat.archived", "chat", chat.id, {"name": chat.name}
         )
+        streams.chat_changed(store, chat.id, streams.ARCHIVED)
         store.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id, role)
 
@@ -240,5 +244,6 @@ def unarchive_chat(
         audit.record(
             store, audit.person(user.id), "chat.unarchived", "chat", chat.id, {"name": chat.name}
         )
+        streams.chat_changed(store, chat.id, streams.UNARCHIVED)
         store.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id, role)

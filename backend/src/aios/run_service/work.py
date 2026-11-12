@@ -35,7 +35,17 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import handoff, invocations, jev, outbox, search_index, turn_lease, turns, workflows
+from aios import (
+    handoff,
+    invocations,
+    jev,
+    outbox,
+    search_index,
+    streams,
+    turn_lease,
+    turns,
+    workflows,
+)
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.datastores import (
@@ -176,6 +186,8 @@ class _Found:
     target_kind: TriggerTargetKind
     agent_run_id: int | None
     workflow_run_id: int | None
+    # The chat that follows it, if one does.
+    chat_id: int | None = None
 
 
 def _find(data_store_id: uuid.UUID, invocation_id: int) -> _Found | None:
@@ -186,6 +198,7 @@ def _find(data_store_id: uuid.UUID, invocation_id: int) -> _Found | None:
                 Invocation.target_kind,
                 Invocation.agent_run_id,
                 Invocation.workflow_run_id,
+                Invocation.chat_id,
             ).where(Invocation.id == invocation_id)
         ).one_or_none()
     return None if row is None else _Found(*row)
@@ -341,11 +354,16 @@ def _context(data_store_id: uuid.UUID, agent_id: int, run_id: int) -> agents_api
 
 
 async def _run_turn(
-    data_store_id: uuid.UUID, run_id: int, prompt: str, title: str | None
+    data_store_id: uuid.UUID,
+    run_id: int,
+    prompt: str,
+    title: str | None,
+    draft: streams.Draft | None = None,
 ) -> str | None | Later:
     """Run the store's run's turn, or carry on the one an earlier attempt began; why it failed
     (None if it went fine), or `Later` if another turn holds the run. Raises `CantStart` if the
-    run is gone or can't run."""
+    run is gone or can't run. The reply's text as it's written goes to `draft`, if given: the
+    chat following the turn shows it (`aios.streams`)."""
     progress = await run_in_threadpool(_progress, data_store_id, run_id)
     if progress is None:
         raise CantStart(invocations.RUN_DELETED)
@@ -379,6 +397,8 @@ async def _run_turn(
     async for chunk in agents_api.turn_stream(ctx, run_id, turn, lease, turn_id=turn_id):
         if chunk["type"] == "error":
             error = chunk["errorText"]
+        elif chunk["type"] == "text-delta" and draft is not None and draft.add(chunk["delta"]):
+            await run_in_threadpool(draft.flush)
     return error
 
 
@@ -411,6 +431,7 @@ async def agent_turn(item: Claimed) -> Outcome:
     if found is None or found.status not in invocations.UNFINISHED:
         return Done()
     error: str | None
+    draft: streams.Draft | None = None
     try:
         run_id = found.agent_run_id
         prompt = schedule.message if schedule else ""
@@ -427,7 +448,10 @@ async def agent_turn(item: Claimed) -> Outcome:
         elif schedule is None:
             # Carrying on a mention's turn: its prompt is only needed if the run never got it.
             prompt = await run_in_threadpool(_mention_prompt, store_id, invocation_id)
-        outcome = await _run_turn(store_id, run_id, prompt, title)
+        if found.chat_id is not None:
+            # What its chat shows while the reply is written (`aios.streams`).
+            draft = streams.Draft(store_id, found.chat_id, invocation_id)
+        outcome = await _run_turn(store_id, run_id, prompt, title, draft)
         if isinstance(outcome, Later):
             return outcome
         error = outcome
@@ -435,7 +459,10 @@ async def agent_turn(item: Claimed) -> Outcome:
         error = str(exc)
     except HTTPException as exc:
         error = str(exc.detail)
+    # The reply (or why it failed) is posted, and replaces the draft, which is gone.
     await run_in_threadpool(_record, store_id, invocation_id, schedule, error)
+    if draft is not None:
+        await run_in_threadpool(draft.clear)
     return Done()
 
 

@@ -19,16 +19,16 @@
 
 **Blocked by:** [01: Open chats, and the Jev check on posted messages](01-open-chats.md), [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [Phase 1 · 12: Run service: queue, mentioned turns, handoff, scheduler](../phase-1-foundation/12-run-service.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] New messages arrive on the chat stream without the browser polling.
-- [ ] A reconnect with a last event id delivers every missed message exactly once, including a message published between subscribing and reading.
-- [ ] A run card moves from queued to briefing to running to finished on the stream.
-- [ ] A draft grows as the reply is written, and the final message replaces it in place. Opening a conversation mid-reply shows the draft so far.
-- [ ] When a turn fails, the draft is removed and the failure is shown. Drafts never reach the database.
-- [ ] Unread counts and chat list changes (appearing, joined, left, renamed, archived, unarchived) update live from the person stream.
-- [ ] People outside the organisation get a 404 on a chat's stream; members who haven't joined can open it.
-- [ ] Leaving the organisation sends "gone" with its reason, and the client stops reconnecting. Archiving a chat turns an open view read-only without closing it.
-- [ ] Over the per-process cap, the stream answers 503 with a retry hint. Over the per-person cap, the oldest stream is closed as replaced.
-- [ ] With Redis down, streams answer 503, the client falls back to periodic reads, and recovers once Redis is back.
-- [ ] Heartbeats run on the configured interval, and the proxy configurations have buffering off and timeouts above the heartbeat.
+- [x] New messages arrive on the chat stream without the browser polling.
+- [x] A reconnect with a last event id delivers every missed message exactly once, including a message published between subscribing and reading.
+- [x] A run card moves from queued to briefing to running to finished on the stream.
+- [x] A draft grows as the reply is written, and the final message replaces it in place. Opening a conversation mid-reply shows the draft so far.
+- [x] When a turn fails, the draft is removed and the failure is shown. Drafts never reach the database.
+- [x] Unread counts and chat list changes (appearing, joined, left, renamed, archived, unarchived) update live from the person stream.
+- [x] People outside the organisation get a 404 on a chat's stream; members who haven't joined can open it.
+- [x] Leaving the organisation sends "gone" with its reason, and the client stops reconnecting. Archiving a chat turns an open view read-only without closing it.
+- [x] Over the per-process cap, the stream answers 503 with a retry hint. Over the per-person cap, the oldest stream is closed as replaced.
+- [x] With Redis down, streams answer 503, the client falls back to periodic reads, and recovers once Redis is back.
+- [x] Heartbeats run on the configured interval, and the proxy configurations have buffering off and timeouts above the heartbeat.

@@ -3,8 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
-// How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
-const LIST_POLL_MS = 5000;
+// At most how long the chat list takes to follow a change, from the person's stream.
+const LIST_UPDATE_MS = 5000;
 
 const chatList = (page: Page) => page.getByRole("list", { name: "Chats" });
 const listItem = (page: Page, name: string) => chatList(page).getByRole("link").filter({ hasText: name });
@@ -74,12 +74,12 @@ test("a joined chat counts what's new in the list, and reading it clears the cou
   await page.goto(inOrg(`/chats/${design.id}`));
   await page.getByRole("button", { name: "Join", exact: true }).click();
   await expect(composer(page)).toBeVisible();
-  // Another chat open, Sam posts in this one: the list's next read counts it.
+  // Another chat open, Sam posts in this one: the person's stream brings the count.
   await listItem(page, "Other").click();
   await expect(page).toHaveURL(inOrg(`/chats/${other.id}`));
   api.addChatMessage(design, "Anyone around?", sam);
   api.addChatMessage(design, "Hello?", sam);
-  await expect(listItem(page, "Design").getByLabel("unread")).toHaveText("2", { timeout: LIST_POLL_MS + 2000 });
+  await expect(listItem(page, "Design").getByLabel("unread")).toHaveText("2", { timeout: LIST_UPDATE_MS + 2000 });
   await expect(listItem(page, "Other").getByLabel("unread")).toHaveCount(0);
 
   // Opening it reads it to the bottom: the count clears.

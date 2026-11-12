@@ -1292,6 +1292,11 @@ export function organisationApi(): string {
   return `/api/o/${organisationId}`;
 }
 
+/** The id of the organisation the page is open in (`openOrganisationApi`), if one is. */
+export function openOrganisationId(): number | null {
+  return organisationId;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
   if (!res.ok) throw new ApiError(res.status, await res.text());
@@ -1625,6 +1630,10 @@ export const api = {
     request<Chat>(`${organisationApi()}/chats/${id}/members`, json("POST", member)),
   joinChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/join`, { method: "POST" }),
   leaveChat: (id: number) => request<void>(`${organisationApi()}/chats/${id}/leave`, { method: "POST" }),
+  /** The chat's live events (`lib/stream`): its messages, run cards, drafts, header and members. */
+  chatStreamUrl: (id: number) => `${organisationApi()}/chats/${id}/stream`,
+  /** The person's live chat list events, across every organisation they're in (`lib/stream`). */
+  personStreamUrl: () => "/api/me/stream",
   /** Notes that the user has seen the chat's messages up to `messageId`, clearing their unread count. */
   markChatRead: (id: number, messageId: number) =>
     request<void>(`${organisationApi()}/chats/${id}/read`, json("POST", { message_id: messageId })),

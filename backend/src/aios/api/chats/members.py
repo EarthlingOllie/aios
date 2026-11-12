@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import organisations
+from aios import organisations, streams
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -146,6 +146,7 @@ def add_member(
     if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
     chat.members.append(member)
+    streams.members_changed(store, chat.id)
     # Adding a member is activity too.
     chat.updated_at = func.now()
     # The check above can lose a race with another add of the same member; this catches that.
@@ -202,6 +203,7 @@ def join(store: Session, chat: Chat, user_id: int) -> None:
         )
         .on_conflict_do_nothing(constraint=MEMBER_CONSTRAINTS[ChatMemberKind.user])
     )
+    streams.chat_changed(store, chat.id, streams.JOINED, user_id)
 
 
 def take_out(store: Session, member: ChatMember) -> None:
@@ -228,6 +230,7 @@ def leave_chat(chat_id: DbId, user: CurrentUser, role: CurrentRole, store: Curre
     assert member is not None
     lock_chat(store, chat)
     take_out(store, member)
+    streams.chat_changed(store, chat.id, streams.LEFT, user.id)
     # As removing a member is.
     chat.updated_at = func.now()
     store.commit()
@@ -252,5 +255,6 @@ def remove_member(
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     take_out(store, member)
+    streams.members_changed(store, chat.id)
     chat.updated_at = func.now()
     store.commit()
