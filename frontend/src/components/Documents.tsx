@@ -28,7 +28,7 @@ import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-sto
 import { formatBytes } from "@/lib/format-bytes";
 import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
-import { documentsFrom } from "@/lib/sources";
+import { canDeleteDocument, documentsFrom } from "@/lib/sources";
 import { cn } from "@/lib/utils";
 import { verdictView } from "@/lib/verdicts";
 
@@ -373,7 +373,7 @@ export function Documents() {
               {doc.status === "ready" ? `${doc.chunk_count} chunks` : doc.status}
             </Badge>
             {doc.status === "ready" && doc.verdict !== "clean" && <VerdictBadge doc={doc} />}
-            {!refusal && (
+            {!refusal && canDeleteDocument(doc) && (
               <button
                 className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                 onClick={() => documents.remove(doc)}
@@ -480,8 +480,16 @@ export function DocumentsSection() {
                 <p className="text-muted-foreground text-xs">
                   <span title="Source">{doc.source.name}</span>
                   {" · "}
-                  Uploaded {formatDate(doc.created_at)}
+                  {canDeleteDocument(doc) ? "Uploaded" : "Synced"} {formatDate(doc.created_at)}
                   {doc.uploaded_by && ` by ${personName(doc.uploaded_by)}`}
+                  {doc.url && (
+                    <>
+                      {" · "}
+                      <a href={doc.url} target="_blank" rel="noreferrer" className="underline">
+                        Open at its source
+                      </a>
+                    </>
+                  )}
                   {doc.status === "ready" &&
                     ` · ${doc.chunk_count} ${doc.chunk_count === 1 ? "chunk" : "chunks"}`}
                 </p>
@@ -520,7 +528,7 @@ export function DocumentsSection() {
               >
                 <Download className="size-4" />
               </a>
-              {!refusal && (
+              {!refusal && canDeleteDocument(doc) && (
                 <button
                   className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
                   onClick={() => onDelete(doc)}

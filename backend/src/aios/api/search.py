@@ -23,7 +23,8 @@ router = APIRouter(prefix="/api")
 class SearchHitOut(BaseModel):
     """An item found, labelled with its kind, with what links it to its source: a document
     passage's document, a chat message's chat (and message), a run message's run and agent, a
-    brief's chat and agent; and how each search branch ranked it (the ranking explanation)."""
+    brief's chat and agent, a synced item's source and place there; and how each search branch
+    ranked it (the ranking explanation)."""
 
     id: int
     kind: Searchable
@@ -40,6 +41,12 @@ class SearchHitOut(BaseModel):
     agent_name: str | None
     agent_run_id: int | None
     run_title: str | None
+    # A synced item's (a source item's, or a synced document passage's): its item, title, place
+    # at its source and its source's name.
+    synced_item_id: int | None = None
+    item_title: str | None = None
+    item_url: str | None = None
+    source_name: str | None = None
     # Reciprocal Rank Fusion score: higher is better; and the item's rank in each branch, or
     # null if that branch didn't find it.
     score: float

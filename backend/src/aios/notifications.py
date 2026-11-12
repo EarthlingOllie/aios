@@ -16,6 +16,10 @@ holds content: what a notification says is read from the organisation's store wh
   step, `aios.approvals`); whoever may decide it, and only them; its being decided, cancelled
   or expired, for everyone.
 - `released_document_changed`: the document (`document_id`); the admin who released it.
+- `released_item_changed`: a released synced item that changed at its source
+  (`synced_item_id`); every admin.
+- `source_attention`: a source that became failing or needs reconnecting (`source_id`); every
+  admin, once (on the change, not on each failed sync).
 - `organisation_deletion_scheduled` and `_cancelled`: the organisation itself (`{}`); every
   member.
 
@@ -54,6 +58,8 @@ REPLY = "reply"
 RUN_FAILED = "run_failed"
 APPROVAL_NEEDED = "approval_needed"
 RELEASED_DOCUMENT_CHANGED = "released_document_changed"
+RELEASED_ITEM_CHANGED = "released_item_changed"
+SOURCE_ATTENTION = "source_attention"
 ORGANISATION_DELETION_SCHEDULED = "organisation_deletion_scheduled"
 ORGANISATION_DELETION_CANCELLED = "organisation_deletion_cancelled"
 # What reading a chat past a message clears.
@@ -250,6 +256,18 @@ def admins(db: Session, organisation_id: int) -> list[int]:
             )
         )
     )
+
+
+def notify_admins_from_store(data_store_id: uuid.UUID, kind: str, ref: dict[str, Any]) -> None:
+    """`notify_from_store`, for every admin of the organisation whose store this is."""
+    with SessionLocal() as db:
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+        if organisation_id is None:
+            return
+        notify(db, admins(db, organisation_id), organisation_id, kind, ref)
+        db.commit()
 
 
 # --- From the store side, once it commits --------------------------------------------------------

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { Bot, FileText, MessageSquare, NotebookPen, Search as SearchIcon } from "lucide-react";
+import { Bot, FileText, Inbox, MessageSquare, NotebookPen, Search as SearchIcon } from "lucide-react";
 
 import { ErrorBanner, Placeholder, useLoad } from "@/components/crud";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
@@ -22,6 +22,7 @@ const kinds: { key: SearchKind; label: string; filter: string }[] = [
   { key: "chat_message", label: "Chat message", filter: "Chat messages" },
   { key: "run_message", label: "Run", filter: "Runs" },
   { key: "brief", label: "Brief", filter: "Briefs" },
+  { key: "source_item", label: "Synced item", filter: "Synced items" },
 ];
 const kindLabel = Object.fromEntries(kinds.map((k) => [k.key, k.label])) as Record<SearchKind, string>;
 
@@ -264,6 +265,12 @@ function source(hit: SearchHit): { to: string; label: string; icon: typeof FileT
         to: hit.chat_id !== null ? `/chats/${hit.chat_id}` : `/agents/${hit.agent_id}`,
         label: `${hit.agent_name ?? "An agent"}${hit.chat_name ? ` in #${hit.chat_name}` : ""}`,
         icon: NotebookPen,
+      };
+    case "source_item":
+      return {
+        to: "/data/sources",
+        label: `${hit.item_title ?? "An item"}${hit.source_name ? ` · ${hit.source_name}` : ""}`,
+        icon: Inbox,
       };
   }
 }

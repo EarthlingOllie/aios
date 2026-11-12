@@ -57,6 +57,8 @@ class WorkKind(enum.StrEnum):
     embedding_sweep = "embedding_sweep"
     # Summarising an ended run's output and posting it to its chat (`aios.handback`).
     handback = "handback"
+    # One sync of a source (`aios.sync`): sources work, one queued per source at a time.
+    source_sync = "source_sync"
 
 
 class WorkItem(Base):

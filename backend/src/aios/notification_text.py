@@ -22,6 +22,10 @@ from aios.datastores.models import (
     Document,
     Invocation,
     SchemaChangeRequest,
+    Source,
+    SourceStatus,
+    SourceSync,
+    SyncedItem,
     Workflow,
 )
 from aios.models import (
@@ -39,8 +43,10 @@ from aios.notifications import (
     ORGANISATION_DELETION_CANCELLED,
     ORGANISATION_DELETION_SCHEDULED,
     RELEASED_DOCUMENT_CHANGED,
+    RELEASED_ITEM_CHANGED,
     REPLY,
     RUN_FAILED,
+    SOURCE_ATTENTION,
     Description,
     excerpt,
 )
@@ -65,6 +71,16 @@ CHAT_TITLES = {
 }
 RUN_FAILED_TITLE = "A run of {name} failed"
 UNDELIVERED_TITLE = "{name}'s result wasn't delivered"
+SOURCE_TITLES = {
+    SourceStatus.failing: "{name} is failing to sync",
+    SourceStatus.needs_reauth: "{name} needs reconnecting",
+}
+SOURCE_RECOVERED = "{name} needed attention"
+SOURCE_RECOVERED_DETAIL = "It's syncing again."
+RELEASED_ITEM_TITLE = "A released item has changed at its source"
+RELEASED_ITEM_DETAIL = (
+    "{title}, from {source}, is waiting for Jev to check it again, and isn't searchable until then."
+)
 
 
 def _int(value) -> int | None:
@@ -148,7 +164,9 @@ def _in_store(
     runs = [n for n in notifications if n.kind == RUN_FAILED and "run_id" in n.ref]
     approvals = [n for n in notifications if n.kind == APPROVAL_NEEDED]
     documents = [n for n in notifications if n.kind == RELEASED_DOCUMENT_CHANGED]
-    known = {n.id for n in [*chat_kind, *runs, *approvals, *documents]}
+    sources = [n for n in notifications if n.kind == SOURCE_ATTENTION]
+    items = [n for n in notifications if n.kind == RELEASED_ITEM_CHANGED]
+    known = {n.id for n in [*chat_kind, *runs, *approvals, *documents, *sources, *items]}
     for n in notifications:
         if n.id not in known:
             # A kind this doesn't know: shown as it is.
@@ -242,4 +260,43 @@ def _in_store(
             found[n.id] = None
             if name is not None:
                 found[n.id] = Description(RELEASED_TITLE, RELEASED_DETAIL.format(name=name))
+
+    for n in sources:
+        found[n.id] = _source(store, _int(n.ref.get("source_id")))
+
+    if items:
+        ids = {_int(n.ref.get("synced_item_id")) for n in items} - {None}
+        rows = {
+            i: (title, name)
+            for i, title, name in store.execute(
+                select(SyncedItem.id, SyncedItem.title, Source.name)
+                .join(Source, Source.id == SyncedItem.source_id)
+                .where(SyncedItem.id.in_(ids))
+            ).all()
+        }
+        for n in items:
+            row = rows.get(_int(n.ref.get("synced_item_id")))
+            found[n.id] = None
+            if row is not None:
+                found[n.id] = Description(
+                    RELEASED_ITEM_TITLE, RELEASED_ITEM_DETAIL.format(title=row[0], source=row[1])
+                )
     return found
+
+
+def _source(store: Session, source_id: int | None) -> Description | None:
+    """A source attention notification: what's wrong with it now (its last sync's error), or
+    that it's syncing again."""
+    source = store.get(Source, source_id) if source_id is not None else None
+    if source is None:
+        return None
+    title = SOURCE_TITLES.get(source.status)
+    if title is None:
+        return Description(SOURCE_RECOVERED.format(name=source.name), SOURCE_RECOVERED_DETAIL)
+    error = store.scalar(
+        select(SourceSync.error)
+        .where(SourceSync.source_id == source.id, SourceSync.error.is_not(None))
+        .order_by(SourceSync.started_at.desc(), SourceSync.id.desc())
+        .limit(1)
+    )
+    return Description(title.format(name=source.name), excerpt(error) if error else None)

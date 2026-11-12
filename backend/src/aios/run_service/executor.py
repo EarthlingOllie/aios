@@ -11,7 +11,8 @@
 - With `scheduler_enabled`, it fires due schedules (`aios.scheduler.tick`) every
   `scheduler_interval_seconds`; it runs the requeue sweep (`aios.run_service.sweep`); and every
   `search_embed_interval_seconds` it enqueues each ready store's embedding sweep, background
-  work like any other.
+  work like any other; and every `sync_poll_seconds` it enqueues the syncs of sources that are
+  due, sources work (`aios.sync`).
 - It dispatches stores' events to event triggers (`aios.dispatcher.run_forever`) when woken
   and every `event_dispatch_poll_seconds`.
 - On a termination signal it stops claiming, lets its items finish for up to
@@ -297,6 +298,10 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
                 sweep.enqueue_embedding,
             ),
             name="embedding",
+        ),
+        asyncio.create_task(
+            _every(settings.sync_poll_seconds, "source syncs", sweep.enqueue_syncs),
+            name="syncs",
         ),
     ]
     helpers.append(asyncio.create_task(dispatcher.run_forever(), name="event dispatcher"))

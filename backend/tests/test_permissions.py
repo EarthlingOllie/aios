@@ -40,7 +40,7 @@ DOCUMENTS = (BUILDERS, "documents")
 DECIDE = (BUILDERS, "schema change")  # decide schema changes (approval rules refine it)
 RUN_ORGANISATION = (ADMINS, "organisation")  # roles, invitations, name, settings, deletion
 RESTORE = (ADMINS, "restore")  # restores need an admin
-SOURCES = (ADMINS, "sources")  # add, change, pause or remove sources
+SOURCES = (ADMINS, "sources")  # add, change, sync, pause or remove sources
 LEAVE = (EVERYONE, None)
 AUDIT = (ADMINS, "audit log")  # read the audit log
 USAGE = (ADMINS, "usage")  # read usage totals
@@ -57,6 +57,8 @@ ROUTES = {
     ("GET", "/usage"): USAGE,
     ("GET", "/flagged"): RELEASE,
     ("POST", "/flagged/{document_id}/release"): RELEASE,
+    ("GET", "/flagged/synced-items"): RELEASE,
+    ("POST", "/flagged/synced-items/{item_id}/release"): RELEASE,
     ("GET", "/jev-status"): READ,
     ("POST", "/agents"): BUILD,
     ("GET", "/agents/{agent_id}"): READ,
@@ -103,7 +105,10 @@ ROUTES = {
     ("GET", "/documents/{document_id}/download"): READ,
     ("GET", "/search"): READ,
     ("GET", "/sources"): READ,
+    ("POST", "/sources"): SOURCES,
+    ("GET", "/source-providers"): READ,
     ("GET", "/sources/{source_id}"): READ,
+    ("POST", "/sources/{source_id}/sync"): SOURCES,
     ("PATCH", "/sources/{source_id}"): SOURCES,
     ("DELETE", "/sources/{source_id}"): SOURCES,
     ("GET", "/dropped"): READ,

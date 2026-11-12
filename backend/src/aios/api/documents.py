@@ -13,7 +13,7 @@ from aios.api.organisation import UserOut, users_out
 from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
 from aios.datastores import files, quota, store_session
-from aios.datastores.models import Chunk, Document, DocumentStatus, Source, SourceKind
+from aios.datastores.models import Chunk, Document, DocumentStatus, Source, SourceKind, SyncedItem
 from aios.db import DbId
 from aios.jev import Verdict
 from aios.models import DataStoreStatus
@@ -53,6 +53,9 @@ class DocumentOut(BaseModel):
     # their account is gone.
     uploaded_by: UserOut | None
     source: DocumentSourceOut
+    # A synced document's place at its source; null for an upload. A synced document can't be
+    # deleted here: it's removed at its source.
+    url: str | None = None
     created_at: datetime
 
 
@@ -85,10 +88,11 @@ def list_documents(store_id: CurrentDataStore, source_id: DbId | None = None):
     """The organisation's documents, newest first, with who uploaded each and the source each
     belongs to; only `source_id`'s, if given."""
     query = (
-        select(Document, func.count(Chunk.id), Source)
+        select(Document, func.count(Chunk.id), Source, SyncedItem.url)
         .join(Source, Document.source_id == Source.id)
-        .outerjoin(Chunk)
-        .group_by(Document.id, Source.id)
+        .outerjoin(SyncedItem, SyncedItem.id == Document.synced_item_id)
+        .outerjoin(Chunk, Chunk.document_id == Document.id)
+        .group_by(Document.id, Source.id, SyncedItem.id)
         .order_by(Document.created_at.desc())
     )
     if source_id is not None:
@@ -96,7 +100,7 @@ def list_documents(store_id: CurrentDataStore, source_id: DbId | None = None):
     with store_session(store_id, "ro") as db:
         rows = db.execute(query).all()
     # Once the store's session is done: the request's own was closed when the store was found.
-    by = users_out(store_id, {d.uploaded_by for d, _, _ in rows if d.uploaded_by is not None})
+    by = users_out(store_id, {d.uploaded_by for d, *_ in rows if d.uploaded_by is not None})
     return [
         DocumentOut(
             id=d.id,
@@ -109,10 +113,19 @@ def list_documents(store_id: CurrentDataStore, source_id: DbId | None = None):
             size_bytes=d.size_bytes,
             uploaded_by=by.get(d.uploaded_by) if d.uploaded_by is not None else None,
             source=_source_out(s),
+            url=url,
             created_at=d.created_at,
         )
-        for d, n, s in rows
+        for d, n, s, url in rows
     ]
+
+
+def synced_refusal(source_name: str) -> str:
+    """Why a synced document can't be deleted here."""
+    return (
+        f"This document is synced from {source_name}: remove it at its source, and its next"
+        " sync removes it here. Deleted here, it would come back."
+    )
 
 
 def _source_out(source: Source) -> DocumentSourceOut:
@@ -242,10 +255,19 @@ def download_document(document_id: DbId, store_id: CurrentDataStore) -> Redirect
     dependencies=[allow(Action.documents)],
 )
 def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
+    """Delete an uploaded document, with its file, chunks and search entries. A synced one is
+    refused (409): it would come back at its source's next sync."""
     with store_session(store_id, "rw") as db:
-        key = db.scalar(select(Document.s3_key).where(Document.id == document_id))
-        if key is None:
+        found = db.execute(
+            select(Document.s3_key, Document.synced_item_id, Source.name)
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id == document_id)
+        ).one_or_none()
+        if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
+        if found.synced_item_id is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, synced_refusal(found.name))
+        key = found.s3_key
         # Ended, so no transaction (or lock on the row) is held while S3 is slow.
         db.commit()
         # The file goes before the row: should S3 refuse, the document stays, to be deleted

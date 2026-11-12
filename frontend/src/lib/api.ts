@@ -209,6 +209,20 @@ export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
  * is searchable and reaches agents. */
 export type Verdict = "awaiting_check" | "clean" | "flagged" | "released" | "derived";
 
+/** A synced message item Jev flagged, on the admins' flagged list (a synced file is listed as
+ * its document). */
+export type FlaggedSyncedItem = {
+  id: number;
+  title: string;
+  url: string | null;
+  source_id: number;
+  source_name: string;
+  /** Jev's reason. */
+  reason: string | null;
+  checked_at: string | null;
+  created_at: string;
+};
+
 /** A document Jev flagged, on the admins' flagged list. */
 export type FlaggedDocument = {
   id: number;
@@ -224,15 +238,57 @@ export type FlaggedDocument = {
 export type SourceKind = "upload" | "url" | "webhook" | "email" | "connector";
 export type SourceStatus = "active" | "paused" | "failing" | "needs_reauth" | "removing";
 
+/** Derived from its status and recent syncs (`aios.sync.health`). */
+export type SourceHealth = "healthy" | "delayed" | "failing" | "needs_reconnecting";
+export type SyncKind = "incremental" | "full" | "manual";
+export type SyncStatus = "running" | "succeeded" | "failed";
+
+/** One sync of a source, with what it did. */
+export type SourceSync = {
+  id: number;
+  kind: SyncKind;
+  status: SyncStatus;
+  started_at: string;
+  finished_at: string | null;
+  added: number;
+  updated: number;
+  removed: number;
+  /** New items left out: the store was full. */
+  skipped: number;
+  /** Items left out: too big, or unreadable. */
+  dropped: number;
+  /** Its source's items still waiting for Jev after it. */
+  awaiting_check: number;
+  storage_full: boolean;
+  error: string | null;
+};
+
 export type Source = {
   id: number;
   kind: SourceKind;
   name: string;
   status: SourceStatus;
-  /** The documents it has brought in. */
+  health: SourceHealth;
+  /** The provider it syncs from; null for Uploads. */
+  provider: string | null;
+  /** How often it syncs, in seconds; null for Uploads. */
+  interval_seconds: number | null;
+  /** The documents it has brought in, and its synced items (files and messages). */
   document_count: number;
+  item_count: number;
+  last_sync: SourceSync | null;
+  next_sync_at: string | null;
   created_at: string;
 };
+
+/** A source with its most recent syncs, newest first. */
+export type SourceDetail = Source & { syncs: SourceSync[] };
+
+/** A provider a source can be added with here; `unavailable` says why it can't, if it can't. */
+export type SourceProvider = { provider: string; unavailable: string | null };
+
+export type SourceCreate = { name: string; provider: string; feed?: string; interval_seconds?: number };
+export type SourceUpdate = { name?: string; paused?: boolean; interval_seconds?: number };
 
 /** The source a document belongs to: Uploads for an upload. */
 export type DocumentSource = Pick<Source, "id" | "kind" | "name">;
@@ -251,6 +307,9 @@ export type DocumentInfo = {
   /** The member who uploaded it; null for documents from before it was recorded. */
   uploaded_by: User | null;
   source: DocumentSource;
+  /** A synced document's place at its source; null (or absent) for an upload. A synced document
+   * can't be deleted here: it's removed at its source. */
+  url?: string | null;
   created_at: string;
 };
 
@@ -333,7 +392,7 @@ export type AgentMemory = {
   updated_by: User | null;
 };
 
-export type SearchKind = "document_chunk" | "chat_message" | "run_message" | "brief";
+export type SearchKind = "document_chunk" | "chat_message" | "run_message" | "brief" | "source_item";
 
 /** An item found by the unified hybrid (semantic + keyword) search, labelled with its kind and
  * linked to its source. */
@@ -353,6 +412,12 @@ export type SearchHit = {
   agent_name: string | null;
   agent_run_id: number | null;
   run_title: string | null;
+  /** A synced item's (a source item's, or a synced document passage's): its item, title, place
+   * at its source, and its source's name. */
+  synced_item_id?: number | null;
+  item_title?: string | null;
+  item_url?: string | null;
+  source_name?: string | null;
   /** Reciprocal Rank Fusion score: higher is better. */
   score: number;
   /** The item's rank in each branch, or null if that branch didn't find it. */
@@ -723,12 +788,14 @@ export type Notification = {
    * in): it's labelled with it, and opens there. */
   organisation: { id: number; slug: string; name: string };
   /** `mention`, `reply`, `run_failed`, `approval_needed`, `released_document_changed`,
-   * `organisation_deletion_scheduled` or `organisation_deletion_cancelled`. */
+   * `released_item_changed`, `source_attention`, `organisation_deletion_scheduled` or
+   * `organisation_deletion_cancelled`. */
   kind: string;
   /** What it's about, never what it says: for `mention`, `reply` and a chat's `run_failed`,
    * `chat_id` and `message_id`; for a run's `run_failed`, `agent_id` or `workflow_id`, and
    * `run_id`; for `approval_needed`, `approval_id`; for `released_document_changed`,
-   * `document_id`; for an organisation's deletion, nothing. */
+   * `document_id`; for `released_item_changed`, `synced_item_id`; for `source_attention`,
+   * `source_id`; for an organisation's deletion, nothing. */
   ref: Record<string, string | number>;
   /** What it says, in a line, read from its organisation as it's listed; null while that can't be read. */
   title: string | null;
@@ -1510,6 +1577,15 @@ export const api = {
   listDocuments: () => request<DocumentInfo[]>(`${organisationApi()}/documents`),
   /** Every member may read them; only admins change them, and never Uploads (a 409). */
   listSources: () => request<Source[]>(`${organisationApi()}/sources`),
+  getSource: (id: number) => request<SourceDetail>(`${organisationApi()}/sources/${id}`),
+  listSourceProviders: () => request<SourceProvider[]>(`${organisationApi()}/source-providers`),
+  /** Admins only; a 422 for a provider not offered here or an interval under the minimum. */
+  createSource: (body: SourceCreate) => request<SourceDetail>(`${organisationApi()}/sources`, json("POST", body)),
+  updateSource: (id: number, body: SourceUpdate) =>
+    request<SourceDetail>(`${organisationApi()}/sources/${id}`, json("PATCH", body)),
+  /** Admins only: queued (202), or a 409 while a sync of it runs, or for Uploads or a paused source. */
+  syncSource: (id: number, full = false) =>
+    request<void>(`${organisationApi()}/sources/${id}/sync`, json("POST", { full })),
   deleteDocument: (id: number) => request<void>(`${organisationApi()}/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
     const body = new FormData();
@@ -1535,6 +1611,11 @@ export const api = {
   listFlagged: () => request<FlaggedDocument[]>(`${organisationApi()}/flagged`),
   releaseFlagged: (id: number) =>
     request<{ id: number; verdict: Verdict }>(`${organisationApi()}/flagged/${id}/release`, { method: "POST" }),
+  listFlaggedItems: () => request<FlaggedSyncedItem[]>(`${organisationApi()}/flagged/synced-items`),
+  releaseFlaggedItem: (id: number) =>
+    request<{ id: number; verdict: Verdict }>(`${organisationApi()}/flagged/synced-items/${id}/release`, {
+      method: "POST",
+    }),
   jevStatus: () => request<{ up: boolean | null }>(`${organisationApi()}/jev-status`),
   listApprovalRules: () => request<ApprovalRule[]>(`${organisationApi()}/approval-rules`),
   setApprovalRule: (kind: string, role: Role) =>

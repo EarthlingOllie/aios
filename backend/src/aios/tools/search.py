@@ -12,7 +12,7 @@ from aios.tools.registry import AgentTool, ToolSpec, register
 
 # What its settings choose among. An agent's own memories aren't a choice: it always recalls them
 # (`aios.memory`), whatever its settings say and whether or not it has `remember`.
-Searchable = Literal["document_chunk", "chat_message", "run_message", "brief"]
+Searchable = Literal["document_chunk", "chat_message", "run_message", "brief", "source_item"]
 SEARCHABLE: list[Searchable] = [k.value for k in SearchItemKind if k != SearchItemKind.memory]
 
 
@@ -33,7 +33,8 @@ class SearchConfig(BaseModel):
         min_length=1,
         title="What it searches",
         description="The kinds of item the agent may find: documents' passages, chat messages,"
-        " past runs' messages and briefs. It always finds its own memories.",
+        " past runs' messages, briefs and items synced from sources. It always finds its own"
+        " memories.",
     )
 
 
@@ -54,20 +55,20 @@ def build(config: SearchConfig) -> list[AgentTool]:
         agent_id: int | None = None,
         limit: int | None = None,
     ) -> str:
-        """Search everything in the organisation (documents, chat messages, past runs' messages
-        and the briefs agents were given), and your own memories, with hybrid (semantic +
-        keyword) retrieval.
+        """Search everything in the organisation (documents, chat messages, past runs' messages,
+        the briefs agents were given, and items synced from its sources), and your own
+        memories, with hybrid (semantic + keyword) retrieval.
 
         Each result has its kind, its text and when it was written, with where it's from: a
         document passage's source filename (cite it as [filename]) and headings; a past run's
         message's run_id, agent, title and role (cite it as [run <run_id>, <date>]); a chat
-        message's or brief's chat_id and chat; a memory's memory_id (what you remembered, from
-        any chat or run).
+        message's or brief's chat_id and chat; a synced item's source, title and url (cite it
+        as [title]); a memory's memory_id (what you remembered, from any chat or run).
 
         Args:
             query: A natural-language search query.
-            kinds: Only these kinds: document_chunk, chat_message, run_message, brief, memory
-                (to recall your memories).
+            kinds: Only these kinds: document_chunk, chat_message, run_message, brief,
+                source_item, memory (to recall your memories).
             since: Only items written at or after this time (ISO 8601).
             until: Only items written before this time (ISO 8601).
             chat_id: Only items from this chat.

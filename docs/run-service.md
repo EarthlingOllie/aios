@@ -16,8 +16,9 @@ Work waits in a queue in the platform database (`work_items`, `aios.run_service.
 item records its organisation and store, its **lane** (`interactive`: people waiting in a chat,
 i.e. mentions; `background`: schedules, events, workflow advances and nodes, resumes, embedding
 sweeps; `sources`: phase 4's syncs, so a big sync waits on its own share), its **kind** (an
-invocation start, an agent turn, a workflow advance, a workflow node, a resume turn, or an
-embedding sweep), a
+invocation start, an agent turn, a workflow advance, a workflow node, a resume turn, an
+embedding sweep, or a source sync: `aios.sync`, enqueued for each source due every
+`SYNC_POLL_SECONDS` and by Sync now, one per source and kind), a
 payload of store ids, when it became ready and was enqueued, its attempts and lease, and an
 optional deduplication key. Items are deleted when done: their outcome lives in the store.
 

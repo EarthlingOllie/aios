@@ -6,12 +6,16 @@
   are enqueued again (`aios.run_service.work.lost`), and so are those handing back without a
   handback queued; enqueueing is idempotent, so one found twice is queued once.
 - **Embedding**: every `search_embed_interval_seconds` each process enqueues an embedding sweep
-  per ready store (`aios.run_service.work.embedding_work`), queued once however many ask."""
+  per ready store (`aios.run_service.work.embedding_work`), queued once however many ask.
+- **Syncs**: every `sync_poll_seconds` each process enqueues a sync of every ready store's
+  sources that are due (`aios.sync.due`), queued once per source however many ask, and prunes
+  sync records past `sync_history_days` (`aios.sync.prune`)."""
 
 import logging
 
 from fastapi.concurrency import run_in_threadpool
 
+from aios import sync
 from aios.config import get_settings
 from aios.datastores import ready_stores, store_session
 from aios.db import SessionLocal
@@ -77,3 +81,28 @@ def _enqueue_embedding() -> int:
 async def enqueue_embedding() -> None:
     """Enqueue an embedding sweep of every ready store (a no-op for one already queued)."""
     await run_in_threadpool(_enqueue_embedding)
+
+
+def _enqueue_syncs() -> int:
+    works: list[queue.Work] = []
+    for store_id, organisation_id in ready_stores():
+        try:
+            with store_session(store_id, "rw") as store:
+                due = sync.due(store)
+                sync.prune(store)
+                store.commit()
+        except Exception:
+            log.exception("couldn't look for data store %s's sources due", store_id)
+            continue
+        works.extend(work.sync_work(organisation_id, store_id, source_id) for source_id in due)
+    if works:
+        with SessionLocal() as db:
+            queue.enqueue(db, works)
+            db.commit()
+        queue.wake(WorkLane.sources)
+    return len(works)
+
+
+async def enqueue_syncs() -> None:
+    """Enqueue a sync of every ready store's sources that are due (a no-op for one queued)."""
+    await run_in_threadpool(_enqueue_syncs)
