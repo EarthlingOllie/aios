@@ -10,7 +10,8 @@ organisations apart. It's the welcome page's, and the switcher's "Create an orga
 roles and when each joined, the signed-in member's own role, and its deletion while one is
 scheduled. What only admins do (`aios.permissions`) is a 403 naming it for anyone else:
 renaming it (`PUT`), setting how long runs and chat history are kept (`PUT
-.../organisation/retention`, `aios.retention`; every member sees it as `retention`), changing a
+.../organisation/retention`, `aios.retention`; every member sees it as `retention`), whether
+Insights shows usage by person to everyone (`PUT .../organisation/insights-people`), changing a
 member's role (`PUT .../organisation/members/{user_id}/role`,
 a 409 for demoting its last admin), and scheduling its deletion
 (`POST .../organisation/deletion`, typing its name: a 422 for another name, a 409 if it's
@@ -134,6 +135,9 @@ class OrganisationOut(OrganisationSummaryOut):
     approval_expiry_days: int
     # Every member sees them; admins change them.
     limits: LimitsOut
+    # Whether Insights shows usage by person to every member, not only admins
+    # (`aios.api.insights`): every member sees it; admins change it.
+    insights_people_visible: bool
 
 
 class DeletionIn(BaseModel):
@@ -171,6 +175,7 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         retention=retention_out(org),
         approval_expiry_days=org.approval_expiry_days,
         limits=limits_out(org),
+        insights_people_visible=org.insights_people_visible,
     )
 
 
@@ -307,6 +312,36 @@ def set_approval_expiry(
             "organisation",
             org.id,
             {"setting": "approval_expiry_days", "from": old, "to": body.days},
+        )
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+class InsightsPeopleIn(BaseModel):
+    visible: bool = Field(strict=True)
+
+
+@router.put(
+    "/organisation/insights-people",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def set_insights_people(
+    body: InsightsPeopleIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
+    """Show usage by person on Insights to every member (true) or admins only (false, the
+    default), audited when it changes. Admins only."""
+    old = org.insights_people_visible
+    org.insights_people_visible = body.visible
+    if body.visible != old:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "settings.changed",
+            "organisation",
+            org.id,
+            {"setting": "insights_people_visible", "from": old, "to": body.visible},
         )
     db.commit()
     return organisation_out(db, org, user)

@@ -41,6 +41,7 @@ from aios.models.stores import (
     AgentStoreRole,
     DataStore,
     DataStoreStatus,
+    StoreUsageSample,
 )
 from aios.models.triggers import (
     EventType,
@@ -76,6 +77,7 @@ __all__ = [
     "OrganisationMember",
     "Role",
     "DataStoreStatus",
+    "StoreUsageSample",
     "DataStore",
     "AgentStoreRole",
     "AgentRunStatus",

@@ -20,7 +20,7 @@ three roles named after it (never after a user):
 - The deny list (`DENIED_COLUMNS`): columns neither `ro` nor the agents may read (people's
   emails in the people mirror, the audit log's details), applied each time the store is
   migrated. The audit log is append-only to `rw` too (`APPEND_ONLY`), and the `reporting`
-  views read-only.
+  and `insights` views read-only.
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
@@ -315,6 +315,10 @@ BOOKKEEPING = (
 # by neither.
 REPORTING = "reporting"
 
+# Metrics-only views for Insights' panels (`aios.insights`): read by both roles, written by
+# neither; not the agents', whose tools read the store's tables themselves.
+INSIGHTS = "insights"
+
 
 # The read-write role's search path in its store: the database's (`_set_up_database`), then the
 # checkpointer's schema (`aios.checkpoints.SCHEMA`), whose tables no other schema's names clash
@@ -493,11 +497,12 @@ def upgrade_store(names: StoreNames) -> Revisions:
             )
             # Nor does anyone write through the reporting views (a view of one table would let
             # the default privileges' writes through to it).
-            if conn.scalar(text(f"SELECT to_regnamespace('{REPORTING}') IS NOT NULL")):
-                conn.exec_driver_sql(
-                    f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {REPORTING}"
-                    f" FROM {quote(names.rw)}, {quote(names.ro)}"
-                )
+            for views in (REPORTING, INSIGHTS):
+                if conn.scalar(text(f"SELECT to_regnamespace('{views}') IS NOT NULL")):
+                    conn.exec_driver_sql(
+                        f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {views}"
+                        f" FROM {quote(names.rw)}, {quote(names.ro)}"
+                    )
             grant_group(pg, names)
             _apply_deny_list(pg, names)
             conn.commit()

@@ -171,7 +171,9 @@ def _out(source: Source, documents: int, items: int, last: SourceSync | None, ok
     )
 
 
-def _all(store: Session) -> list[SourceOut]:
+def sources_out(store: Session) -> list[SourceOut]:
+    """Every source, Uploads first, with its health, last sync and counts (as Insights shows
+    them too, `aios.insights`)."""
     rows = store.execute(_query()).all()
     last, ok = _last(store, [s.id for s, _, _ in rows])
     return [_out(s, d, i, last.get(s.id), ok.get(s.id)) for s, d, i in rows]
@@ -218,7 +220,7 @@ def list_sources(store_id: CurrentDataStore):
     """The organisation's sources, Uploads first, with each one's health, last sync and how many
     documents and items it has brought in."""
     with store_session(store_id, "ro") as store:
-        return _all(store)
+        return sources_out(store)
 
 
 @router.get(

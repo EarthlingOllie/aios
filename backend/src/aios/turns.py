@@ -15,11 +15,15 @@ touching the one that held it.
 Everything here is on a session on the run's store, in the caller's transaction.
 """
 
+from collections import Counter
+from collections.abc import Iterable
+
 from sqlalchemy import Select, func, select, true, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import invocations
-from aios.datastores.models import AgentRun, Invocation, Turn
+from aios.datastores.models import AgentRun, Invocation, Turn, TurnToolCall
 from aios.models import AgentRunStatus
 
 
@@ -47,8 +51,25 @@ def begin(store: Session, run_id: int) -> int | None:
     return turn.id
 
 
-def count(store: Session, turn_id: int, *, tool_calls: int, input_tokens: int, output_tokens: int):
-    """Add a model call to the turn's counters."""
+def count(
+    store: Session,
+    turn_id: int,
+    *,
+    tool_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+    tools: Iterable[str] = (),
+):
+    """Add a model call to the turn's counters, and its tool calls by name (`tools`) to the
+    turn's calls of each tool."""
+    for tool, calls in Counter(tools).items():
+        statement = insert(TurnToolCall).values(turn_id=turn_id, tool=tool[:255], calls=calls)
+        store.execute(
+            statement.on_conflict_do_update(
+                index_elements=[TurnToolCall.turn_id, TurnToolCall.tool],
+                set_={"calls": TurnToolCall.calls + statement.excluded.calls},
+            )
+        )
     store.execute(
         update(Turn)
         .where(Turn.id == turn_id)

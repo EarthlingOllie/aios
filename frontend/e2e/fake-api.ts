@@ -744,6 +744,44 @@ function normalisedFilter(filter: Record<string, unknown[]> = {}): Record<string
   return out;
 }
 
+/** What the Insights panels answer: the grouped ones by grouping. */
+export type InsightsData = {
+  activity: Record<string, { turns: object[]; workflow_runs: object[] }>;
+  usage: Record<string, { rows: object[]; top_agents: object[]; top_tools: object[] }>;
+  workflows: { slowest_workflows: object[]; slowest_nodes: object[]; failures: object[] };
+  approvals: { kinds: object[] };
+  chats: { chats: object[] };
+  storage: {
+    db_quota_bytes: number;
+    files_quota_bytes: number;
+    db_bytes: number | null;
+    files_bytes: number | null;
+    measured_at: string | null;
+    samples: { measured_at: string; db_bytes: number; files_bytes: number }[];
+  };
+  sources: { shown: boolean; sources: object[] };
+};
+
+export function emptyInsights(): InsightsData {
+  const groups = <T,>(empty: () => T) => ({ agent: empty(), workflow: empty(), cause: empty(), person: empty() });
+  return {
+    activity: groups(() => ({ turns: [], workflow_runs: [] })),
+    usage: groups(() => ({ rows: [], top_agents: [], top_tools: [] })),
+    workflows: { slowest_workflows: [], slowest_nodes: [], failures: [] },
+    approvals: { kinds: [] },
+    chats: { chats: [] },
+    storage: {
+      db_quota_bytes: 1024 ** 3,
+      files_quota_bytes: 5 * 1024 ** 3,
+      db_bytes: null,
+      files_bytes: null,
+      measured_at: null,
+      samples: [],
+    },
+    sources: { shown: false, sources: [] },
+  };
+}
+
 export class FakeApi {
   private nextId = 100;
   agents = new Map<number, AgentRow>();
@@ -842,6 +880,12 @@ export class FakeApi {
   retention: { run_days: number | null; chat_days: number | null } = { run_days: null, chat_days: null };
   /** How many days an approval waits undecided (`PUT /api/organisation/approval-expiry`). */
   approvalExpiryDays = 7;
+  /** Whether Insights shows usage by person to everyone (`PUT /api/organisation/insights-people`). */
+  insightsPeopleVisible = false;
+  /** Each Insights panel's data (`GET /api/insights/{panel}`), whatever the range; by grouping
+   * for the grouped ones; and the path and query of each read. */
+  insights: InsightsData = emptyInsights();
+  insightsReads: string[] = [];
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
   deletionGraceDays = 14;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
@@ -988,6 +1032,7 @@ export class FakeApi {
       deletion: this.organisation.deletion ?? null,
       retention: { ...this.retention },
       approval_expiry_days: this.approvalExpiryDays,
+      insights_people_visible: this.insightsPeopleVisible,
       limits: { defaults: { ...DEFAULT_LIMITS }, overrides: { ...this.limits }, in_force: this.limitsInForce() },
     };
   }
@@ -3182,6 +3227,32 @@ export class FakeApi {
         end: url.searchParams.get("end") ?? "2026-10-14",
         totals: this.usage[group] ?? [],
       });
+    }
+    if (path === "/api/organisation/insights-people" && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      if (typeof body?.visible !== "boolean") return fail(422, "Invalid visible");
+      this.insightsPeopleVisible = body.visible;
+      return reply(200, this.organisationOut());
+    }
+    if (path.startsWith("/api/insights/") && method === "GET") {
+      const panel = path.slice("/api/insights/".length) as keyof InsightsData;
+      if (!(panel in this.insights)) return fail(404, "Not Found");
+      this.insightsReads.push(`${panel}${url.search}`);
+      const group = url.searchParams.get("group") ?? "agent";
+      if (group === "person" && this.roleOf(this.me.id) !== "admin" && !this.insightsPeopleVisible) {
+        return fail(
+          403,
+          "Usage by person is shown to admins only. An admin can show it to everyone in the organisation's settings.",
+        );
+      }
+      const range = { start: url.searchParams.get("start") ?? "2026-10-14", end: url.searchParams.get("end") ?? "2026-11-12" };
+      const data = this.insights[panel];
+      if (panel === "activity" || panel === "usage") {
+        const grouped = (data as Record<string, object>)[group] ?? {};
+        return reply(200, { ...range, group, ...(panel === "usage" ? { currency: "GBP" } : {}), ...grouped });
+      }
+      return reply(200, panel === "sources" ? data : { ...range, ...data });
     }
     if (path === "/api/organisation/approval-expiry" && method === "PUT") {
       const refused = this.refuseUnlessAdmin();

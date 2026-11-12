@@ -126,3 +126,25 @@ class AgentStoreRole(Base):
     __table_args__ = (
         Index("uq_agent_store_roles_store_agent", "data_store_id", "agent_id", unique=True),
     )
+
+
+class StoreUsageSample(Base):
+    """What a store used when it was measured (`aios.datastores.quota.measure`): one row per
+    measurement, for Insights' storage over time; pruned after `storage_history_days`."""
+
+    __tablename__ = "store_usage_samples"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="CASCADE")
+    )
+    measured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    db_bytes: Mapped[int] = mapped_column(BigInteger)
+    files_bytes: Mapped[int] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        Index("ix_store_usage_samples_store_measured_at", "data_store_id", "measured_at"),
+        Index("ix_store_usage_samples_measured_at", "measured_at"),
+    )
