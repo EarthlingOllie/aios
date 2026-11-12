@@ -5,7 +5,7 @@ import { ArrowRight, Bot, Workflow as WorkflowIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { VersionBadge } from "@/components/versions";
 import type { Selection } from "@/components/workflow/canvas";
-import type { WorkflowEdge, WorkflowNode } from "@/lib/api";
+import type { JsonValue, WorkflowEdge, WorkflowNode } from "@/lib/api";
 
 /** The selected node's or edge's configuration, beside the canvas. */
 export function Inspector({
@@ -111,15 +111,33 @@ function NodeDetails({
           </span>
         </Row>
         <Row label="Input">
-          {before.length === 0
-            ? "Start: receives the workflow's input."
-            : `After ${listing(before)}: receives ${before.length === 1 ? "its output" : "their outputs"}.`}
+          {node.input_template !== null && node.input_template !== undefined
+            ? `${before.length === 0 ? "Start" : `After ${listing(before)}`}: built from its template.`
+            : before.length === 0
+              ? "Start: receives the workflow's input."
+              : `After ${listing(before)}: receives ${before.length === 1 ? "its output" : "the outputs of those that ran"}.`}
         </Row>
         <Row label="Output">
           {after.length === 0
             ? "End: its output is part of the workflow's output."
             : `Then ${listing(after)}.`}
+          {node.output_schema !== null && node.output_schema !== undefined && " Structured: it fits its output schema."}
         </Row>
+        {node.input_template !== null && node.input_template !== undefined && !edit && (
+          <Row label="Input template">
+            <JsonBlock value={node.input_template} />
+          </Row>
+        )}
+        {node.output_schema !== null && node.output_schema !== undefined && !edit && (
+          <Row label="Output schema">
+            <JsonBlock value={node.output_schema} />
+          </Row>
+        )}
+        {node.input_schema !== null && node.input_schema !== undefined && !edit && (
+          <Row label="Input schema">
+            <JsonBlock value={node.input_schema} />
+          </Row>
+        )}
       </dl>
       {edit?.controls}
     </>
@@ -151,13 +169,29 @@ function EdgeDetails({
           </span>
         </Row>
         <Row label="Passes">
-          When {edge.source} finishes, its output is passed to {edge.target}.
+          {edge.condition !== null && edge.condition !== undefined
+            ? `When ${edge.source} succeeds and its condition holds, its output is passed to ${edge.target}.`
+            : `When ${edge.source} finishes, its output is passed to ${edge.target}.`}
           {others.length > 0 &&
-            ` ${edge.target} also waits for ${listing(others)}, and gets their outputs too.`}
+            ` ${edge.target} also waits for ${listing(others)}, and gets the outputs of those that ran.`}
         </Row>
+        {edge.condition !== null && edge.condition !== undefined && !controls && (
+          <Row label="Condition">
+            <JsonBlock value={edge.condition} />
+          </Row>
+        )}
       </dl>
       {controls}
     </>
+  );
+}
+
+/** A JSON value (a schema, a template, a condition), as it reads: text as itself. */
+function JsonBlock({ value }: { value: JsonValue }) {
+  return (
+    <pre className="bg-muted/50 max-h-40 overflow-auto rounded border p-2 font-mono text-xs whitespace-pre-wrap">
+      {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+    </pre>
   );
 }
 

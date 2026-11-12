@@ -19,6 +19,18 @@ outputs (those with no outgoing edge), in node order. Each node records a step
 node fails, no more nodes start; those already running finish, and the run fails with the first
 error.
 
+Workflows can also be structured (`structured`): versions and nodes may declare JSON Schemas
+for what they take and give, a node may build its input from a template, and edges may carry
+JSONLogic conditions. A run's input is checked against its version's input schema however it
+starts; an agent node with an output schema gives validated structured output (one retry). An
+edge is active when its source succeeded and its condition, if any, held (evaluated once, and
+recorded on the source's step, so a resumed run follows the same path); a node runs once every
+predecessor has finished, if any incoming edge is active, on only those edges' outputs, and is
+otherwise skipped, as is what's only after it. Predecessors' outputs reach a later agent node's
+model wrapped as untrusted (derived text). A run's output is its final nodes' that ran: one's
+output, or an object of several's by node; none ran, it succeeds with none ("No final step
+ran"). Without schemas, templates or conditions, a workflow runs exactly as described above.
+
 An agent node whose agent asks for a schema change (`request_schema_change`, a LangGraph
 interrupt) waits for a member's decision: its step becomes `waiting`, with the request, and the
 nodes that don't depend on it carry on. Once nothing else can run, the run becomes `waiting`. The

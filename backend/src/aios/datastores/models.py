@@ -7,6 +7,7 @@ says whose they are.
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -390,6 +391,11 @@ class WorkflowVersion(StoreBase):
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # JSON Schemas (draft 2020-12) for what its runs take and give, if it declares them
+    # (`aios.workflows.structured`): a run's input is checked against the first however it
+    # starts, its output against the second.
+    input_schema: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    output_schema: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
 
     workflow: Mapped[Workflow] = relationship(foreign_keys=[workflow_id])
     nodes: Mapped[list["WorkflowNode"]] = relationship(
@@ -427,6 +433,12 @@ class WorkflowNode(StoreBase):
     agent_version_id: Mapped[int | None] = mapped_column(ForeignKey("agent_versions.id"))
     subworkflow_version_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_versions.id"))
     position: Mapped[int] = mapped_column(Integer)
+    # What it takes and gives, if declared (JSON Schemas): an agent node with an output schema
+    # gives structured output. And the template its input is built from, if it has one: from
+    # the run's input and its predecessors' outputs (`aios.workflows.structured`).
+    input_schema: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    output_schema: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    input_template: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
 
     agent_version: Mapped[AgentVersion | None] = relationship()
     subworkflow_version: Mapped[WorkflowVersion | None] = relationship(
@@ -458,6 +470,9 @@ class WorkflowEdge(StoreBase):
     source: Mapped[str] = mapped_column(String(64), primary_key=True)
     target: Mapped[str] = mapped_column(String(64), primary_key=True)
     position: Mapped[int] = mapped_column(Integer)
+    # A JSONLogic condition on the source's output and the run's input: the edge is active only
+    # when it's truthy (`aios.workflows.structured`). None: always, once the source succeeds.
+    condition: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -609,10 +624,15 @@ class WorkflowRun(StoreBase):
     status: Mapped[WorkflowRunStatus] = mapped_column(
         Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
     )
-    # Given to the nodes with no incoming edge.
+    # Given to the nodes with no incoming edge. With an input schema, the input is also kept as
+    # JSON (`input_json`), and `input` is it as text.
     input: Mapped[str] = mapped_column(Text)
-    # The sink nodes' outputs once it has succeeded; the first error once it has failed.
+    input_json: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    # The final nodes' outputs once it has succeeded, as text (joined, in node order) and as
+    # JSON: one final node's output, or an object of several's by node; neither if no final
+    # node ran. The first error once it has failed.
     output: Mapped[str | None] = mapped_column(Text)
+    output_json: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -649,8 +669,18 @@ class WorkflowRunStep(StoreBase):
         Enum(WorkflowStepStatus, name="workflow_step_status"), default=WorkflowStepStatus.running
     )
     input: Mapped[str] = mapped_column(Text)
+    # Its input as JSON, when it was structured (a template's, or a structured output passed
+    # on); and what its agent's model was sent, when that differs from `input`: predecessors'
+    # outputs in it come wrapped as untrusted (`aios.jev.wrap`).
+    input_json: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    message: Mapped[str | None] = mapped_column(Text)
     output: Mapped[str | None] = mapped_column(Text)
+    # A structured output (an agent node's with an output schema, or a workflow node's).
+    output_json: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     error: Mapped[str | None] = mapped_column(Text)
+    # Its outgoing edges' conditions as evaluated once it succeeded, by target: what a resumed
+    # run follows rather than evaluating them again.
+    conditions: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     # An agent node's conversation. Deleting the workflow run deletes it (`delete_workflow_run`).
     agent_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="SET NULL")

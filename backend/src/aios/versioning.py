@@ -187,11 +187,25 @@ def save_agent_version(
 
 @dataclass(frozen=True)
 class NodeSpec:
-    """A workflow node to save: its key, and the agent or workflow version it pins."""
+    """A workflow node to save: its key, the agent or workflow version it pins, and what it
+    declares, if anything: its input and output schemas and its input template
+    (`aios.workflows.structured`)."""
 
     key: str
     kind: WorkflowNodeKind
     version_id: int
+    input_schema: Any = None
+    output_schema: Any = None
+    input_template: Any = None
+
+    def hashed(self) -> dict[str, Any]:
+        """What the configuration hash covers: what it declares only if it does, so a node
+        that declares nothing hashes as it always has."""
+        out: dict[str, Any] = {"key": self.key, "kind": self.kind, "version_id": self.version_id}
+        for name in ("input_schema", "output_schema", "input_template"):
+            if getattr(self, name) is not None:
+                out[name] = getattr(self, name)
+        return out
 
 
 def save_workflow_version(
@@ -202,23 +216,36 @@ def save_workflow_version(
     edges: Sequence[tuple[str, str]],
     note: str | None,
     user_id: int,
+    conditions: dict[tuple[str, str], Any] | None = None,
+    input_schema: Any = None,
+    output_schema: Any = None,
 ) -> WorkflowVersion:
-    """`nodes` and `edges` are already validated (`aios.workflows.validate_graph`).
+    """`nodes` and `edges` are already validated (`aios.workflows.validate_graph`), as are the
+    edges' `conditions` (by edge) and the version's schemas (`aios.workflows.structured`).
 
     The hash covers the graph, not the order it was sent in: nodes are sorted by key (unique
     within a graph) and edges by (source, target), so listing them differently is a no-op save.
     The stored `position`s keep the order of the version that was created; a pure reorder
     creates no version, so it isn't stored either.
     """
-    digest = config_hash(
-        {
-            "nodes": sorted(
-                ({"key": n.key, "kind": n.kind, "version_id": n.version_id} for n in nodes),
-                key=lambda n: n["key"],
-            ),
-            "edges": sorted([source, target] for source, target in edges),
-        }
-    )
+    conditions = {edge: c for edge, c in (conditions or {}).items() if c is not None}
+    # What it declares is hashed only if it does: a graph without any hashes as it always has.
+    config: dict[str, Any] = {
+        "nodes": sorted((n.hashed() for n in nodes), key=lambda n: n["key"]),
+        "edges": sorted(
+            [
+                source,
+                target,
+                *([conditions[(source, target)]] if (source, target) in conditions else []),
+            ]
+            for source, target in edges
+        ),
+    }
+    if input_schema is not None:
+        config["input_schema"] = input_schema
+    if output_schema is not None:
+        config["output_schema"] = output_schema
+    digest = config_hash(config)
     db.flush()  # assigns workflow.id for a new workflow
     # Compare against the current version only once the lock is held (see save_skill_version).
     current_id = _lock_current_version_id(db, Workflow, workflow.id)
@@ -237,6 +264,8 @@ def save_workflow_version(
         config_hash=digest,
         note=note,
         created_by=user_id,
+        input_schema=input_schema,
+        output_schema=output_schema,
         nodes=[
             WorkflowNode(
                 key=n.key,
@@ -246,6 +275,9 @@ def save_workflow_version(
                     n.version_id if n.kind == WorkflowNodeKind.workflow else None
                 ),
                 position=i,
+                input_schema=n.input_schema,
+                output_schema=n.output_schema,
+                input_template=n.input_template,
             )
             for i, n in enumerate(nodes)
         ],
@@ -254,7 +286,9 @@ def save_workflow_version(
     # Edges reference nodes, and the ORM doesn't know to insert the nodes first.
     db.flush()
     version.edges = [
-        WorkflowEdge(source=source, target=target, position=i)
+        WorkflowEdge(
+            source=source, target=target, position=i, condition=conditions.get((source, target))
+        )
         for i, (source, target) in enumerate(edges)
     ]
     workflow.current_version = version

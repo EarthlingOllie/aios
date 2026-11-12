@@ -25,11 +25,12 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import turns
+from aios import jev, turns
 
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
@@ -39,6 +40,7 @@ from aios.datastores.models import AgentRun, Workflow, WorkflowRun, WorkflowRunS
 from aios.models import WorkflowRunStatus, WorkflowStepStatus, WorkKind, WorkLane
 from aios.run_service.queue import Work
 from aios.ui_stream import error_text
+from aios.workflows import structured
 from aios.workflows.execution import (
     NOT_ENDED,
     Ended,
@@ -51,6 +53,7 @@ from aios.workflows.execution import (
 from aios.workflows.steps import (
     NodeWaiting,
     RunState,
+    _record_step,
     _run_agent,
     _start_step,
     _wait_step,
@@ -97,16 +100,59 @@ def node_work(
 
 @dataclass(frozen=True)
 class _Outcome:
-    """How a node, or a graph, stands: succeeded (with its output), failed (with why), running
-    or waiting."""
+    """How a node, or a graph, stands: succeeded (with its output, as text and, if structured,
+    as JSON), skipped, failed (with why), running or waiting."""
 
     status: WorkflowStepStatus
     output: str | None = None
     error: str | None = None
+    output_json: Any = None
+
+    @property
+    def value(self) -> Any:
+        """Its output as templates and conditions read it: the structured one, or the text."""
+        return self.output_json if self.output_json is not None else (self.output or "")
 
 
 _RUNNING = _Outcome(WorkflowStepStatus.running)
 _WAITING = _Outcome(WorkflowStepStatus.waiting)
+_SKIPPED = _Outcome(WorkflowStepStatus.skipped)
+# Finished, so its successors may be ready.
+_DONE = (WorkflowStepStatus.succeeded, WorkflowStepStatus.skipped)
+
+# Where a predecessor's output passed on says it's from, in its untrusted block: derived text.
+DERIVED = "derived:workflow:"
+
+
+def derived(text: str, *keys: str) -> str:
+    """Predecessors' output passed on to an agent node, wrapped as untrusted (`aios.jev.wrap`):
+    derived text, never checked again but never trusted."""
+    return jev.wrap(text, DERIVED + ",".join(keys))
+
+
+@dataclass(frozen=True)
+class _Given:
+    """A node's, or a graph's, input: as text (what a person sees), as a value (what templates,
+    conditions and schemas read: JSON, or the text) and as the message its agent's model is
+    sent (with what's derived wrapped as untrusted)."""
+
+    text: str
+    value: Any
+    message: str
+
+    @property
+    def derived(self) -> bool:
+        return self.message != self.text
+
+    @staticmethod
+    def of_step(step: WorkflowRunStep) -> "_Given":
+        value = step.input_json if step.input_json is not None else step.input
+        return _Given(step.input, value, step.message or step.input)
+
+
+class _InputFailed(Exception):
+    """A node's input couldn't be built: a template's field is missing, or it doesn't fit the
+    node's input schema. The node fails, naming why."""
 
 
 @dataclass
@@ -125,11 +171,14 @@ class _Advance:
     def __post_init__(self) -> None:
         self.failed = any(s.status == WorkflowStepStatus.failed for s in self.steps.values())
 
-    def graph(self, graph: Graph, path: tuple[str, ...], text: str) -> _Outcome:
-        """Move a graph on: each node once its predecessors have succeeded, its input their
-        outputs, in edge order, joined with a blank line (the graph's input for its first
-        nodes); its output is its sinks' outputs, in node order."""
-        outputs: dict[str, str] = {}
+    def graph(self, graph: Graph, path: tuple[str, ...], given: _Given) -> _Outcome:
+        """Move a graph on: each node once every predecessor has finished (succeeded or been
+        skipped), if any incoming edge is active (its source succeeded and its condition, if
+        any, held), and otherwise skipped; start nodes always run. A node's input is its
+        template's, or else its active predecessors' outputs, in edge order, joined with a blank
+        line (the graph's input for its first nodes). Its output is its final nodes' that ran
+        (`_output`)."""
+        done: dict[str, _Outcome] = {}
         settled: set[str] = set()
         running = waiting = False
         failures: list[_Outcome] = []
@@ -138,15 +187,23 @@ class _Advance:
             changed = False
             for node in graph.nodes:
                 sources = graph.sources[node.key]
-                if node.key in settled or any(s not in outputs for s in sources):
+                if node.key in settled or any(s not in done for s in sources):
                     continue
-                given = join_outputs([outputs[s] for s in sources]) if sources else text
-                outcome = self.node(node, (*path, node.key), given)
+                at = (*path, node.key)
+                live = [s for s in sources if self._active(graph, path, s, node.key, done[s])]
+                if sources and not live:
+                    outcome = self.skip(node, at)
+                else:
+                    outcome = self.node(
+                        node, at, lambda n=node, live=live: self._input(graph, n, live, done, given)
+                    )
                 if outcome is None:
                     continue
                 settled.add(node.key)
-                if outcome.status == WorkflowStepStatus.succeeded:
-                    outputs[node.key] = outcome.output or ""
+                if outcome.status in _DONE:
+                    if outcome.status == WorkflowStepStatus.succeeded:
+                        self._conditions(graph, path, node.key, outcome, given)
+                    done[node.key] = outcome
                     changed = True
                 elif outcome.status == WorkflowStepStatus.failed:
                     failures.append(outcome)
@@ -160,29 +217,125 @@ class _Advance:
             return _Outcome(WorkflowStepStatus.failed, error=failures[0].error)
         if waiting:
             return _WAITING
-        if len(outputs) < len(graph.nodes):
+        if len(done) < len(graph.nodes):
             # A node elsewhere in the run failed, so some of these never started.
             return _Outcome(WorkflowStepStatus.failed, error=STOPPED_BY_FAILURE)
-        sinks = [outputs[n.key] for n in graph.nodes if not graph.targets[n.key]]
-        return _Outcome(WorkflowStepStatus.succeeded, output=join_outputs(sinks))
+        return _output(graph, done)
 
-    def node(self, node: Node, path: tuple[str, ...], given: str) -> _Outcome | None:
-        """Move a ready node on, starting its step if it has none; None if it can't start."""
+    def _active(
+        self, graph: Graph, path: tuple[str, ...], source: str, target: str, outcome: _Outcome
+    ) -> bool:
+        """Whether the edge is active: its source succeeded, and its condition, if it has one,
+        held when evaluated (as recorded on the source's step, `_conditions`)."""
+        if outcome.status != WorkflowStepStatus.succeeded:
+            return False
+        if (source, target) not in graph.conditions:
+            return True
+        recorded = self.steps[(*path, source)].conditions or {}
+        return bool(recorded.get(target, False))
+
+    def _conditions(
+        self, graph: Graph, path: tuple[str, ...], key: str, outcome: _Outcome, given: _Given
+    ) -> None:
+        """Evaluate the conditions on a succeeded node's outgoing edges, once, and record them on
+        its step: a resumed run follows what was recorded rather than evaluating them again.
+        One that can't be evaluated fails the run, naming the edge (`RunError`)."""
+        targets = [t for t in graph.targets[key] if (key, t) in graph.conditions]
+        step = self.steps[(*path, key)]
+        if not targets or step.conditions is not None:
+            return
+        data = {"output": outcome.value, "input": given.value}
+        results = {}
+        for target in targets:
+            try:
+                results[target] = structured.truthy(
+                    structured.evaluate(graph.conditions[(key, target)], data)
+                )
+            except structured.ConditionError as exc:
+                edge = f"{'/'.join((*path, key))} → {target}"
+                raise RunError(f"The condition on {edge} couldn't be evaluated: {exc}") from exc
+        step.conditions = results
+        self.store.flush()
+
+    def _input(
+        self,
+        graph: Graph,
+        node: Node,
+        live: list[str],
+        done: dict[str, _Outcome],
+        given: _Given,
+    ) -> _Given:
+        """A ready node's input (see `graph`). Raises `_InputFailed`."""
+        if node.input_template is not None:
+            try:
+                rendered = structured.render(
+                    node.input_template,
+                    given.value,
+                    {s: done[s].value for s in live},
+                    derived,
+                    derived_input=given.derived,
+                )
+            except structured.TemplateMissing as exc:
+                raise _InputFailed(str(exc)) from exc
+            result = _Given(rendered.text, rendered.value, rendered.message)
+        elif not graph.sources[node.key]:
+            result = given
+        else:
+            text = join_outputs([done[s].output or "" for s in live])
+            value = done[live[0]].value if len(live) == 1 else text
+            result = _Given(text, value, derived(text, *live))
+        checks = [(node.input_schema, "node's")]
+        if node.graph is not None:
+            checks.append((node.graph.input_schema, "workflow's"))
+        for schema, whose in checks:
+            if schema is not None and (errors := structured.schema_errors(result.value, schema)):
+                raise _InputFailed(
+                    f"The input doesn't fit the {whose} input schema: {structured.describe(errors)}"
+                )
+        return result
+
+    def skip(self, node: Node, path: tuple[str, ...]) -> _Outcome | None:
+        """Record that no active path reached a ready node (no agent run); None if nothing can
+        start any more."""
+        step = self.steps.get(path)
+        if step is not None:
+            return _recorded(step) or _SKIPPED
+        if self.failed:
+            return None
+        step = _record_step(self.store, self.run.id, path, node, WorkflowStepStatus.skipped)
+        self.steps[path] = step
+        return _SKIPPED
+
+    def node(self, node: Node, path: tuple[str, ...], make_input) -> _Outcome | None:
+        """Move a ready node on, starting its step (with its input, `make_input()`) if it has
+        none; None if it can't start."""
         step = self.steps.get(path)
         if step is None:
             if self.failed:
                 return None
-            step = _start_step(self.store, self.run.id, self.run.created_by, path, node, given)
+            try:
+                given = make_input()
+            except _InputFailed as exc:
+                failed = _Outcome(WorkflowStepStatus.failed, error=str(exc))
+                step = _record_step(
+                    self.store, self.run.id, path, node, failed.status, error=failed.error
+                )
+                self.steps[path] = step
+                self.failed = True
+                return failed
+            step = _start_step(self.store, self.run.id, self.run.created_by, path, node, given.text)
+            # Recorded beside it: its input as JSON, if structured, and what its model is sent.
+            step.input_json = None if isinstance(given.value, str) else given.value
+            step.message = given.message if given.message != given.text else None
+            self.store.flush()
             self.steps[path] = step
             if node.error is not None:
                 return self._finish(step, _Outcome(WorkflowStepStatus.failed, error=node.error))
             if node.graph is None:
                 self.works.append(self._node_work(step))
                 return _RUNNING
-        if step.status == WorkflowStepStatus.succeeded:
-            return _Outcome(WorkflowStepStatus.succeeded, output=step.output or "")
-        if step.status == WorkflowStepStatus.failed:
-            return _Outcome(WorkflowStepStatus.failed, error=step.error)
+        if (recorded := _recorded(step)) is not None:
+            return recorded
         if node.graph is None:
             if step.status == WorkflowStepStatus.running:
                 # Its item is queued or running already (one per step), unless it was lost.
@@ -196,7 +349,18 @@ class _Advance:
         # A workflow node: its graph, from the input its step recorded.
         if node.error is not None:
             return self._finish(step, _Outcome(WorkflowStepStatus.failed, error=node.error))
-        inner = self.graph(node.graph, path, step.input)
+        inner = self.graph(node.graph, path, _Given.of_step(step))
+        errors = (
+            structured.schema_errors(inner.value, node.output_schema)
+            if inner.status == WorkflowStepStatus.succeeded and node.output_schema is not None
+            else []
+        )
+        if errors:
+            why = structured.describe(errors)
+            inner = _Outcome(
+                WorkflowStepStatus.failed,
+                error=f"The output doesn't fit the node's output schema: {why}",
+            )
         if inner.status in (WorkflowStepStatus.succeeded, WorkflowStepStatus.failed):
             return self._finish(step, inner)
         step.status = inner.status
@@ -204,6 +368,7 @@ class _Advance:
 
     def _finish(self, step: WorkflowRunStep, outcome: _Outcome) -> _Outcome:
         step.status, step.output, step.error = outcome.status, outcome.output, outcome.error
+        step.output_json = outcome.output_json
         step.finished_at = func.now()
         self.store.flush()
         self.store.refresh(step, ["finished_at"])
@@ -214,6 +379,45 @@ class _Advance:
     def _node_work(self, step: WorkflowRunStep, resume: bool = False) -> Work:
         self.store.flush()
         return node_work(self.organisation_id, self.data_store_id, self.run.id, step.id, resume)
+
+
+def _recorded(step: WorkflowRunStep) -> _Outcome | None:
+    """How a step that has ended went; None if it hasn't."""
+    if step.status == WorkflowStepStatus.succeeded:
+        return _Outcome(step.status, output=step.output or "", output_json=step.output_json)
+    if step.status == WorkflowStepStatus.failed:
+        return _Outcome(step.status, error=step.error)
+    if step.status == WorkflowStepStatus.skipped:
+        return _SKIPPED
+    return None
+
+
+def _output(graph: Graph, done: dict[str, _Outcome]) -> _Outcome:
+    """A finished graph's output, from its final nodes (those with no outgoing edge) that ran:
+    as text, their outputs joined in node order; as a value, one's output, or an object of
+    several's by node. None ran: success with no output ("No final step ran"). Checked against
+    the version's output schema, if it has one: a mismatch fails it."""
+    ran = [
+        n.key
+        for n in graph.nodes
+        if not graph.targets[n.key] and done[n.key].status == WorkflowStepStatus.succeeded
+    ]
+    if not ran:
+        return _Outcome(WorkflowStepStatus.succeeded)
+    text = join_outputs([done[key].output or "" for key in ran])
+    value = done[ran[0]].value if len(ran) == 1 else {key: done[key].value for key in ran}
+    schema = graph.output_schema
+    if schema is not None and (errors := structured.schema_errors(value, schema)):
+        return _Outcome(
+            WorkflowStepStatus.failed,
+            error="The output doesn't fit the workflow's output schema: "
+            + structured.describe(errors),
+        )
+    return _Outcome(
+        WorkflowStepStatus.succeeded,
+        output=text,
+        output_json=None if isinstance(value, str) else value,
+    )
 
 
 def _failure(steps: dict[tuple[str, ...], WorkflowRunStep], error: str | None) -> str:
@@ -266,8 +470,15 @@ def advance_run(
             )
         }
 
-        def end(status: WorkflowRunStatus, output: str | None, error: str | None) -> Ended:
-            ended = _end_runs(store, [WorkflowRun.id == run_id], status, output, error)
+        def end(
+            status: WorkflowRunStatus,
+            output: str | None,
+            error: str | None,
+            output_json: Any = None,
+        ) -> Ended:
+            ended = _end_runs(
+                store, [WorkflowRun.id == run_id], status, output, error, output_json=output_json
+            )
             store.commit()
             return ended
 
@@ -281,7 +492,8 @@ def advance_run(
             # again (`Node.error`).
             graph = load_graph(store, run.workflow_version_id, organisation_id, strict=not steps)
             moving = _Advance(store, data_store_id, organisation_id, run, steps)
-            outcome = moving.graph(graph, (), run.input)
+            run_input = run.input_json if run.input_json is not None else run.input
+            outcome = moving.graph(graph, (), _Given(run.input, run_input, run.input))
         except RunError as exc:
             store.rollback()
             return [], end_after_rollback(store, run_id, str(exc))
@@ -290,7 +502,7 @@ def advance_run(
             store.rollback()
             return [], end_after_rollback(store, run_id, error_text(exc))
         if outcome.status == WorkflowStepStatus.succeeded:
-            return [], end(WorkflowRunStatus.succeeded, outcome.output, None)
+            return [], end(WorkflowRunStatus.succeeded, outcome.output, None, outcome.output_json)
         if outcome.status == WorkflowStepStatus.failed:
             return [], end(WorkflowRunStatus.failed, None, _failure(steps, outcome.error))
         if outcome.status == WorkflowStepStatus.waiting:
@@ -365,7 +577,8 @@ def _node_turn(data_store_id: uuid.UUID, run_id: int, step_id: int) -> _NodeTurn
             .where(WorkflowVersion.id == run.workflow_version_id)
         ).one()
         time_left = get_settings().workflow_run_time_limit - _active_seconds(store, run_id)
-        path, text, agent_run_id = tuple(step.path), step.input, step.agent_run_id
+        # What its model is sent: its input, with what's derived wrapped as untrusted.
+        path, text, agent_run_id = tuple(step.path), step.message or step.input, step.agent_run_id
         version_id, created_by = run.workflow_version_id, run.created_by
     organisation_id = package._organisation(data_store_id)
     if organisation_id is None:
@@ -410,13 +623,14 @@ async def run_node(store_id: uuid.UUID, run_id: int, step_id: int, resume: bool)
         if turn.agent_run_id is None:
             raise RunError(f"Agent {turn.node.agent.agent_name} has been deleted")
         async with timeout:
-            output = await _run_agent(
+            output, output_json = await _run_agent(
                 turn.state,
                 turn.node.agent,
                 turn.agent_run_id,
                 turn.path,
                 turn.text,
                 resuming=resume,
+                output_schema=turn.node.output_schema,
             )
     except NodeWaiting as exc:
         await asyncio.to_thread(_wait_step, store_id, step_id, exc.request_id)
@@ -439,6 +653,12 @@ async def run_node(store_id: uuid.UUID, run_id: int, step_id: int, resume: bool)
         )
         return True
     await asyncio.to_thread(
-        package._finish_step, store_id, step_id, WorkflowStepStatus.succeeded, output, None
+        package._finish_step,
+        store_id,
+        step_id,
+        WorkflowStepStatus.succeeded,
+        output,
+        None,
+        output_json,
     )
     return True

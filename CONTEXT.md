@@ -95,6 +95,14 @@ A graph of agents and other workflows that runs as one unit.
 **Node**:
 One agent, workflow or approval step in a workflow's graph.
 
+**Condition**:
+A rule on an edge between two nodes (JSONLogic, never code): the edge is taken only when it
+holds. A node no taken edge reaches is **skipped**, and so is everything only after it.
+
+**Input template**:
+How a node builds its input from named fields of the run's input and its predecessors' outputs:
+placeholders only, no expressions.
+
 **Version**:
 An immutable snapshot of an agent's, skill's or workflow's configuration; editing creates a new
 one. Workflow runs, and runs waiting on an approval, stay on the version they started on; an

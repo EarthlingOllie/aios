@@ -777,9 +777,19 @@ export type WorkflowNode = {
   /** The agent's or workflow's current version; null if it has since been deleted. */
   latest_version: number | null;
   latest_version_id: number | null;
+  /** What it declares, if anything: JSON Schemas for what it takes and gives (an agent node with
+   * an output schema gives structured output), and the template its input is built from. */
+  input_schema?: JsonValue | null;
+  output_schema?: JsonValue | null;
+  input_template?: JsonValue | null;
 };
 
-export type WorkflowEdge = { source: string; target: string };
+/** Any JSON value: a schema, a template, a condition, a structured input or output. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/** `condition`: a JSONLogic condition on the source's output and the run's input; the edge is
+ * active only when it holds. Absent: always, once the source succeeds. */
+export type WorkflowEdge = { source: string; target: string; condition?: JsonValue | null };
 
 export type WorkflowVersionSummary = {
   id: number;
@@ -800,6 +810,9 @@ export type WorkflowVersion = {
   created_by: User | null;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  /** JSON Schemas for what its runs take and give, if it declares them. */
+  input_schema?: JsonValue | null;
+  output_schema?: JsonValue | null;
   /** Why a run of this version can't start (an agent it runs can't), or null if it can. */
   unrunnable: string | null;
 };
@@ -856,8 +869,17 @@ export type Workflow = Provenance & Archived & {
 export type WorkflowInput = {
   name: string;
   description: string;
-  nodes: { key: string; kind: WorkflowNodeKind; version_id: number }[];
+  nodes: {
+    key: string;
+    kind: WorkflowNodeKind;
+    version_id: number;
+    input_schema?: JsonValue | null;
+    output_schema?: JsonValue | null;
+    input_template?: JsonValue | null;
+  }[];
   edges: WorkflowEdge[];
+  input_schema?: JsonValue | null;
+  output_schema?: JsonValue | null;
   /** Omitted: keep the saved layout. */
   layout?: Record<string, NodePosition>;
   note?: string;
@@ -880,6 +902,12 @@ export type WorkflowRunSummary = {
   input: string;
   output: string | null;
   error: string | null;
+  /** Its input as JSON (with an input schema), and its output as JSON: one final node's, or an
+   * object of several's by node. */
+  input_json?: JsonValue | null;
+  output_json?: JsonValue | null;
+  /** Why a run that succeeded has no output: "No final step ran". */
+  output_note?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -904,11 +932,16 @@ export type WorkflowRunStep = {
   path: string[];
   kind: WorkflowNodeKind;
   /** waiting: an agent node waiting for a schema change request, or a workflow node one of
-   * whose nodes waits. */
-  status: "running" | "waiting" | "succeeded" | "failed";
+   * whose nodes waits. skipped: no active path reached it (it never ran). */
+  status: "running" | "waiting" | "succeeded" | "failed" | "skipped";
   input: string;
   output: string | null;
   error: string | null;
+  /** Its input and output as JSON, when structured. */
+  input_json?: JsonValue | null;
+  output_json?: JsonValue | null;
+  /** Once it succeeded: how its outgoing edges' conditions came out, by target. */
+  conditions?: Record<string, boolean> | null;
   /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
   agent_id: number | null;
   agent_run_id: number | null;
@@ -1537,8 +1570,12 @@ export const api = {
     request<WorkflowVersion>(
       `${organisationApi()}/workflows/${id}/runs/${runId}/subworkflow?${new URLSearchParams(path.map((key) => ["path", key]))}`,
     ),
-  createWorkflowRun: (id: number, input: string) =>
-    request<WorkflowRunSummary>(`${organisationApi()}/workflows/${id}/runs`, json("POST", { input })),
+  /** Text input, or JSON for a version with an input schema (`{ json }`). */
+  createWorkflowRun: (id: number, input: string | { json: JsonValue }) =>
+    request<WorkflowRunSummary>(
+      `${organisationApi()}/workflows/${id}/runs`,
+      json("POST", typeof input === "string" ? { input } : { input_json: input.json }),
+    ),
   deleteWorkflowRun: (id: number, runId: number) =>
     request<void>(`${organisationApi()}/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
 

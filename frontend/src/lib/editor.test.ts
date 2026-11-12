@@ -13,6 +13,9 @@ import {
   removeNode,
   renameNode,
   retarget,
+  setCondition,
+  setNodeSpec,
+  setSchemas,
   toInput,
   updateToLatest,
   type Draft,
@@ -243,5 +246,43 @@ describe("toInput", () => {
       layout: chain.positions,
       note: undefined,
     });
+  });
+});
+
+describe("structured workflows in the draft", () => {
+  const score = { type: "object", properties: { score: { type: "number" } } };
+  const branching: Draft = {
+    nodes: [node("a"), node("b", { input_template: "Why: {{nodes.a.reason}} {{ nodes.a }}" })],
+    edges: [{ source: "a", target: "b", condition: { ">": [{ var: "output.score" }, 5] } }],
+    positions: {},
+  };
+
+  it("sets what a node declares, an edge's condition and the workflow's schemas", () => {
+    let draft = setNodeSpec(branching, "a", { output_schema: score });
+    draft = setCondition(draft, "a", "b", null);
+    draft = setSchemas(draft, { input_schema: { type: "string" } });
+    const input = toInput(draft, { name: "W", description: "" });
+    expect(input.nodes[0]).toEqual({ key: "a", kind: "agent", version_id: 11, output_schema: score });
+    expect(input.nodes[1].input_template).toBe("Why: {{nodes.a.reason}} {{ nodes.a }}");
+    expect(input.edges).toEqual([{ source: "a", target: "b" }]);
+    expect(input.input_schema).toEqual({ type: "string" });
+    expect(input).not.toHaveProperty("output_schema");
+  });
+
+  it("keeps conditions, and renames the templates that name a renamed node", () => {
+    const renamed = renameNode(branching, "a", "scorer");
+    expect(renamed.edges).toEqual([
+      { source: "scorer", target: "b", condition: { ">": [{ var: "output.score" }, 5] } },
+    ]);
+    expect(renamed.nodes[1].input_template).toBe("Why: {{nodes.scorer.reason}} {{ nodes.scorer }}");
+    // A key that only starts the same isn't renamed.
+    const other = renameNode({ ...branching, nodes: [...branching.nodes, node("ab")] }, "ab", "x");
+    expect(other.nodes[1].input_template).toBe(branching.nodes[1].input_template);
+  });
+
+  it("starts from a version's schemas", () => {
+    const draft = fromVersion({ nodes: [], edges: [], input_schema: score }, {});
+    expect(draft.input_schema).toEqual(score);
+    expect(draft.output_schema).toBeNull();
   });
 });

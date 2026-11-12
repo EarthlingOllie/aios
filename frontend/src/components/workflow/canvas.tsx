@@ -39,6 +39,7 @@ import {
   NODE_WIDTH,
   startKeys,
 } from "@/lib/graph";
+import { describeCondition } from "@/lib/conditions";
 import type { EdgeState, NodeState } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
@@ -93,6 +94,7 @@ const stateClass: Record<NodeState, string> = {
   waiting: "border-amber-500 ring-4 ring-amber-500/25",
   pending: "opacity-60 border-dashed",
   "not-run": "opacity-40 border-dashed",
+  skipped: "opacity-40 border-dashed grayscale bg-muted",
 };
 
 // Selected, a node on a run keeps its state's colours: its outline and ring are drawn thicker.
@@ -103,6 +105,7 @@ const selectedStateClass: Record<NodeState, string> = {
   waiting: "border-2 ring-6",
   pending: "border-2 ring-ring ring-2",
   "not-run": "border-2 ring-ring ring-2",
+  skipped: "border-2 ring-ring ring-2",
 };
 
 const edgeStyle: Record<EdgeState, { stroke?: string; strokeWidth?: number; opacity?: number }> = {
@@ -258,6 +261,9 @@ export function WorkflowCanvas({
           target: e.target,
           markerEnd: { type: MarkerType.ArrowClosed, color: state && edgeStyle[state].stroke },
           animated: state === "live",
+          // A conditional edge says when it's taken.
+          label: describeCondition(e.condition) ?? undefined,
+          labelStyle: { fontSize: 10 },
           style: state && edgeStyle[state],
           domAttributes: state ? dataState(state) : undefined,
         };

@@ -4,7 +4,7 @@ versions it pins checked that they still can (`load_graph`)."""
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -97,6 +97,12 @@ class Node:
     graph: "Graph | None" = None
     # Why its pinned agent version can't run any more (see `load_graph`).
     error: str | None = None
+    # What it declares (`aios.workflows.structured`): its input is checked against its input
+    # schema, its output against its output schema (an agent node's structured output), and
+    # its input is built from its template if it has one.
+    input_schema: Any = None
+    output_schema: Any = None
+    input_template: Any = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,11 @@ class Graph:
     nodes: list[Node]
     sources: dict[str, list[str]]
     targets: dict[str, list[str]]
+    # The edges' conditions, by (source, target): only those that have one.
+    conditions: dict[tuple[str, str], Any] = field(default_factory=dict)
+    # The version's schemas for its input and output, if it declares them.
+    input_schema: Any = None
+    output_schema: Any = None
 
 
 def reachable_versions(version_id: int):
@@ -211,9 +222,14 @@ def _build_graph(
     version = versions[version_id]
     nodes = []
     for node in version.nodes:
+        declared = {
+            "input_schema": node.input_schema,
+            "output_schema": node.output_schema,
+            "input_template": node.input_template,
+        }
         if node.kind == WorkflowNodeKind.workflow:
             graph = _build_graph(versions, node.subworkflow_version_id, loaded, strict, org)
-            nodes.append(Node(node.key, node.kind, graph=graph))
+            nodes.append(Node(node.key, node.kind, graph=graph, **declared))
             continue
         pinned = node.agent_version
         agent = pinned.agent
@@ -225,7 +241,7 @@ def _build_graph(
         except RunError as exc:
             if strict:
                 raise
-            nodes.append(Node(node.key, node.kind, error=str(exc)))
+            nodes.append(Node(node.key, node.kind, error=str(exc), **declared))
             continue
         agent_node = AgentNode(
             agent_id=agent.id,
@@ -237,11 +253,21 @@ def _build_graph(
             tools=tools,
             metadata=tracing.agent_version_metadata(pinned),
         )
-        nodes.append(Node(node.key, node.kind, agent=agent_node))
+        nodes.append(Node(node.key, node.kind, agent=agent_node, **declared))
     sources: dict[str, list[str]] = {node.key: [] for node in nodes}
     targets: dict[str, list[str]] = {node.key: [] for node in nodes}
+    conditions = {}
     for edge in version.edges:
         sources[edge.target].append(edge.source)
         targets[edge.source].append(edge.target)
-    loaded[version_id] = Graph(nodes, sources, targets)
+        if edge.condition is not None:
+            conditions[(edge.source, edge.target)] = edge.condition
+    loaded[version_id] = Graph(
+        nodes,
+        sources,
+        targets,
+        conditions,
+        input_schema=version.input_schema,
+        output_schema=version.output_schema,
+    )
     return loaded[version_id]

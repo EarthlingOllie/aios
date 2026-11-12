@@ -19,7 +19,9 @@ import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge, StateBadge, statusLabel } from "@/components/workflow/status";
+import { formatValue } from "@/components/workflow/structured";
 import { StalePins, useWaitingRequests, WaitingSection } from "@/components/workflow/waiting";
+import { cn } from "@/lib/utils";
 import {
   api,
   describeError,
@@ -243,12 +245,14 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         </>
       )}
       <div className="grid gap-4 md:grid-cols-2">
-        <TextBlock label="Input">{r.input}</TextBlock>
+        <TextBlock label="Input">{formatValue(r.input_json, r.input)}</TextBlock>
         {r.output !== null ? (
-          <TextBlock label="Output">{r.output}</TextBlock>
+          <TextBlock label="Output">{formatValue(r.output_json, r.output)}</TextBlock>
         ) : (
           <p className="text-muted-foreground self-center text-sm">
-            {active ? "The output appears here when the run finishes." : "No output."}
+            {active
+              ? "The output appears here when the run finishes."
+              : (r.output_note ?? "No output.")}
           </p>
         )}
       </div>
@@ -362,8 +366,25 @@ function StepDetails({
                     : "Waiting for your decision on a schema change request."}
             </p>
           )}
-          <TextBlock label="Step input">{step.input}</TextBlock>
-          {step.output !== null && <TextBlock label="Step output">{step.output}</TextBlock>}
+          {step.status === "skipped" ? (
+            <p className="text-muted-foreground text-sm">
+              Skipped: no active path reached it (the conditions on its incoming edges didn't
+              hold, or the nodes before it were skipped).
+            </p>
+          ) : (
+            <TextBlock label="Step input">{formatValue(step.input_json, step.input)}</TextBlock>
+          )}
+          {step.output !== null && (
+            <TextBlock label="Step output">{formatValue(step.output_json, step.output)}</TextBlock>
+          )}
+          {step.conditions && Object.keys(step.conditions).length > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Conditions:{" "}
+              {Object.entries(step.conditions)
+                .map(([target, held]) => `→ ${target} ${held ? "taken" : "not taken"}`)
+                .join(", ")}
+            </p>
+          )}
           {step.agent_id !== null && step.agent_run_id !== null && (
             <Button asChild size="sm" variant="outline">
               <Link to={`/agents/${step.agent_id}/runs/${step.agent_run_id}`}>
@@ -398,7 +419,13 @@ function StepList({ run }: { run: WorkflowRun }) {
   return (
     <ol className="divide-y rounded-md border text-sm">
       {run.steps.map((step) => (
-        <li key={step.id} className="flex items-center gap-3 px-3 py-2">
+        <li
+          key={step.id}
+          className={cn(
+            "flex items-center gap-3 px-3 py-2",
+            step.status === "skipped" && "text-muted-foreground bg-muted/30",
+          )}
+        >
           <span className="min-w-0 flex-1 truncate font-mono">{step.path.join(" / ")}</span>
           <span className="text-muted-foreground text-xs">
             {stepDuration(step)}

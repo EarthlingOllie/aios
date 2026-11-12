@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import handoff, invocations, outbox, turn_lease, turns, workflows
+from aios import handoff, invocations, jev, outbox, turn_lease, turns, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.datastores import store_id_of, store_session
@@ -61,6 +61,7 @@ from aios.models import (
 from aios.run_service import queue
 from aios.run_service.errors import STOPPED, CantStart
 from aios.run_service.queue import Claimed, Work
+from aios.workflows import structured
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ def _start_workflow_run(data_store_id: uuid.UUID, invocation_id: int) -> None:
             organisation_id,
             workflow,
             invocations.run_input(invocation.brief, message.body),
+            input_json=_mention_input(workflow, invocation.brief, message.body),
             created_by=invocation.requested_by,
             by_mention=True,
         )
@@ -219,6 +221,25 @@ def _start_workflow_run(data_store_id: uuid.UUID, invocation_id: int) -> None:
         workflows_api.queue_workflow_run(store, run, organisation_id)
         invocations.mark_running(store, invocation_id)
         store.commit()
+
+
+def _mention_input(workflow: Workflow, brief: str | None, body: str) -> dict | None:
+    """A mentioned workflow's input as JSON, if its current version has an input schema: the
+    brief and the message as an object, each wrapped as untrusted as the text input's are
+    (`invocations.run_input`). `CantStart` if the schema doesn't accept that shape."""
+    schema = workflow.current_version.input_schema if workflow.current_version else None
+    if schema is None:
+        return None
+    value = {
+        "brief": jev.wrap(brief, "brief") if brief else "",
+        "message": jev.wrap(invocations.message_text(body), invocations.CHAT_MESSAGE),
+    }
+    if errors := structured.schema_errors(value, schema):
+        raise CantStart(
+            "This workflow's input schema doesn't accept a brief and a message: "
+            + structured.describe(errors)
+        )
+    return value
 
 
 async def start_invocation(item: Claimed) -> Outcome:

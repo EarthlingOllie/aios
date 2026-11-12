@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, FiniteFloat, ValidationError
+from pydantic import BaseModel, Field, FiniteFloat, ValidationError, model_serializer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -48,6 +48,7 @@ from aios.versioning import (
     save_workflow_version,
 )
 from aios.workflows import GraphError, validate_graph
+from aios.workflows.structured import NodeDeclared, check_workflow
 
 FORMAT = "aios-export"
 FORMAT_VERSION = 1
@@ -80,16 +81,34 @@ class ExportedAgent(BaseModel):
     skills: list[str] = []
 
 
-class ExportedNode(BaseModel):
+class _Declared(BaseModel):
+    """What's declared (schemas, templates, conditions) is in the file only where it's set, so a
+    workflow without any exports as it always has."""
+
+    @model_serializer(mode="wrap")
+    def _only_declared(self, handler) -> dict[str, Any]:
+        out = handler(self)
+        for name in ("input_schema", "output_schema", "input_template", "condition"):
+            if name in out and out[name] is None:
+                del out[name]
+        return out
+
+
+class ExportedNode(_Declared):
     key: str
     kind: WorkflowNodeKind
     # The agent or workflow it runs, by its reference in the file.
     ref: str
+    # What it declares, if anything (`aios.workflows.structured`).
+    input_schema: Any = None
+    output_schema: Any = None
+    input_template: Any = None
 
 
-class ExportedEdge(BaseModel):
+class ExportedEdge(_Declared):
     source: str
     target: str
+    condition: Any = None
 
 
 class ExportedPosition(BaseModel):
@@ -97,13 +116,15 @@ class ExportedPosition(BaseModel):
     y: FiniteFloat
 
 
-class ExportedWorkflow(BaseModel):
+class ExportedWorkflow(_Declared):
     name: str = _NAME
     description: str = ""
     # Where the editor draws each node, by key.
     layout: dict[str, ExportedPosition] = {}
     nodes: list[ExportedNode] = []
     edges: list[ExportedEdge] = []
+    input_schema: Any = None
+    output_schema: Any = None
 
 
 class ExportedRoot(BaseModel):
@@ -171,7 +192,16 @@ class _Exporter:
                     ref = self.agent(node.agent_version)
                 else:
                     ref = self.workflow(node.subworkflow_version)
-                nodes.append(ExportedNode(key=node.key, kind=node.kind, ref=ref))
+                nodes.append(
+                    ExportedNode(
+                        key=node.key,
+                        kind=node.kind,
+                        ref=ref,
+                        input_schema=node.input_schema,
+                        output_schema=node.output_schema,
+                        input_template=node.input_template,
+                    )
+                )
             # Numbered once its nested workflows are, so they come first in the file.
             ref = f"workflow-{len(self.workflows) + 1}"
             self.workflows[version.id] = ref
@@ -182,7 +212,12 @@ class _Exporter:
                 description=workflow.description,
                 layout={k: p for k, p in (workflow.layout or {}).items() if k in keys},
                 nodes=nodes,
-                edges=[ExportedEdge(source=e.source, target=e.target) for e in version.edges],
+                edges=[
+                    ExportedEdge(source=e.source, target=e.target, condition=e.condition)
+                    for e in version.edges
+                ],
+                input_schema=version.input_schema,
+                output_schema=version.output_schema,
             )
         return self.workflows[version.id]
 
@@ -280,6 +315,25 @@ def parse(data: bytes) -> ExportFile:
             )
         except GraphError as exc:
             raise NotAnExport(f"Workflow {ref!r}: {exc}") from exc
+        errors = check_workflow(
+            [
+                NodeDeclared(
+                    n.key,
+                    n.input_schema,
+                    n.output_schema
+                    if n.output_schema is not None or n.kind == WorkflowNodeKind.agent
+                    else file.workflows[n.ref].output_schema,
+                    n.input_template,
+                )
+                for n in workflow.nodes
+            ],
+            [(e.source, e.target, e.condition) for e in workflow.edges],
+            workflow.input_schema,
+            workflow.output_schema,
+        )
+        if errors:
+            item, message = errors[0]
+            raise NotAnExport(f"Workflow {ref!r}: {item}: {message}")
     _nesting_order(file)
     return file
 
@@ -441,12 +495,18 @@ def apply(store: Session, the_plan: Plan, user_id: int, filename: str) -> None:
                         if n.kind == WorkflowNodeKind.agent
                         else workflow_versions[n.ref].id
                     ),
+                    input_schema=n.input_schema,
+                    output_schema=n.output_schema,
+                    input_template=n.input_template,
                 )
                 for n in exported.nodes
             ],
             edges=[(e.source, e.target) for e in exported.edges],
             note=note,
             user_id=user_id,
+            conditions={(e.source, e.target): e.condition for e in exported.edges},
+            input_schema=exported.input_schema,
+            output_schema=exported.output_schema,
         )
         store.flush()
         _done(store, user_id, "workflow", workflow, planned, filename)

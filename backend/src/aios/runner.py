@@ -48,11 +48,13 @@ def build_agent(
     instructions: str,
     tools: list[AgentTool],
     checkpointer: BaseCheckpointSaver | None = None,
+    response_format=None,
 ):
     """A LangGraph agent for one turn of a run: its version's model, instructions and tools,
     the user and run as runtime context (`ChatDeps`), and the run's history in `checkpointer`.
     Its instructions end with what an untrusted block is, and every tool result reaches it
-    checked by Jev and wrapped as one (`aios.tool_checks`)."""
+    checked by Jev and wrapped as one (`aios.tool_checks`). `response_format`, if given, is the
+    structured output it gives (a workflow node's, `aios.workflows.structured.output_format`)."""
     return create_agent(
         llm.chat_model(model),
         server_tools(tools, model),
@@ -62,5 +64,6 @@ def build_agent(
         middleware=[ToolResultChecks(), UsageMiddleware(llm.model_name(model))],
         context_schema=ChatDeps,
         checkpointer=checkpointer,
+        response_format=response_format,
         name="custom-agent",
     )

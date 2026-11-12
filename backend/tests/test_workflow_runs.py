@@ -41,6 +41,7 @@ from aios.testing.fake_model import (
     instructions,
     last_tool_results,
     model,
+    node_input,
     replies,
     use_model,
 )
@@ -64,7 +65,7 @@ def echo(fail: set[str] = frozenset(), together: set[str] = frozenset()):
     arrived: set[str] = set()
 
     async def script(messages, info):
-        name, text = instructions(messages), messages[-1].content
+        name, text = instructions(messages), node_input(messages[-1])
         if name in fail:
             raise RuntimeError(f"{name} broke")
         if name in together:
@@ -273,7 +274,7 @@ def test_a_subworkflow_stopped_by_another_branchs_failure_fails_cleanly(api, que
                 if steps(out).get("boom", {}).get("status") == "failed":
                     break
                 await asyncio.sleep(0.01)
-        yield f"{name}({messages[-1].content})"
+        yield f"{name}({node_input(messages[-1])})"
 
     with use_model(model(script)):
         drain_run(queued.store, started["id"])
@@ -823,7 +824,7 @@ def test_parallel_branches_run_together_and_their_advances_are_serialised(api, q
         name = instructions(messages)
         if name in ("left", "right"):
             seen.append(sorted(await asyncio.to_thread(items_in_flight)))
-        yield f"{name}({messages[-1].content})"
+        yield f"{name}({node_input(messages[-1])})"
 
     advances = []
     advance = workflows.advance_run
