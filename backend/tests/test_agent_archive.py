@@ -182,7 +182,7 @@ def test_a_workflow_run_past_its_start_still_runs_the_agents_node(api, queued): 
     assert steps(out)["b"]["status"] == "succeeded"
 
 
-def test_mentioning_it_posts_the_message_and_fails_at_once_without_a_model_call(api):
+def test_mentioning_it_posts_the_message_and_is_refused_at_once_without_a_model_call(api):
     agent = make_agent(api, "Reviewer")
     chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
@@ -199,14 +199,16 @@ def test_mentioning_it_posts_the_message_and_fails_at_once_without_a_model_call(
     assert calls == []
     message, *_ = posted["messages"]
     assert message["body"] == f"@[Reviewer](agent:{agent['id']}) look"
+    # Refused on its card, with why; nothing is posted back.
     [invocation] = posted["invocations"]
-    assert invocation["status"] == "failed"
-    assert invocation["error"] == "The agent Reviewer is archived"
+    assert invocation["status"] == "refused"
+    assert invocation["refusal_reason"] == "The agent Reviewer is archived."
     assert invocation["agent_run_id"] is None
     shown = messages(api, chat)["messages"]
-    assert [m["body"] for m in shown if m["kind"] == "text" and m["author"]["kind"] == "agent"] == [
-        "Couldn't start the run: The agent Reviewer is archived"
+    assert [m["body"] for m in shown if m["kind"] == "run_card"] == [
+        "The agent Reviewer is archived."
     ]
+    assert [m for m in shown if m["kind"] == "text" and m["author"]["kind"] == "agent"] == []
 
 
 def test_it_shows_as_archived_among_chat_members_and_isnt_mentionable(api):

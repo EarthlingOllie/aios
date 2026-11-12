@@ -1,11 +1,15 @@
 """What the run service does with each kind of item (`aios.models.WorkKind`).
 
 - **Invocation start**, a mention's: runs the handoff (`aios.handoff`), then enqueues the
-  agent's first turn, or starts the workflow's run and enqueues its first advance.
-- **Agent turn**: starts the mentioned agent's run, if it hasn't one yet, and runs one turn of
-  it under the run's turn lease, through the turn code every turn shares
-  (`aios.api.agents.turn_stream`); a schedule's run was started when the schedule fired
-  (`aios.scheduler`). The reply, or why it failed, goes back to the chat, or onto the schedule.
+  agent's turn, or starts the workflow's run and enqueues its first advance. An agent's
+  mention waits its turn first: while an earlier mention of the agent in the chat hasn't
+  finished (its turn is under way, or its run waits on an approval) it stays queued, and is
+  started again when that one finishes (`aios.invocations`), so mentions run in message order.
+- **Agent turn**: runs a mention's turn of the agent's conversation run in the chat (started
+  by the first mention there), on the agent's current version, or a schedule's turn of the
+  run it started when it fired (`aios.scheduler`): under the run's turn lease, through the turn
+  code every turn shares (`aios.api.agents.turn_stream`). The reply, or why it failed, goes
+  back to the chat, or onto the schedule.
 - **Workflow advance** and **workflow node**: a workflow run moving on node by node
   (`aios.workflows.advance`). A node enqueues an advance when it's done.
 - **Resume turn**: a standalone agent run waiting on schema change requests, carried on once
@@ -36,7 +40,7 @@ from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from aios import (
     approvals,
@@ -88,6 +92,7 @@ from aios.models import (
 from aios.run_service import queue
 from aios.run_service.errors import STOPPED, CantStart
 from aios.run_service.queue import Claimed, Work
+from aios.tools import ToolOrganisation
 from aios.workflows import structured
 
 log = logging.getLogger(__name__)
@@ -122,8 +127,16 @@ def turn_key(data_store_id: uuid.UUID, invocation_id: int) -> str:
     return f"agent-turn:{data_store_id}:{invocation_id}"
 
 
-def start_work(organisation_id: int, data_store_id: uuid.UUID, invocation_id: int) -> Work:
-    """A mention's invocation start: in the interactive lane, people are waiting in the chat."""
+def start_work(
+    organisation_id: int,
+    data_store_id: uuid.UUID,
+    invocation_id: int,
+    *,
+    again_if_running: bool = False,
+) -> Work:
+    """A mention's invocation start: in the interactive lane, people are waiting in the chat.
+    `again_if_running` for a queued mention whose turn has come (`aios.invocations`): if its
+    start is running now, finding it still has to wait, it runs once more."""
     return Work(
         organisation_id,
         data_store_id,
@@ -131,6 +144,7 @@ def start_work(organisation_id: int, data_store_id: uuid.UUID, invocation_id: in
         WorkKind.invocation_start,
         {"invocation_id": invocation_id},
         dedup_key=start_key(data_store_id, invocation_id),
+        again_if_running=again_if_running,
     )
 
 
@@ -211,6 +225,14 @@ def _find(data_store_id: uuid.UUID, invocation_id: int) -> _Found | None:
     return None if row is None else _Found(*row)
 
 
+def _waits_its_turn(data_store_id: uuid.UUID, invocation_id: int) -> bool:
+    """Whether the store's mention of an agent waits for an earlier one in its chat
+    (`invocations.queued_behind`)."""
+    with store_session(data_store_id, "ro") as store:
+        invocation = store.get(Invocation, invocation_id)
+        return invocation is not None and invocations.queued_behind(store, invocation)
+
+
 def _fail_unstarted(data_store_id: uuid.UUID, invocation_id: int, error: str) -> None:
     with store_session(data_store_id) as store:
         invocations.fail_unstarted(store, invocation_id, error)
@@ -278,6 +300,12 @@ async def start_invocation(item: Claimed) -> Outcome:
     found = await run_in_threadpool(_find, store_id, invocation_id)
     if found is None or found.status not in invocations.NOT_STARTED:
         return Done()
+    if found.target_kind == TriggerTargetKind.agent and await run_in_threadpool(
+        _waits_its_turn, store_id, invocation_id
+    ):
+        # Queued: started again when the mention it waits for finishes. Briefed only then, on
+        # what the chat says since that turn.
+        return Done()
     try:
         await handoff.brief(store_id, invocation_id)
         if found.target_kind == TriggerTargetKind.agent:
@@ -296,13 +324,28 @@ class _Started:
     run_id: int
     prompt: str
     title: str | None
+    # Why the turn failed as it began: the agent's current version can't run.
+    error: str | None = None
+
+
+def _conversation_run(store: Session, agent_id: int, chat_id: int) -> AgentRun | None:
+    """The agent's conversation run in the chat, locked until commit, if it has one."""
+    return store.scalars(
+        select(AgentRun)
+        .where(AgentRun.agent_id == agent_id, AgentRun.chat_id == chat_id)
+        .with_for_update()
+    ).one_or_none()
 
 
 def _start_mentioned_run(data_store_id: uuid.UUID, invocation_id: int) -> _Started | None:
-    """Start a run of the mentioned agent's current version, started by whoever mentioned it,
-    with the brief and the message as the user's; the invocation records it and goes running.
-    None if it has finished. Raises `HTTPException` as starting one by hand would, or
-    `CantStart`."""
+    """Begin the mentioned agent's turn in its conversation run in the chat, with the brief and
+    the message as the user's: the run is started (by whoever mentioned it) if the agent has
+    none there yet, and otherwise moves to the agent's current version for this turn. The
+    invocation records the run and goes running. A current version that can't run fails the
+    turn as it begins, with why (`_Started.error`), and the run keeps its last version.
+
+    None if the invocation has finished. Raises `HTTPException` as starting a run by hand would
+    (the agent archived, say), or `CantStart`."""
     organisation_id = _organisation(data_store_id)
     with store_session(data_store_id) as store:
         invocation = store.get(Invocation, invocation_id)
@@ -313,10 +356,29 @@ def _start_mentioned_run(data_store_id: uuid.UUID, invocation_id: int) -> _Start
         agent = store.get(Agent, invocation.agent_id)
         if agent is None:
             raise CantStart("The agent has been deleted.")
-        # The agent's share lock first, then the invocation's.
-        run = agents_api.new_agent_run(
-            store, organisation_id, agent, created_by=invocation.requested_by, by_mention=True
-        )
+        error = None
+        # The agent's share lock first (an archived agent starts no turn), then the run's, then
+        # the invocation's.
+        agents_api.lock_live_agent(store, agent, read=True)
+        run = _conversation_run(store, agent.id, invocation.chat_id)
+        if run is None:
+            run = agents_api.new_agent_run(
+                store,
+                organisation_id,
+                agent,
+                created_by=invocation.requested_by,
+                by_mention=True,
+                chat_id=invocation.chat_id,
+            )
+        else:
+            try:
+                agents_api.build_version_tools(
+                    agent.current_version, ToolOrganisation(organisation_id, store)
+                )
+            except HTTPException as exc:
+                error = str(exc.detail)
+            else:
+                run.agent_version_id = agent.current_version_id
         invocation = invocations.lock(store, invocation_id)
         if invocation is None or invocation.status != InvocationStatus.briefing:
             store.rollback()
@@ -324,9 +386,13 @@ def _start_mentioned_run(data_store_id: uuid.UUID, invocation_id: int) -> _Start
         # The run and the invocation's link to it, together.
         invocation.agent_run_id = run.id
         invocations.mark_running(store, invocation_id)
+        if error is not None:
+            turns.begin(
+                store, run.id, invocation_id, error=error, version_id=agent.current_version_id
+            )
         store.commit()
-        # Titled after what was asked.
-        return _Started(agent.id, run.id, prompt, invocations.message_text(body))
+        # Titled after what was first asked.
+        return _Started(agent.id, run.id, prompt, invocations.message_text(body), error)
 
 
 @dataclass(frozen=True)
@@ -339,14 +405,16 @@ class _Progress:
     turn_error: str | None
 
 
-def _progress(data_store_id: uuid.UUID, run_id: int) -> _Progress | None:
+def _progress(data_store_id: uuid.UUID, run_id: int, invocation_id: int) -> _Progress | None:
+    """Where the store's run's turn for the invocation got to (a conversation run has a turn
+    for each of its mentions)."""
     with store_session(data_store_id, "ro") as store:
         agent_id = store.scalar(select(AgentRun.agent_id).where(AgentRun.id == run_id))
         if agent_id is None:
             return None
         latest = store.execute(
             select(Turn.id, Turn.status, Turn.error)
-            .where(Turn.agent_run_id == run_id)
+            .where(Turn.agent_run_id == run_id, Turn.invocation_id == invocation_id)
             .order_by(Turn.id.desc())
             .limit(1)
         ).one_or_none()
@@ -363,15 +431,16 @@ def _context(data_store_id: uuid.UUID, agent_id: int, run_id: int) -> agents_api
 async def _run_turn(
     data_store_id: uuid.UUID,
     run_id: int,
+    invocation_id: int,
     prompt: str,
     title: str | None,
     draft: streams.Draft | None = None,
 ) -> str | None | Later:
-    """Run the store's run's turn, or carry on the one an earlier attempt began; why it failed
-    (None if it went fine), or `Later` if another turn holds the run. Raises `CantStart` if the
-    run is gone or can't run. The reply's text as it's written goes to `draft`, if given: the
-    chat following the turn shows it (`aios.streams`)."""
-    progress = await run_in_threadpool(_progress, data_store_id, run_id)
+    """Run the store's run's turn for the invocation, or carry on the one an earlier attempt
+    began; why it failed (None if it went fine), or `Later` if another turn holds the run.
+    Raises `CantStart` if the run is gone or can't run. The reply's text as it's written goes to
+    `draft`, if given: the chat following the turn shows it (`aios.streams`)."""
+    progress = await run_in_threadpool(_progress, data_store_id, run_id, invocation_id)
     if progress is None:
         raise CantStart(invocations.RUN_DELETED)
     if progress.turn_id is not None and progress.turn_status != AgentRunStatus.running:
@@ -392,7 +461,11 @@ async def _run_turn(
     try:
         if progress.turn_id is None:
             turn_id = await run_in_threadpool(
-                agents_api._start_turn, data_store_id, run_id, title or prompt
+                agents_api._start_turn,
+                data_store_id,
+                run_id,
+                title or prompt,
+                invocation_id=invocation_id,
             )
             turn = message
         else:
@@ -449,6 +522,8 @@ async def agent_turn(item: Claimed) -> Outcome:
             started = await run_in_threadpool(_start_mentioned_run, store_id, invocation_id)
             if started is None:
                 return Done()
+            if started.error is not None:
+                raise CantStart(started.error)
             run_id, prompt, title = started.run_id, started.prompt, started.title
         elif run_id is None:
             raise CantStart(invocations.RUN_DELETED)
@@ -458,7 +533,7 @@ async def agent_turn(item: Claimed) -> Outcome:
         if found.chat_id is not None:
             # What its chat shows while the reply is written (`aios.streams`).
             draft = streams.Draft(store_id, found.chat_id, invocation_id)
-        outcome = await _run_turn(store_id, run_id, prompt, title, draft)
+        outcome = await _run_turn(store_id, run_id, invocation_id, prompt, title, draft)
         if isinstance(outcome, Later):
             return outcome
         error = outcome
@@ -763,8 +838,11 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
     """The store's invocations the run service owns that have waited unstarted for longer than
     `older_than_seconds` (a mention's from posting until its run starts, a schedule's agent turn
     until it begins), each with the item that carries it on: a mention's start, or a schedule's
-    turn; and those handing back made as long ago, each with its handback. Whether each has an
-    item queued is for the caller to check."""
+    turn; and those handing back made as long ago, each with its handback. A mention of an agent
+    queued behind an earlier unfinished one in its chat isn't lost: it's started when that one
+    finishes (`invocations.queued_behind`). Whether each has an item queued is for the caller to
+    check."""
+    earlier = aliased(Invocation)
     store_id = store_id_of(store)
     organisation_id = _organisation(store_id)
     handing_back = store.scalars(
@@ -786,6 +864,14 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
             Invocation.status.in_(invocations.NOT_STARTED),
             Invocation.created_at < func.now() - timedelta(seconds=older_than_seconds),
             Invocation.parent_id.is_(None),
+            ~select(earlier.id)
+            .where(
+                earlier.chat_id == Invocation.chat_id,
+                earlier.agent_id == Invocation.agent_id,
+                earlier.id < Invocation.id,
+                earlier.status.in_(invocations.LIVE),
+            )
+            .exists(),
             or_(
                 Invocation.chat_id.is_not(None),
                 and_(

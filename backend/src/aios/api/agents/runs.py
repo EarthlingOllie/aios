@@ -269,6 +269,7 @@ def new_agent_run(
     trigger_id: int | None = None,
     by_mention: bool = False,
     event: Event | None = None,
+    chat_id: int | None = None,
 ) -> AgentRun:
     """Add (and flush, not commit) a run of the agent's current version to the store of the
     organisation `organisation_id` (`store`, where the agent is), started by the member
@@ -282,17 +283,19 @@ def new_agent_run(
 
     Its invocation is made with it (`invocations.for_run`): a schedule's, an event trigger's
     (with the `event` it fired on), or one started by hand by `created_by`. A mention's run
-    (`by_mention`) has its mention's, which the caller links.
+    (`by_mention`) has its mention's, which the caller links: it's the agent's conversation
+    run in the mention's chat (`chat_id`), whose later mentions there are more turns of it.
     """
     lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version, ToolOrganisation(organisation_id, store))
-    # Pin the version: later edits to the agent don't change this conversation.
+    # Its first turn's version: only a conversation run's later turns move to a newer one.
     run = AgentRun(
         agent_id=agent.id,
         agent_version_id=agent.current_version_id,
         trigger_id=trigger_id,
         created_by=created_by,
+        chat_id=chat_id,
     )
     store.add(run)
     store.flush()

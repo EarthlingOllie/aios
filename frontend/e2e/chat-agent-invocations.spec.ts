@@ -126,3 +126,87 @@ test("an agent's card whose turn ended asking for a schema change shows the run 
   await page.reload();
   await expect(page.getByTestId("run-card-status")).toHaveText("Succeeded");
 });
+
+test("a second mention of the agent is another turn of its run in the chat, each card counting its own", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const { chat, agent } = seed(api);
+  api.agentTurns.set(agent.id, { steps: 1, tokensPerStep: 600 });
+  await page.goto(inOrg(`/chats/${chat.id}`));
+
+  await post(page, `@[Scout](agent:${agent.id}) first`);
+  await expect(message(page, "Done: @Scout first")).toBeVisible({ timeout: 10_000 });
+  await post(page, `@[Scout](agent:${agent.id}) second`);
+  await expect(message(page, "Done: @Scout second")).toBeVisible({ timeout: 10_000 });
+
+  // One run: both cards open it, and each counts its own turn.
+  const [run] = [...api.agentRuns.values()];
+  expect(api.agentRuns.size).toBe(1);
+  await expect(card(page)).toHaveCount(2);
+  for (const n of [0, 1]) {
+    await expect(card(page).nth(n)).toHaveAccessibleName(`Open run #${run.id}`);
+    await expect(card(page).nth(n).getByTestId("run-card-counters")).toHaveText("1 tool call · 600 tokens");
+  }
+  // Its page lists both turns.
+  await card(page).nth(1).click();
+  await page.getByRole("tab", { name: "Turns" }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: /^Turn / })).toHaveCount(2);
+});
+
+test("a mention while the agent's run waits on an approval is queued, saying so, and runs once it's decided", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const { chat, agent } = seed(api);
+  const run = api.addAgentRun(agent, "@Scout keep notes", 2, { status: "succeeded", chat_id: chat.id });
+  const waiting = api.addChatRunCard(chat, "agent", agent, run.id);
+  waiting.status = "running";
+  const request = api.addSchemaChange({ run_id: run.id, summary: "Create table data.notes" });
+  await page.goto(inOrg(`/chats/${chat.id}`));
+
+  await post(page, `@[Scout](agent:${agent.id}) anything new?`);
+  const queued = card(page).nth(1);
+  await expect(queued.getByTestId("run-card-waiting")).toHaveText("Waiting for an approval");
+  await expect(queued.getByTestId("run-card-status")).toHaveText("Queued");
+
+  // Decided: the waiting turn finishes, then the queued mention runs, in the same run.
+  request.status = "applied";
+  request.resumed_at = "2026-10-14T10:00:01Z";
+  await page.reload();
+  await expect(message(page, "Done: @Scout anything new?")).toBeVisible({ timeout: 10_000 });
+  await expect(card(page).nth(1)).toHaveAccessibleName(`Open run #${run.id}`);
+  expect(api.agentRuns.size).toBe(1);
+});
+
+test("a mention made while an earlier one is answered waits for its turn", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { chat, agent } = seed(api);
+  api.agentTurns.set(agent.id, { steps: 6, tokensPerStep: 100 });
+  await page.goto(inOrg(`/chats/${chat.id}`));
+
+  await post(page, `@[Scout](agent:${agent.id}) first`);
+  await expect(card(page).first().getByTestId("run-card-status")).toHaveText("Running");
+  await post(page, `@[Scout](agent:${agent.id}) second`);
+  await expect(card(page).nth(1).getByTestId("run-card-waiting")).toHaveText(
+    "Waiting for its turn: an earlier mention is still being answered",
+  );
+  await expect(message(page, "Done: @Scout second")).toBeVisible({ timeout: 20_000 });
+  const replies = messageList(page).getByRole("article").filter({ hasText: /^.*Done: @Scout/ });
+  await expect(replies).toHaveText([/Done: @Scout first/, /Done: @Scout second/]);
+});
+
+test("a mention of an agent archived since the chat was opened is refused on its card", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { chat, agent } = seed(api);
+  await page.goto(inOrg(`/chats/${chat.id}`));
+  await composer(page).pressSequentially("@sco");
+  await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: "Scout agent" }).click();
+  // Archived by someone else meanwhile.
+  agent.archived_at = "2026-11-10T09:00:00Z";
+  await composer(page).pressSequentially("look");
+  await composer(page).press("Enter");
+
+  await expect(page.getByTestId("run-card-refused")).toHaveText("Not run: The agent Scout is archived.");
+  expect(api.agentRuns.size).toBe(0);
+});

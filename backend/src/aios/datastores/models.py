@@ -516,6 +516,10 @@ class AgentRun(StoreBase):
     """One conversation with an agent. Its history is the checkpointer thread `agent-run-<id>`,
     in this store (`aios.checkpoints`).
 
+    A conversation run (`chat_id` set) is the agent's one run in a chat: each mention of it there
+    is a new turn of it (`aios.run_service.work`), on the agent's current version. Runs started
+    by hand, by triggers, by `start_workflow` or as workflow nodes are never conversation runs.
+
     How it went and what it cost are its turns' (`Turn`, `aios.turns`): its status and times
     are its latest turn's, its counters add up over all of them. Why it ran is its invocation
     (`Invocation.agent_run_id`).
@@ -525,8 +529,15 @@ class AgentRun(StoreBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"))
-    # Pinned when the run starts: editing the agent mid-conversation doesn't change the run.
+    # The version its latest turn ran on (`aios.turns.begin`). A conversation run's turns each
+    # take the agent's current version as they begin; any other run's stay on the version it
+    # was started on, as does a turn carrying on after an approval.
     agent_version_id: Mapped[int] = mapped_column(ForeignKey("agent_versions.id"))
+    # The chat it's the agent's conversation in, for a conversation run: one per agent and
+    # chat. Null for any other run, and once the chat is deleted (the run stays).
+    chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id", ondelete="SET NULL", name="fk_agent_runs_chat_id")
+    )
     title: Mapped[str | None] = mapped_column(String(255))
     # The schedule that started the run, if one did; cleared when it's deleted.
     trigger_id: Mapped[int | None] = mapped_column(
@@ -549,6 +560,15 @@ class AgentRun(StoreBase):
     __table_args__ = (
         Index("ix_agent_runs_agent_id", "agent_id"),
         Index("ix_agent_runs_agent_version_id", "agent_version_id"),
+        # One conversation run per agent and chat.
+        Index(
+            "uq_agent_runs_agent_id_chat_id",
+            "agent_id",
+            "chat_id",
+            unique=True,
+            postgresql_where=sql_text("chat_id IS NOT NULL"),
+        ),
+        Index("ix_agent_runs_chat_id", "chat_id"),
         {"comment": "Conversations with agents: each run's history is its checkpointer thread"},
     )
 

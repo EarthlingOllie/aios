@@ -124,6 +124,8 @@ type AgentRunRow = AgentRunCounters & {
   /** Who started it (null for a schedule's run), and the schedule that did. */
   created_by: ChatUser | null;
   trigger_id: number | null;
+  /** The chat it's the agent's conversation run in (one per agent and chat), if it is one. */
+  chat_id?: number | null;
   /** Its conversation, as AI SDK UIMessages. */
   ui_messages: unknown[];
   /** Its turns, oldest first. */
@@ -2022,7 +2024,7 @@ export class FakeApi {
     agent: AgentRow,
     title: string | null = null,
     message_count = 0,
-    fields: Partial<AgentRunCounters & Pick<AgentRunRow, "created_by" | "trigger_id">> = {},
+    fields: Partial<AgentRunCounters & Pick<AgentRunRow, "created_by" | "trigger_id" | "chat_id">> = {},
   ): AgentRunRow {
     const run: AgentRunRow = {
       id: this.id(),
@@ -2328,10 +2330,11 @@ export class FakeApi {
         invocation_id: invocation.id,
       },
     );
-    // An archived agent's or workflow's fails at once, as the API's does: no handoff, no run.
+    // An archived agent's or workflow's is refused at once, as the API's is: no handoff, no run.
     if (!refusal && target.archived_at !== null) {
-      const error = `The ${kind} ${target.name} is archived`;
-      this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
+      const reason = `The ${kind} ${target.name} is archived.`;
+      Object.assign(invocation, { status: "refused", refusal_reason: reason, finished_at: NOW });
+      this.cardOf(chat, invocation).body = reason;
     }
     return invocation;
   }
@@ -2460,6 +2463,8 @@ export class FakeApi {
         this.handBack(invocation);
         continue;
       }
+      // A mention of an agent waits its turn behind the earlier ones in the chat.
+      if (invocation.status === "queued" && this.waitingFor(invocation)) continue;
       if (invocation.status === "queued") {
         invocation.status = "briefing";
         continue;
@@ -2510,16 +2515,22 @@ export class FakeApi {
     if (invocation.status === "briefing") {
       const message = chat.messages.find((m) => m.id === invocation.message_id)!;
       const input = runInput(invocation.brief, message.body);
-      // Titled after what was asked, not the brief.
-      const run = this.addAgentRun(agent, messageText(message.body), 1, {
-        status: "running",
-        started_at: new Date().toISOString(),
-        tool_call_count: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-      });
-      run.ui_messages = [{ id: "u1", role: "user", parts: [{ type: "text", text: input }] }];
-      Object.assign(invocation, { status: "running", run_id: run.id, started_at: run.started_at });
+      const started_at = new Date().toISOString();
+      const counters = { status: "running" as const, started_at, finished_at: null, tool_call_count: 0, input_tokens: 0, output_tokens: 0 };
+      // The agent's conversation run in the chat: a later mention is another turn of it, on the
+      // agent's current version.
+      let run = this.conversationRun(agent, chat);
+      if (run) {
+        Object.assign(run, { ...counters, agent_version_id: agent.versions.at(-1)! });
+      } else {
+        // Titled after what was first asked, not the brief.
+        run = this.addAgentRun(agent, messageText(message.body), 0, { ...counters, chat_id: chat.id });
+      }
+      const n = run.ui_messages.length;
+      run.ui_messages = [...run.ui_messages, { id: `u${n}`, role: "user", parts: [{ type: "text", text: input }] }];
+      run.message_count = run.ui_messages.length;
+      this.addTurn(run, { invocation_id: invocation.id, status: "running", started_at, finished_at: null });
+      Object.assign(invocation, { status: "running", run_id: run.id, started_at });
     } else if (invocation.status === "running") {
       const run = this.agentRuns.get(invocation.run_id!);
       if (!run) {
@@ -2527,26 +2538,77 @@ export class FakeApi {
         this.finishInvocation(invocation, "failed", `The run failed: ${deleted}`, deleted);
         return;
       }
-      if (run.tool_call_count! < turn.steps) {
+      // A turn that ended waiting on an approval carries on once it's decided.
+      if (this.runWaiting(run)) return;
+      const current = this.turnOf(run, invocation);
+      const done = current?.tool_calls ?? run.tool_call_count ?? 0;
+      if (done < turn.steps) {
         if (turn.drafts?.length) {
-          this.drafts.set(invocation.id, turn.drafts[Math.min(run.tool_call_count!, turn.drafts.length - 1)]);
+          this.drafts.set(invocation.id, turn.drafts[Math.min(done, turn.drafts.length - 1)]);
         }
-        run.tool_call_count! += 1;
-        run.input_tokens! += turn.tokensPerStep - 20;
-        run.output_tokens! += 20;
+        run.tool_call_count = (run.tool_call_count ?? 0) + 1;
+        run.input_tokens = (run.input_tokens ?? 0) + turn.tokensPerStep - 20;
+        run.output_tokens = (run.output_tokens ?? 0) + 20;
+        if (current) {
+          current.model_calls += 1;
+          current.tool_calls += 1;
+          current.input_tokens += turn.tokensPerStep - 20;
+          current.output_tokens += 20;
+        }
         return;
       }
       const finished_at = new Date().toISOString();
       if (turn.error) {
         Object.assign(run, { status: "failed", finished_at });
+        if (current) Object.assign(current, { status: "failed", error: turn.error, finished_at });
         this.finishInvocation(invocation, "failed", `The run failed: ${turn.error}`, turn.error);
         return;
       }
-      const reply = turn.reply ?? `Done: ${run.title}`;
-      Object.assign(run, { status: "succeeded", finished_at, message_count: 2 });
-      run.ui_messages = [...run.ui_messages, { id: "a1", role: "assistant", parts: [{ type: "text", text: reply }] }];
+      const reply = turn.reply ?? `Done: ${messageText(chat.messages.find((m) => m.id === invocation.message_id)?.body ?? "")}`;
+      const n = run.ui_messages.length;
+      run.ui_messages = [...run.ui_messages, { id: `a${n}`, role: "assistant", parts: [{ type: "text", text: reply }] }];
+      Object.assign(run, { status: "succeeded", finished_at, message_count: run.ui_messages.length });
+      if (current) Object.assign(current, { status: "succeeded", finished_at });
       this.finishInvocation(invocation, "succeeded", reply);
     }
+  }
+
+  /** The agent's conversation run in the chat, if it has one. */
+  private conversationRun(agent: AgentRow, chat: ChatRow): AgentRunRow | undefined {
+    return [...this.agentRuns.values()].find((r) => r.agent_id === agent.id && r.chat_id === chat.id);
+  }
+
+  /** The run's latest turn for the invocation, if it has begun one. */
+  private turnOf(run: AgentRunRow, invocation: InvocationRow): TurnRow | undefined {
+    return run.turns.filter((t) => t.invocation_id === invocation.id).at(-1);
+  }
+
+  /** Whether the agent run waits on an approval (a schema change it asked for). */
+  private runWaiting(run: AgentRunRow): boolean {
+    return this.schemaChanges.some((r) => r.run_id === run.id && !r.resumed_at && r.status !== "cancelled");
+  }
+
+  /**
+   * What a mention of an agent not started yet waits for, as the API says: `approval` while the
+   * agent's run in the chat waits on one, `turn` while an earlier mention of it there hasn't
+   * finished; null if it waits for nothing.
+   */
+  private waitingFor(invocation: InvocationRow): "approval" | "turn" | null {
+    if (invocation.target_kind !== "agent" || invocation.delivered) return null;
+    if (invocation.status !== "queued" && invocation.status !== "briefing") return null;
+    const earlier = [...this.invocations.values()].some(
+      (i) =>
+        i.id < invocation.id &&
+        i.chat_id === invocation.chat_id &&
+        i.target_kind === "agent" &&
+        i.target_id === invocation.target_id &&
+        !i.delivered &&
+        ["queued", "briefing", "running", "handing_back"].includes(i.status),
+    );
+    if (!earlier) return null;
+    const agent = this.agents.get(invocation.target_id)!;
+    const run = this.conversationRun(agent, this.chats.get(invocation.chat_id)!);
+    return run && this.runWaiting(run) ? "approval" : "turn";
   }
 
   /** Adds a user to a chat, as joining (or a member adding them) would. */
@@ -2830,8 +2892,8 @@ export class FakeApi {
   }
 
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them: not its
-   * archived agents and workflows, unless `archived` (posting takes a mention of one, which fails
-   * at once). */
+   * archived agents and workflows, unless `archived` (posting takes a mention of one, which is
+   * refused at once). */
   /** Why the signed-in member may not invoke `target` (its invocable-by, `aios.guards`), or null. */
   private invokeRefusal(kind: string, target: { name: string; invocable_by?: InvocableBy }) {
     const role = this.roleOf(this.me.id);
@@ -2882,24 +2944,36 @@ export class FakeApi {
     };
     if (invocation.target_kind === "agent") {
       const run = run_id === null ? undefined : this.agentRuns.get(run_id);
+      // This mention's own turn of the run, if it has one; else the run's.
+      const own = run && this.turnOf(run, invocation);
       return {
         ...rest,
         workflow_run_id: null,
         agent_run_id: run ? run.id : null,
         run_deleted: invocation.started_at !== null && !run,
         workflow_run: null,
+        waiting_for: this.waitingFor(invocation),
         agent_run: run
           ? {
               id: run.id,
-              status: run.status,
-              started_at: run.started_at,
-              finished_at: run.finished_at,
-              tool_call_count: run.tool_call_count,
-              input_tokens: run.input_tokens,
-              output_tokens: run.output_tokens,
-              waiting: this.schemaChanges.some(
-                (r) => r.run_id === run.id && !r.resumed_at && r.status !== "cancelled",
-              ),
+              ...(own
+                ? {
+                    status: own.status,
+                    started_at: own.started_at,
+                    finished_at: own.finished_at,
+                    tool_call_count: own.tool_calls,
+                    input_tokens: own.input_tokens,
+                    output_tokens: own.output_tokens,
+                  }
+                : {
+                    status: run.status,
+                    started_at: run.started_at,
+                    finished_at: run.finished_at,
+                    tool_call_count: run.tool_call_count,
+                    input_tokens: run.input_tokens,
+                    output_tokens: run.output_tokens,
+                  }),
+              waiting: invocation.status === "running" && this.runWaiting(run),
             }
           : null,
       };
@@ -2912,6 +2986,7 @@ export class FakeApi {
       run_deleted: invocation.started_at !== null && !run,
       workflow_run: run ? this.runOut(run) : null,
       agent_run: null,
+      waiting_for: null,
     };
   }
 

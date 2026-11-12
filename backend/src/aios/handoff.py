@@ -5,7 +5,9 @@ told the context again. Before the run starts (`brief`, the first step of its st
 service, `aios.run_service`), the invocation goes `briefing` and one structured call to the
 handoff model (`HANDOFF_MODEL`, by default the deployment's `LLM_MODEL`) reads a bounded window
 of the chat up to the mentioning message (`window`: the last `HANDOFF_WINDOW_MESSAGES` messages
-or about `HANDOFF_WINDOW_TOKENS` tokens of them, whichever is less) and returns `{ack, brief}`:
+or about `HANDOFF_WINDOW_TOKENS` tokens of them, whichever is less; for a later turn of an
+agent's conversation run, only those since the message that started its previous turn,
+`since`) and returns `{ack, brief}`:
 
 - the ack, a line in the member's voice saying what it understood it's being asked to do, which
   replaces the placeholder in its acknowledgement so whoever asked can correct it early;
@@ -28,13 +30,13 @@ from fastapi.concurrency import run_in_threadpool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aios import invocations, jev, llm, model_rate_limit, tracing, usage
 from aios.config import get_settings
 from aios.datastores import people, store_session
-from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
+from aios.datastores.models import Agent, AgentRun, ChatMessage, Invocation, Workflow
 from aios.db import SessionLocal
 from aios.models import ChatAuthorKind, ChatMessageKind, DataStore, UsagePurpose
 from aios.run_service.errors import CantStart
@@ -126,17 +128,40 @@ def _names(store: Session, organisation_id: int, messages: list[ChatMessage]) ->
     return names
 
 
+def since(store: Session, invocation: Invocation) -> int | None:
+    """For a mention of an agent that has a conversation run in the chat: the message that
+    started the agent's previous turn there, which the run has had, with everything before it.
+    None for a first mention, or a workflow's."""
+    if invocation.agent_id is None or invocation.chat_id is None:
+        return None
+    run_id = (
+        select(AgentRun.id)
+        .where(AgentRun.agent_id == invocation.agent_id, AgentRun.chat_id == invocation.chat_id)
+        .scalar_subquery()
+    )
+    return store.scalar(
+        select(func.max(Invocation.message_id)).where(
+            Invocation.agent_run_id == run_id,
+            Invocation.id != invocation.id,
+            Invocation.message_id < invocation.message_id,
+        )
+    )
+
+
 def window(store: Session, organisation_id: int, invocation: Invocation) -> list[str]:
     """The chat up to the mentioning message as transcript lines, oldest first: its last
     `handoff_window_messages` messages (the run cards' acknowledgements aside), or as many of
-    those as fit in about `handoff_window_tokens` tokens, whichever is fewer. The mentioning
-    message is always the last, cut to fit if it alone is over the budget."""
+    those as fit in about `handoff_window_tokens` tokens, whichever is fewer; only those after
+    the message that started the agent's previous turn in its conversation run (`since`). The
+    mentioning message is always the last, cut to fit if it alone is over the budget."""
     settings = get_settings()
+    after = since(store, invocation)
     rows = store.scalars(
         select(ChatMessage)
         .where(
             ChatMessage.chat_id == invocation.chat_id,
             ChatMessage.id <= invocation.message_id,
+            ChatMessage.id > (after or 0),
             ChatMessage.kind == ChatMessageKind.text,
         )
         .order_by(ChatMessage.id.desc())
@@ -180,9 +205,15 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
         # What was said before, and the mentioning message, are untrusted (people's messages
         # and what agents derived), so each comes in an untrusted block (`aios.jev.wrap`),
         # whatever Jev said of them.
+        # A later turn's run has had the chat up to its previous turn: only what's new is shown.
+        heading = (
+            f"The chat since {name}'s previous turn (it has seen what came before), oldest first:"
+            if since(store, invocation) is not None
+            else "The chat so far, oldest first:"
+        )
         chat = "\n\n".join(
             [
-                "The chat so far, oldest first:",
+                heading,
                 jev.wrap("\n\n".join(earlier), "chat")
                 if earlier
                 else "(nothing before the message)",

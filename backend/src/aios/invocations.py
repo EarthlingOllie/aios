@@ -34,10 +34,17 @@ in the worker or when it's found stopped (`aios.workflows._end_runs`, which call
 start keeps losing its process is failed by the run service after a few attempts.
 
 Mentioning an agent queues an invocation the same way; after the handoff the run service runs
-its turn (`aios.run_service.work`), which starts its run. When the turn ends its reply, or why
-it failed, is posted back (`finish_turn`). A turn that ends waiting for a member to decide its
-schema change request leaves the invocation running, its card showing the run waiting; the
-run's resume, once the request is decided, finishes it (`finish_resumed`).
+its turn (`aios.run_service.work`), a new turn of the agent's one conversation run in the chat
+(started by its first mention there). When the turn ends its reply, or why it failed, is posted
+back (`finish_turn`). A turn that ends waiting for a member to decide its schema change request
+leaves the invocation running, its card showing the run waiting; the run's resume, once the
+request is decided, finishes it (`finish_resumed`).
+
+An agent's mentions in a chat take their turns one at a time, in message order: one made while
+an earlier one hasn't finished (its turn is under way, or its run waits on an approval) stays
+queued (`queued_behind`; its card says what it waits for, `waiting_for`). When a mention of an
+agent finishes, however it ends, the next one queued is started once the store commits
+(`_start_next`).
 
 A run an invocation started is the organisation's, like any other: started by the member who
 mentioned it, executed for the organisation, and read by every member (`aios.api.agents`).
@@ -54,7 +61,7 @@ import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import event as sa_event
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, jev, limits, notifications, outbox, search_index, streams
@@ -94,6 +101,8 @@ RUN_DELETED = "The run was deleted before it finished."
 NO_OUTPUT = "_The run finished with no output._"
 NO_FINAL_STEP = "_No final step ran._"
 NO_REPLY = "_The agent finished without a reply._"
+# Why a mention of an archived agent or workflow is refused (as `archived_refusal` says).
+ARCHIVED = "The {kind} {name} is archived."
 
 # Before its run has started, and before it has finished.
 NOT_STARTED = (InvocationStatus.queued, InvocationStatus.briefing)
@@ -202,8 +211,8 @@ def create(
     """Queue an invocation of each agent or workflow (kind, id) the (just added) message
     mentions, each with its acknowledgement and card; in the caller's transaction. Nothing for a
     message that isn't a user's. One in `refused` (the mention guards', `aios.guards`) is
-    refused at once with the reason, which its card says; an archived agent's or workflow's
-    fails at once ("The agent <name> is archived"). Either is before any handoff, so no model is
+    refused at once with the reason, which its card says; so is an archived agent's or
+    workflow's ("The agent <name> is archived."). Either is before any handoff, so no model is
     called for it."""
     refused = refused or {}
     if message.author_kind != ChatAuthorKind.user:
@@ -215,6 +224,8 @@ def create(
     for kind, target_id in targets:
         is_agent = kind == TriggerTargetKind.agent
         reason = refused.get((kind, target_id))
+        if reason is None and (name := archived.get((kind, target_id))) is not None:
+            reason = ARCHIVED.format(kind=kind.value, name=name)
         invocation = Invocation(
             chat_id=message.chat_id,
             message_id=message.id,
@@ -240,8 +251,6 @@ def create(
             )
         )
         store.flush()
-        if reason is None and (name := archived.get((kind, target_id))) is not None:
-            fail_unstarted(store, invocation.id, f"The {kind.value} {name} is archived")
         made.append(invocation)
     return made
 
@@ -260,6 +269,135 @@ def _archived(
         ):
             found[kind, i] = name
     return found
+
+
+def _earlier_unfinished(invocation: Invocation):
+    """The unfinished mentions of the invocation's agent in its chat made before it."""
+    return select(Invocation.id).where(
+        Invocation.chat_id == invocation.chat_id,
+        Invocation.agent_id == invocation.agent_id,
+        Invocation.id < invocation.id,
+        Invocation.status.in_(LIVE),
+    )
+
+
+def queued_behind(store: Session, invocation: Invocation) -> bool:
+    """Whether a mention of an agent waits its turn: an earlier mention of the agent in the
+    chat hasn't finished (its turn is under way, its run waits on an approval, or it waits
+    itself)."""
+    if invocation.chat_id is None or invocation.agent_id is None:
+        return False
+    return bool(store.scalar(select(_earlier_unfinished(invocation).exists())))
+
+
+# What a queued mention's card says it waits for.
+WAITING_FOR_APPROVAL = "approval"
+WAITING_FOR_TURN = "turn"
+
+
+def waiting_for(store: Session, queued: Sequence[tuple[int, int, int]]) -> dict[int, str]:
+    """What each of these mentions of agents not started yet, as (id, chat id, agent id), waits
+    for, by id: `approval` while the agent's conversation run in the chat waits on one, else
+    `turn` while an earlier mention of the agent there hasn't finished. Those that wait for
+    nothing are left out."""
+    from aios.datastores.models import AgentRun
+
+    if not queued:
+        return {}
+    pairs = list({(chat_id, agent_id) for _, chat_id, agent_id in queued})
+    # The oldest unfinished mention of each agent in each chat: the others wait behind it.
+    heads = {
+        (chat_id, agent_id): head
+        for chat_id, agent_id, head in store.execute(
+            select(Invocation.chat_id, Invocation.agent_id, func.min(Invocation.id))
+            .where(
+                tuple_(Invocation.chat_id, Invocation.agent_id).in_(pairs),
+                Invocation.status.in_(LIVE),
+            )
+            .group_by(Invocation.chat_id, Invocation.agent_id)
+        )
+    }
+    approval = {
+        (chat_id, agent_id)
+        for chat_id, agent_id in store.execute(
+            select(AgentRun.chat_id, AgentRun.agent_id).where(
+                tuple_(AgentRun.chat_id, AgentRun.agent_id).in_(pairs),
+                waiting_on_a_request(AgentRun.id),
+            )
+        )
+    }
+    out = {}
+    for invocation_id, chat_id, agent_id in queued:
+        head = heads.get((chat_id, agent_id))
+        if head is None or head >= invocation_id:
+            continue
+        waits = (chat_id, agent_id) in approval
+        out[invocation_id] = WAITING_FOR_APPROVAL if waits else WAITING_FOR_TURN
+    return out
+
+
+_NEXT = "aios.invocations.next"
+
+
+def _start_next(store: Session, invocation: Invocation) -> None:
+    """The invocation, a mention of an agent, has just finished: once the store commits, start
+    the next mention of the agent queued in the chat behind it, if there is one."""
+    if invocation.chat_id is None or invocation.agent_id is None:
+        return
+    following = store.scalar(
+        select(Invocation.id)
+        .where(
+            Invocation.chat_id == invocation.chat_id,
+            Invocation.agent_id == invocation.agent_id,
+            Invocation.id > invocation.id,
+            Invocation.status.in_(NOT_STARTED),
+        )
+        .order_by(Invocation.id)
+        .limit(1)
+    )
+    if following is not None:
+        store.info.setdefault(_NEXT, set()).add(following)
+
+
+def enqueue_next(data_store_id: uuid.UUID, invocation_ids: Sequence[int]) -> None:
+    """Enqueue the starts of the store's queued mentions whose turn has come, and wake the run
+    service for them: each runs again if it's running now (having found it still had to wait).
+    One whose enqueue is lost is put back by the requeue sweep."""
+    from aios import run_service
+    from aios.run_service import work
+
+    with SessionLocal() as db:
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+        if organisation_id is None:
+            return
+        run_service.enqueue(
+            db,
+            [
+                work.start_work(organisation_id, data_store_id, i, again_if_running=True)
+                for i in invocation_ids
+            ],
+        )
+        db.commit()
+    run_service.wake(WorkLane.interactive)
+
+
+@sa_event.listens_for(Session, "after_commit")
+def _enqueue_next(session: Session) -> None:
+    due: set[int] | None = session.info.pop(_NEXT, None)
+    if not due:
+        return
+    try:
+        enqueue_next(store_id_of(session), sorted(due))
+    except Exception:
+        # The requeue sweep finds them (`aios.run_service.work.lost`).
+        log.exception("couldn't enqueue the next mentions")
+
+
+@sa_event.listens_for(Session, "after_rollback")
+def _forget_next(session: Session) -> None:
+    session.info.pop(_NEXT, None)
 
 
 def lock(store: Session, invocation_id: int) -> Invocation | None:
@@ -338,8 +476,10 @@ def _finish(
         _notify(store, invocation, status, None)
         return
     if status == InvocationStatus.succeeded and hands_back(invocation, body):
+        # The next mention waits for the result, posted by the handback (`post_handback`).
         _hand_back(store, invocation, body)
         return
+    _start_next(store, invocation)
     result = _post(store, invocation, invocation.chat_id, body)
     _notify(store, invocation, status, result)
 
@@ -466,6 +606,7 @@ def post_handback(
     invocation.finished_at = func.now()
     invocation.summary = summary
     invocation.handback_error = error
+    _start_next(store, invocation)
     chat_id = invocation.chat_id
     if chat_id is None:
         chat = _destination(store, invocation)
@@ -764,16 +905,15 @@ def finish_quietly(store: Session, run_id: int, error: str | None) -> None:
 
 
 def fail_deleted_agent_run(store: Session, run_id: int) -> None:
-    """Fail the unfinished invocation no chat follows of the store's agent run, being deleted;
-    in the caller's transaction, before the run's deletion clears its link to it. (A chat's is
-    finished by its turn, `finish_turn`.)"""
+    """Fail the unfinished invocations of the store's agent run, being deleted; in the caller's
+    transaction, before the run's deletion clears their link to it. A mention's whose turn has
+    ended waiting on an approval (cancelled with the run) fails too, so the mentions queued
+    behind it in the chat run; one whose turn is under way is failed here, and its turn's end
+    finds it finished."""
     for invocation in store.scalars(
         select(Invocation)
-        .where(
-            Invocation.agent_run_id == run_id,
-            Invocation.chat_id.is_(None),
-            Invocation.status.in_(UNFINISHED),
-        )
+        .where(Invocation.agent_run_id == run_id, Invocation.status.in_(UNFINISHED))
+        .order_by(Invocation.id)
         .with_for_update()
     ):
         failed(store, invocation, RUN_DELETED)
