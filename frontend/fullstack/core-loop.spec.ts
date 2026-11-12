@@ -22,6 +22,10 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * that appends to it, a trigger on the table runs that agent once when the core loop notes
  * something again; the agent's own note is its echo, which the dispatcher's loop rules refuse.
  *
+ * A fifth mentions an agent twice in one chat, an editor changing it in between: the second
+ * mention is another turn of the same run, on the new version, and the run's page shows each
+ * turn's version.
+ *
  * Later steps add their stories here, each a scenario of the scripted model.
  */
 
@@ -86,10 +90,11 @@ async function setUp(page: Page) {
   return { api, link, agent, chat };
 }
 
-/** Mentions the agent in the chat, with `text` after the mention. */
-async function mention(page: Page, text: string) {
-  await composer(page).pressSequentially("@Not");
-  await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: "Notes agent" }).click();
+/** Mentions the agent (the Notes agent unless `name` says) in the chat, with `text` after the
+ * mention. */
+async function mention(page: Page, text: string, name = "Notes") {
+  await composer(page).pressSequentially(`@${name.slice(0, 3)}`);
+  await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: `${name} agent` }).click();
   await composer(page).pressSequentially(` ${text}`);
   await composer(page).press("Enter");
 }
@@ -343,4 +348,42 @@ test("a table written trigger fires once, and its echo is refused", async ({ pag
     /2\s*@Notes\s+note again: buy eggs/,
     /3\s*Appended by the trigger\./,
   ]);
+});
+
+test("a second mention continues the same run, on the version an editor saved in between", async ({ page }) => {
+  const { api, link, chat } = await setUp(page);
+  // On the scripted model, an agent told "Reply with: <text>" replies <text>.
+  const echo = await created<{ id: number }>(page.request, api("/agents"), {
+    name: "Echo",
+    base_prompt: "Reply with: First.",
+  });
+  await created(page.request, api(`/chats/${chat.id}/members`), { kind: "agent", id: echo.id });
+  await page.goto(link(`/chats/${chat.id}`));
+  const cards = messageList(page).getByTestId("run-card");
+  const reply = (text: string) => messageList(page).getByRole("article").filter({ hasText: text });
+
+  await mention(page, "say something", "Echo");
+  await expect(reply("First.")).toBeVisible({ timeout: 60_000 });
+
+  // An editor saves a fix; the next mention in the chat runs on it, in the same run.
+  const saved = await page.request.put(api(`/agents/${echo.id}`), {
+    data: { name: "Echo", base_prompt: "Reply with: Second." },
+  });
+  expect(saved.status(), await saved.text()).toBe(200);
+  await mention(page, "and again", "Echo");
+  await expect(reply("Second.")).toBeVisible({ timeout: 60_000 });
+  await expect(cards).toHaveCount(2);
+  const name = await cards.first().getAttribute("aria-label");
+  expect(name).toMatch(/^Open run #\d+$/);
+  await expect(cards.nth(1)).toHaveAttribute("aria-label", name!);
+  const runs = (await (await page.request.get(api(`/agents/${echo.id}/runs`))).json()) as unknown[];
+  expect(runs).toHaveLength(1);
+
+  // Its page lists both turns, each on the version it ran on.
+  await cards.nth(1).click();
+  await page.getByRole("tab", { name: "Turns" }).click();
+  const turns = page.getByRole("listitem").filter({ hasText: /^Turn / });
+  await expect(turns).toHaveCount(2);
+  await expect(turns.nth(0)).toContainText("v1");
+  await expect(turns.nth(1)).toContainText("v2");
 });

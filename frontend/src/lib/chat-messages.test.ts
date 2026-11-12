@@ -10,6 +10,7 @@ import {
   isLive,
   landingPath,
   mergeInvocations,
+  waitingShown,
   mergeMessages,
   MESSAGE_PAGE,
   newlyRead,
@@ -109,9 +110,17 @@ function invocation(id: number, status: ChatInvocation["status"], extra: Partial
     finished_at: null,
     workflow_run: null,
     agent_run: null,
+    waiting_for: null,
     ...extra,
   };
 }
+
+describe("waitingShown", () => {
+  it("says what a queued mention waits for", () => {
+    expect(waitingShown("approval")).toBe("Waiting for an approval");
+    expect(waitingShown("turn")).toBe("Waiting for its turn: an earlier mention is still being answered");
+  });
+});
 
 describe("mergeInvocations", () => {
   it("takes each invocation's state from the latest read, and keeps the rest", () => {

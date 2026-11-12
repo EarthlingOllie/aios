@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -175,8 +175,13 @@ class InvocationOut(BaseModel):
     finished_at: datetime | None
     # The workflow run as its page shows it (graph, steps and all); null without one.
     workflow_run: workflows_api.WorkflowRunOut | None
-    # The agent run's status, times and counters so far; null without one.
+    # The agent run's status, times and counters so far, for this invocation's turns (a
+    # conversation run has one or more for each mention); null without one.
     agent_run: AgentRunLiveOut | None
+    # A mention of an agent queued behind an earlier one in the chat (`aios.invocations`):
+    # `approval` while the agent's run there waits on one, `turn` while the earlier mention's
+    # turn is under way or waits itself. Null once it's its turn.
+    waiting_for: Literal["approval", "turn"] | None = None
 
 
 class MessagesOut(BaseModel):
@@ -263,14 +268,23 @@ def invocation_out(invocation: Invocation, acknowledgement: str) -> InvocationOu
     )
 
 
-def agent_runs_live(store: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
-    """How each of these agent runs (in the store `store` is a session on) is going, by id;
-    without a query when there are none."""
-    if not run_ids:
+def agent_runs_live(store: Session, runs: Sequence[tuple[int, int]]) -> dict[int, AgentRunLiveOut]:
+    """How each of these agent runs (in the store `store` is a session on) is going for an
+    invocation, given as (invocation id, run id): by invocation id, its status, times and
+    counters over the invocation's turns of the run, and whether its turn ended waiting on an
+    approval (only the invocation that's still running waits). Without a query when there are
+    none."""
+    if not runs:
         return {}
-    rows = store.execute(
-        turns.run_columns(select(AgentRun.id)).where(AgentRun.id.in_(run_ids))
-    ).all()
+    run_ids = list({run_id for _, run_id in runs})
+    rows = {
+        row.invocation_id: row
+        for row in store.execute(
+            turns.invocation_columns(
+                [invocation_id for invocation_id, _ in runs], AgentRun.id.in_(run_ids)
+            )
+        )
+    }
     waiting = set(
         store.scalars(
             select(SchemaChangeRequest.requested_by_run).where(
@@ -278,21 +292,51 @@ def agent_runs_live(store: Session, run_ids: list[int]) -> dict[int, AgentRunLiv
             )
         )
     )
-    return {
-        row.id: AgentRunLiveOut.model_validate({**row._mapping, "waiting": row.id in waiting})
-        for row in rows
-    }
+    running = set(
+        store.scalars(
+            select(Invocation.id).where(
+                Invocation.id.in_([i for i, _ in runs]),
+                Invocation.status == InvocationStatus.running,
+            )
+        )
+    )
+    out = {}
+    for invocation_id, run_id in runs:
+        row = rows.get(invocation_id)
+        if row is None:
+            continue
+        out[invocation_id] = AgentRunLiveOut.model_validate(
+            {
+                **row._mapping,
+                "id": run_id,
+                "waiting": run_id in waiting and invocation_id in running,
+            }
+        )
+    return out
 
 
 def with_runs(
     db: Session, store: Session, organisation_id: int, outs: list[InvocationOut]
 ) -> list[InvocationOut]:
     """The organisation's chat's invocations with their runs as the run page shows them, from
-    its store."""
-    agent_runs = agent_runs_live(store, [o.agent_run_id for o in outs if o.agent_run_id])
+    its store, and what each queued mention of an agent waits for."""
+    agent_runs = agent_runs_live(
+        store, [(o.id, o.agent_run_id) for o in outs if o.agent_run_id is not None]
+    )
+    waits = invocations.waiting_for(
+        store,
+        [
+            (o.id, o.chat_id, o.target_id)
+            for o in outs
+            if o.target_kind == TriggerTargetKind.agent
+            and not o.delivered
+            and o.status in invocations.NOT_STARTED
+        ],
+    )
     for out in outs:
+        out.waiting_for = waits.get(out.id)
         if out.agent_run_id is not None:
-            out.agent_run = agent_runs.get(out.agent_run_id)
+            out.agent_run = agent_runs.get(out.id)
         if out.workflow_run_id is not None and store.get(WorkflowRun, out.workflow_run_id):
             out.workflow_run = workflows_api.workflow_run_out(
                 db, organisation_id, store, out.workflow_run_id

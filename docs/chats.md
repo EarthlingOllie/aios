@@ -163,16 +163,23 @@ deletes its messages and invocations, not the runs.
 
 ### Mentioning an agent
 
-Mentioning an **agent** runs one turn of a new run of its current version, with the message as
-the user's, started by the member who asked; its acknowledgement and card come with the post in
-the same way. The turn runs on the [run service](run-service.md), in the interactive lane: it
+Mentioning an **agent** runs a turn of its **conversation run** in the chat, with the message as
+the user's: an agent keeps one run per chat (the first mention there starts it, by the member who
+asked), and each mention is a new turn of it, on the agent's current version, briefed only on
+what the chat said since the agent's previous turn (within the same window limits). Its
+acknowledgement and card come with the post in the same way. An agent's mentions in a chat take
+their turns one at a time, in message order: one made while an earlier one is still being
+answered, or while the run waits on an approval, stays queued, its card saying "Waiting for an
+approval" or "Waiting for its turn", and runs once the earlier one finishes (a cancelled approval,
+when its run is deleted, frees it too). A mention of an archived agent is refused on its card. A
+trigger delivering to a chat posts there without joining the agent's conversation run. The turn runs on the [run service](run-service.md), in the interactive lane: it
 waits, queued, until a process claims it (people waiting in chat come first, and another
 organisation's burst doesn't hold it up), then the handoff runs, then the turn. A turn whose
 process dies (killed, say, by a deploy) is retried on another, carrying on from the run's last
 checkpoint; after three attempts its card fails with "The service stopped mid-run." A read's `invocations` carry each agent
 run's status, start and finish times, tool calls and tokens so far; the card shows a status
 badge, the time elapsed (ticking in the browser from the start time), the tool calls and tokens,
-and opens the run's page when clicked. When the turn ends, the agent's final reply is posted
+and opens the run's page when clicked; each card counts its own mention's turn. When the turn ends, the agent's final reply is posted
 back as a message from the agent (or the turn's error, failing the card). Several agents and
 workflows mentioned in one message each start; mentions in an agent's reply start nothing. Runs
 started from a chat are listed with the agent's others, marked with the chat.

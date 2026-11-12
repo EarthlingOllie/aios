@@ -144,9 +144,12 @@ def load_chat_context(
     )
 
 
-def _start_turn(data_store_id: uuid.UUID, run_id: int, prompt: str) -> int | None:
-    """Begin a turn of the store's run (`aios.turns.begin`), and title the run after its first
-    message; the turn's id (None if the run is gone)."""
+def _start_turn(
+    data_store_id: uuid.UUID, run_id: int, prompt: str, *, invocation_id: int | None = None
+) -> int | None:
+    """Begin a turn of the store's run (`aios.turns.begin`) for the invocation (by default, the
+    run's), and title the run after its first message; the turn's id (None if the run is
+    gone)."""
     with store_session(data_store_id) as store:
         store.execute(
             update(AgentRun)
@@ -156,7 +159,7 @@ def _start_turn(data_store_id: uuid.UUID, run_id: int, prompt: str) -> int | Non
                 updated_at=func.now(),
             )
         )
-        turn_id = turns.begin(store, run_id)
+        turn_id = turns.begin(store, run_id, invocation_id)
         store.commit()
     return turn_id
 

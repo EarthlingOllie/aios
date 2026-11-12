@@ -1556,8 +1556,13 @@ export type ChatInvocation = {
   finished_at: string | null;
   /** The workflow run as its page shows it; null without one. */
   workflow_run: WorkflowRun | null;
-  /** The agent run's status, times and counters so far; null without one. */
+  /** The agent run's status, times and counters so far, for this mention's turns of it (an
+   * agent keeps one run per chat, a turn for each mention); null without one. */
   agent_run: ChatAgentRun | null;
+  /** A mention of an agent queued behind an earlier one in the chat: `approval` while the
+   * agent's run there waits on one, `turn` while the earlier mention is still being answered;
+   * null once it's its turn. */
+  waiting_for: "approval" | "turn" | null;
 };
 
 /** How an agent run a mention started is going, as its card shows it (elapsed ticks from

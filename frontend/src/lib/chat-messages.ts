@@ -61,6 +61,16 @@ export function bodyShown(message: ChatMessage, invocation: ChatInvocation | und
   return message.kind === "run_card" && invocation ? invocation.acknowledgement : message.body;
 }
 
+/**
+ * What a mention's card says while it's queued behind an earlier mention of the agent in the
+ * chat: an approval the agent's run there waits on, or the earlier mention's turn.
+ */
+export function waitingShown(waitingFor: NonNullable<ChatInvocation["waiting_for"]>): string {
+  return waitingFor === "approval"
+    ? "Waiting for an approval"
+    : "Waiting for its turn: an earlier mention is still being answered";
+}
+
 /** The `after` cursor for what's new: the newest message's id, or 0 before there are any. */
 export function afterCursor(messages: ChatMessage[]): number {
   return messages.length === 0 ? 0 : messages[messages.length - 1].id;

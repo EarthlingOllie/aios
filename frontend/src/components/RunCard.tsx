@@ -5,7 +5,7 @@ import { WorkflowCanvas } from "@/components/workflow/canvas";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { formatCounters, formatElapsed, runCounters } from "@/lib/agent-runs";
 import type { ChatAgentRun, ChatInvocation, NodePosition, WorkflowVersion } from "@/lib/api";
-import { fullOutputShown } from "@/lib/chat-messages";
+import { fullOutputShown, waitingShown } from "@/lib/chat-messages";
 import { edgeStates, isActive, nodesDone, nodeStates } from "@/lib/runs";
 
 /** How tall a card's graph is drawn (px), whatever its size. */
@@ -23,7 +23,8 @@ const TICK_MS = 1000;
  * mention started. A workflow's shows its status, the run's graph with each node's state as the
  * run page draws it (still, at a fixed height, with no inspector) and how many nodes are done;
  * an agent's, its status (waiting, while its schema change request waits for a decision), the time elapsed (ticking while it runs) and its tool calls and tokens
- * so far. Clicking anywhere on it opens the run. A run that couldn't start shows why; one since
+ * so far, for this mention's turn of the agent's run in the chat. A mention queued behind an
+ * earlier one says what it waits for. Clicking anywhere on it opens the run. A run that couldn't start shows why; one since
  * deleted says so. Under it, behind a disclosure, is the brief the handoff gave the run, so
  * anyone can see exactly what it was told. Once the run has ended, while the handback summarises
  * its output the card says "Summarising"; a result that was summarised keeps its full output
@@ -90,12 +91,17 @@ function Brief({ brief }: { brief: string }) {
   );
 }
 
-/** A card with no run to show: briefing or starting, refused (who may invoke it), couldn't
- * start, or deleted since. */
+/** A card with no run to show: queued behind an earlier mention, briefing or starting, refused
+ * (who may invoke it, or archived), couldn't start, or deleted since. */
 function Unstarted({ invocation }: { invocation: ChatInvocation }) {
+  const waiting = invocation.waiting_for;
   return (
     <Frame status={<RunStatusBadge status={invocation.status} data-testid="run-card-status" />}>
-      {invocation.run_deleted ? (
+      {waiting ? (
+        <p data-testid="run-card-waiting" className="text-muted-foreground">
+          {waitingShown(waiting)}
+        </p>
+      ) : invocation.run_deleted ? (
         <p className="text-muted-foreground">The run has been deleted.</p>
       ) : invocation.status === "refused" ? (
         <p role="alert" data-testid="run-card-refused" className="text-destructive break-words">

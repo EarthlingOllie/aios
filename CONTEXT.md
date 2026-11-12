@@ -121,9 +121,10 @@ people. It isn't tied to the chat it was learned in. Jev checks it as it's writt
 ## Running
 
 **Run**:
-An agent's working session in one chat or for one trigger, or a workflow's execution, pinned
-to one version. An agent's run may
-last one turn (a schedule's) or many (its ongoing run in a chat); a run itself has no outcome.
+An agent's working session in one chat or for one trigger, or a workflow's execution. An agent's
+run may last one turn (a schedule's) or many (its **conversation run** in a chat: one per agent
+and chat, each mention a new turn of it, on the agent's current version); other runs stay on the
+version they started on. A run itself has no outcome.
 
 **Turn**:
 One exchange within an agent's run: a message in, the agent's work, and its reply, on one
@@ -250,7 +251,8 @@ _Avoid_: Schema change request (in prose), migration
 ## Relationships
 
 - An **Organisation** has many **Members**, each with one **Role**, and exactly one **Store**.
-- An **Agent**, **Skill** or **Workflow** has many **Versions**; a **Run** is pinned to one.
+- An **Agent**, **Skill** or **Workflow** has many **Versions**; each **Turn** runs on one, and a
+  **Run** other than a conversation run stays on the one it started on.
 - An **Invocation** has one cause; a **Mention**, **Trigger**, person or **Agent** causes it.
   It starts a **Run** or a new **Turn** of one, and its result goes back as a **Handback** or
   the agent's reply.

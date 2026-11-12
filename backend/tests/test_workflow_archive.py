@@ -172,7 +172,7 @@ def test_a_schedule_for_an_archived_workflow_is_refused(api):
     refused_as_archived(resp, "Builds")
 
 
-def test_mentioning_it_posts_the_message_and_fails_at_once_without_a_model_call(api, queued):  # noqa: F811
+def test_mentioning_it_posts_the_message_and_is_refused_at_once_without_a_model_call(api, queued):  # noqa: F811
     workflow = builds(api, "Digest")
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", workflow)
@@ -188,13 +188,15 @@ def test_mentioning_it_posts_the_message_and_fails_at_once_without_a_model_call(
 
     assert calls == []
     assert queued == []
+    # Refused on its card, with why; nothing is posted back.
     [invocation] = posted["invocations"]
-    assert invocation["status"] == "failed"
-    assert invocation["error"] == "The workflow Digest is archived"
+    assert invocation["status"] == "refused"
+    assert invocation["refusal_reason"] == "The workflow Digest is archived."
     shown = messages(api, chat)["messages"]
-    assert [
-        m["body"] for m in shown if m["kind"] == "text" and m["author"]["kind"] == "workflow"
-    ] == ["Couldn't start the run: The workflow Digest is archived"]
+    assert [m["body"] for m in shown if m["kind"] == "run_card"] == [
+        "The workflow Digest is archived."
+    ]
+    assert [m for m in shown if m["kind"] == "text" and m["author"]["kind"] == "workflow"] == []
 
 
 def test_it_shows_as_archived_among_chat_members_and_isnt_mentionable(api):

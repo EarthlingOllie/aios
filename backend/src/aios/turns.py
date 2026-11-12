@@ -16,7 +16,7 @@ Everything here is on a session on the run's store, in the caller's transaction.
 """
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import Select, func, select, true, update
 from sqlalchemy.dialects.postgresql import insert
@@ -24,25 +24,44 @@ from sqlalchemy.orm import Session
 
 from aios import invocations
 from aios.datastores.models import AgentRun, Invocation, Turn, TurnToolCall
-from aios.models import AgentRunStatus
+from aios.models import AgentRunStatus, InvocationStatus
 
 
-def begin(store: Session, run_id: int) -> int | None:
-    """Begin a turn of the store's run, on the version it's pinned to, for its invocation (which
-    is running from now, if it was waiting to); its id, or None if the run is gone."""
+def begin(
+    store: Session,
+    run_id: int,
+    invocation_id: int | None = None,
+    *,
+    error: str | None = None,
+    version_id: int | None = None,
+) -> int | None:
+    """Begin a turn of the store's run, on the run's version (its latest turn's; a conversation
+    run's caller has moved it to the agent's current version first), for `invocation_id` (which
+    is running from now, if it was waiting to): by default the run's invocation that's running
+    (a conversation run's turn carrying on after an approval), else its first. Its id, or None
+    if the run is gone.
+
+    With `error`, the turn ends as it begins, failed with why, on `version_id`: a conversation
+    run's turn whose current version can't run, which leaves the run on its last version."""
     run = store.execute(
         select(AgentRun.id, AgentRun.agent_version_id).where(AgentRun.id == run_id)
     ).one_or_none()
     if run is None:
         return None
-    invocation_id = store.scalar(
-        select(Invocation.id).where(Invocation.agent_run_id == run_id).order_by(Invocation.id)
-    )
+    if invocation_id is None:
+        invocation_id = store.scalar(
+            select(Invocation.id)
+            .where(Invocation.agent_run_id == run_id)
+            .order_by((Invocation.status == InvocationStatus.running).desc(), Invocation.id)
+            .limit(1)
+        )
     turn = Turn(
         agent_run_id=run_id,
         invocation_id=invocation_id,
-        agent_version_id=run.agent_version_id,
-        status=AgentRunStatus.running,
+        agent_version_id=version_id or run.agent_version_id,
+        status=AgentRunStatus.running if error is None else AgentRunStatus.failed,
+        error=error,
+        finished_at=None if error is None else func.now(),
     )
     store.add(turn)
     if invocation_id is not None:
@@ -153,6 +172,40 @@ def run_columns(query: Select) -> Select:
         .outerjoin_from(AgentRun, latest, true())
         .outerjoin_from(AgentRun, totals, true())
     )
+
+
+def invocation_columns(invocation_ids: Sequence[int], *where) -> Select:
+    """For each of these invocations, its turns of the agent runs matching `where` (conditions
+    on `AgentRun`), as `run_columns` gives a run's: `invocation_id` with `status`, `started_at`
+    and `finished_at` (its latest turn's) and `tool_call_count`, `input_tokens` and
+    `output_tokens` (summed over its turns). A conversation run has turns for many invocations;
+    this is one mention's part of it. An invocation with no turns has no row."""
+    ranked = (
+        select(
+            Turn.invocation_id,
+            Turn.status,
+            Turn.started_at,
+            Turn.finished_at,
+            func.row_number()
+            .over(partition_by=Turn.invocation_id, order_by=Turn.id.desc())
+            .label("rank"),
+            func.sum(Turn.tool_calls).over(partition_by=Turn.invocation_id).label("tool_calls"),
+            func.sum(Turn.input_tokens).over(partition_by=Turn.invocation_id).label("input"),
+            func.sum(Turn.output_tokens).over(partition_by=Turn.invocation_id).label("output"),
+        )
+        .join(AgentRun, AgentRun.id == Turn.agent_run_id)
+        .where(Turn.invocation_id.in_(list(invocation_ids)), *where)
+        .subquery()
+    )
+    return select(
+        ranked.c.invocation_id,
+        ranked.c.status,
+        ranked.c.started_at,
+        ranked.c.finished_at,
+        ranked.c.tool_calls.label("tool_call_count"),
+        ranked.c.input.label("input_tokens"),
+        ranked.c.output.label("output_tokens"),
+    ).where(ranked.c.rank == 1)
 
 
 def of_run(store: Session, run_id: int) -> list[Turn]:

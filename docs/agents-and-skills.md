@@ -39,8 +39,13 @@ agent version pins (`agent_version_skills`) and its tools (`agent_version_tools`
 - Each agent version pins specific skill versions and stores the exact rendered instructions.
   Editing a skill doesn't change any agent; the agent shows "Update to vN" and taking the update
   creates a new agent version.
-- A run is pinned to the agent version it started on, so editing an agent mid-conversation
-  doesn't change it.
+- An agent's run in a chat (its **conversation run**, one per chat) takes the agent's *current*
+  version at the start of each turn, so a fix reaches every chat at its next turn; each turn
+  records the version it ran on, and the run's page lists them. A turn carrying on after an
+  approval finishes on the version it started with. A current version that can't run (a tool
+  has left the library, say) fails the turn with the reason, and the run keeps its last version.
+  Any other run (started by hand, by a trigger, by `start_workflow`, or as a workflow node)
+  stays on the version it started on.
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are archived, never deleted (old agent versions still pin their versions): see
   [Archiving a skill](#archiving-a-skill).
