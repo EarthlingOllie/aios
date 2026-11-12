@@ -121,6 +121,7 @@ ROUTES = {
     ("GET", "/connector-providers"): READ,
     ("GET", "/connectors"): READ,
     ("GET", "/connectors/{connector_id}"): READ,
+    ("GET", "/connectors/{connector_id}/tools"): READ,
     ("POST", "/connectors"): SOURCES,
     ("POST", "/connectors/{connector_id}/reconnect"): SOURCES,
     ("GET", "/connectors/{connector_id}/scope-options"): SOURCES,

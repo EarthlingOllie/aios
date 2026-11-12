@@ -305,7 +305,8 @@ function blocks(message: ModelMessage): ContentBlock[] {
 }
 
 /** The run's turns, oldest first: each with the version it ran on, how it went, how long it
- * took and what it cost. */
+ * took and what it cost, and any tools it left out (a connector that was unavailable, a tool
+ * that vanished upstream). */
 function TurnList({ turns }: { turns: Turn[] }) {
   if (turns.length === 0) return <Placeholder>No turns yet.</Placeholder>;
   return (
@@ -321,6 +322,13 @@ function TurnList({ turns }: { turns: Turn[] }) {
           </div>
           <div className="text-muted-foreground mt-1 text-xs tabular-nums">{turnCounters(turn)}</div>
           {turn.error && <p className="text-destructive mt-1 text-xs">{turn.error}</p>}
+          {(turn.notices ?? []).length > 0 && (
+            <ul className="mt-1 list-disc pl-4 text-xs text-amber-700 dark:text-amber-400" data-testid="turn-notices">
+              {turn.notices.map((notice) => (
+                <li key={notice}>{notice}</li>
+              ))}
+            </ul>
+          )}
         </li>
       ))}
     </ol>

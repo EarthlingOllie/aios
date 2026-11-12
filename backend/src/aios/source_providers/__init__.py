@@ -17,12 +17,17 @@ stops its syncs at once and leaves its content), missing its app settings, or no
 connector's provider also runs its connect flow (`Provider.authorise_url`, `exchange`, `revoke`)
 and says how its message items are kept as documents when its connector is removed
 (`Provider.keep_groups`). Its calls go through `aios.outbound`, which reaches only its hosts.
+
+A provider with tools says where they're served (`Provider.tools`): its MCP server, which the
+connector tool kind lists and calls (`aios.tools.connector`, `aios.mcp_client`).
 """
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
+
+import httpx
 
 from aios.config import get_settings
 from aios.datastores.models import SyncedItemKind
@@ -125,6 +130,18 @@ class KeptDocument:
 
 
 @dataclass(frozen=True)
+class Tools:
+    """Where a provider's tools are served: its MCP server's endpoint (called with the
+    connector's credential, through `aios.outbound`'s check), and the arguments that name what a
+    call acts on (a channel, a repository), for the audit log."""
+
+    url: str
+    # Hands requests to a server inside the process (the test provider's); None for the network.
+    transport: Callable[[], httpx.AsyncBaseTransport] | None = None
+    target_args: tuple[str, ...] = ("channel", "repository", "repo", "folder")
+
+
+@dataclass(frozen=True)
 class Provider:
     name: str
     title: str
@@ -142,6 +159,8 @@ class Provider:
     # Its message items as documents, grouped as the provider's content is (a removed connector's
     # content, kept).
     keep_groups: Callable[[Iterable["SyncedItem"]], list[KeptDocument]] | None = None
+    # Its tools, for agents; None if it has none (yet).
+    tools: Tools | None = None
 
 
 def _app_settings(title: str, *values: Any) -> str | None:

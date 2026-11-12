@@ -51,6 +51,7 @@ from aios.tools import (
     AgentTool,
     ToolOrganisation,
     stored_settings,
+    with_notices,
 )
 
 log = logging.getLogger(__package__)
@@ -89,6 +90,9 @@ class ChatContext:
     # The member who started the run, which the turn's tools are told (`ChatDeps.user_id`);
     # None for a schedule's.
     created_by: int | None = None
+    # What building the tools left out, and why (`ToolOrganisation.notices`): the model is told
+    # (in `instructions`), and the turn notes them (`aios.turns.note`).
+    notices: list[str] = field(default_factory=list)
 
 
 def load_chat_context(
@@ -116,7 +120,8 @@ def load_chat_context(
             raise HTTPException(status.HTTP_404_NOT_FOUND)
         agent = store.get_one(Agent, run.agent_id)
         version = store.get_one(AgentVersion, run.agent_version_id)
-        tools = build_version_tools(version, ToolOrganisation(organisation_id, store))
+        org = ToolOrganisation(organisation_id, store)
+        tools = build_version_tools(version, org)
         # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
         # token carries the domains the tool expects.
         sandbox_domains = next(
@@ -128,7 +133,7 @@ def load_chat_context(
             None,
         )
         metadata = trace_metadata(organisation_id, run, agent, version)
-        model, instructions = version.model, version.instructions
+        model, instructions = version.model, with_notices(version.instructions, org.notices)
         if sandbox_domains is not None and not worth_prewarming(
             store, run.id, first_turn=run.message_count == 0
         ):
@@ -141,6 +146,7 @@ def load_chat_context(
         tools=tools,
         sandbox_domains=sandbox_domains,
         created_by=run.created_by,
+        notices=list(org.notices),
     )
 
 
@@ -515,6 +521,8 @@ async def _run_turn(
     # counted, and checked against them, as it's made.
     charge = None
     if turn_id is not None:
+        if ctx.notices:
+            await run_in_threadpool(_note_turn, ctx.data_store_id, turn_id, ctx.notices)
         charge = await run_in_threadpool(usage.for_turn, ctx.data_store_id, turn_id)
     if (limit := usage.recursion_limit(charge)) is not None:
         config = {**config, "recursion_limit": limit}
@@ -603,6 +611,13 @@ def _turn_underway(data_store_id: uuid.UUID, run_id: int) -> int | None:
     if latest is None or latest.status != AgentRunStatus.running:
         return None
     return latest.id
+
+
+def _note_turn(data_store_id: uuid.UUID, turn_id: int, notices: list[str]) -> None:
+    """Note on the store's turn what its tools' builds left out (`aios.turns.note`)."""
+    with store_session(data_store_id) as store:
+        turns.note(store, turn_id, notices)
+        store.commit()
 
 
 def _begin_turn(data_store_id: uuid.UUID, run_id: int) -> int | None:

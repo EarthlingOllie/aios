@@ -27,6 +27,7 @@ dependencies = [
     "email-validator==2.3.0",
     "limits[redis]==5.8.0",
     "jsonschema==4.26.0",
+    "mcp==1.30.0",
 ]
 
 [project.optional-dependencies]

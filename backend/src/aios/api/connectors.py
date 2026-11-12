@@ -33,6 +33,7 @@ from aios.db import DB, DbId, SessionLocal
 from aios.permissions import Action, allow, can
 from aios.run_service.work import enqueue_sync
 from aios.source_providers import NeedsReconnecting, ProviderUnavailable, SourceView
+from aios.tools import connector as tool_kind
 
 router = APIRouter(prefix="/api")
 
@@ -72,6 +73,16 @@ class ConnectorOut(BaseModel):
     source_id: int | None
     source: SourceOut | None
     created_at: datetime
+
+
+class ToolOut(BaseModel):
+    """One of the connector's tools, as its provider offers it, for the agent editor."""
+
+    name: str
+    description: str
+    input_schema: dict
+    # Marked read-only by the provider: calling it changes nothing (and isn't audited).
+    read_only: bool
 
 
 class StartIn(BaseModel):
@@ -325,6 +336,37 @@ def _reconnected(store: Session, user_id: int, connector_id: int, provider: str)
         source.next_sync_at = None
     audit.configured(store, user_id, "connector", connector, "reconnected", provider=provider)
     return connector
+
+
+@router.get(
+    "/connectors/{connector_id}/tools",
+    response_model=list[ToolOut],
+    dependencies=[allow(Action.read)],
+)
+def connector_tools(connector_id: DbId, store_id: CurrentDataStore):
+    """The tools the connector offers now (`aios.tools.connector`), for the agent editor's
+    picker: 409 if it can't be asked (it needs reconnecting, say)."""
+    with store_session(store_id, "ro") as store:
+        connector = _found(store, connector_id)
+        if connector.status == ConnectorStatus.needs_reauth:
+            raise HTTPException(status.HTTP_409_CONFLICT, NEEDS_RECONNECTING)
+        if why := source_providers.why_unavailable(connector.provider):
+            raise HTTPException(status.HTTP_409_CONFLICT, why)
+        try:
+            offered = tool_kind.offered_now(store_id, connector)
+        except tool_kind.Unavailable as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"This connector's tools can't be listed: {exc}"
+            ) from exc
+    return [
+        ToolOut(
+            name=t.name,
+            description=t.description,
+            input_schema=t.input_schema,
+            read_only=t.read_only,
+        )
+        for t in offered
+    ]
 
 
 def _options(store_id, connector: Connector) -> list[source_providers.ScopeOption]:

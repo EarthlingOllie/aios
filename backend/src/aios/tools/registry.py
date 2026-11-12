@@ -1,5 +1,6 @@
+import dataclasses
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -18,6 +19,14 @@ class ToolOrganisation:
 
     organisation_id: int
     store: Session
+    # The settings are new (being saved), not stored ones: set by `validate_tool`.
+    new_settings: bool = False
+    # A version being restored: like new settings, what they name of an external system (a
+    # connector's tools) is checked against what it offers now. A run leaves out what's gone.
+    restoring: bool = False
+    # What builds tell the run about tools they left out (a connector that's unavailable, a tool
+    # that vanished upstream): its model is told, and its turn notes them (`aios.turns.note`).
+    notices: list[str] = field(default_factory=list, compare=False)
 
 
 @dataclass(frozen=True)
@@ -92,7 +101,7 @@ def validate_tool(
     """New settings, checked strictly, with defaults filled in: the canonical form that's stored.
     Given the organisation they're saved in, also checked against it (`ToolSpec.check`)."""
     spec, parsed = _parse(key, config)
-    _check(spec, parsed, org)
+    _check(spec, parsed, None if org is None else dataclasses.replace(org, new_settings=True))
     return parsed.model_dump(mode="json")
 
 
@@ -135,3 +144,15 @@ def build_tool(
     if org is not None and spec.build_in is not None:
         return spec.build_in(parsed, org)
     return spec.build(parsed)
+
+
+NOTICES = "Tools left out of this turn:"
+
+
+def with_notices(instructions: str, notices: list[str]) -> str:
+    """An agent's instructions, telling its model about tools left out of the turn (builds'
+    `ToolOrganisation.notices`), if any were."""
+    if not notices:
+        return instructions
+    told = "\n".join([NOTICES, *(f"- {n}" for n in notices)])
+    return f"{instructions}\n\n{told}" if instructions else told

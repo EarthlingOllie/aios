@@ -241,7 +241,9 @@ ancestors' ids and its depth), taking its cause (`aios.invocations.for_run`). Ea
 agent run is a row of `aios.turns`: its run, invocation, agent version, status and error, times,
 and model calls, tool calls and tokens (`aios.turns`). A run's status, times and counters are
 derived from its turns (its latest turn's status and times, the counters summed), so the run's
-own columns for them were dropped. The run page lists the turns.
+own columns for them were dropped. The run page lists the turns, each with any tools it left out
+and why (`turns.notices`, store revision `0033`: a connector's tools that were unavailable, a
+pinned tool that vanished upstream; see [Tools](tools.md#connector-tools)).
 
 The `reporting` schema holds read-only views for agents to query with `query_data`:
 `reporting.runs` (agent and workflow runs: kind, ids, cause, status, times and summed counters)
@@ -362,6 +364,7 @@ once, and leaves their content searchable), and one without its app settings is 
   is removed only with its connector (409).
 
 Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
+Agents act in connected systems with [connector tools](tools.md#connector-tools).
 
 ### The deny list
 

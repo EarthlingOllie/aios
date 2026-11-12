@@ -74,6 +74,8 @@ type AgentRow = {
   archived_by: ChatUser | null;
   /** Why its versions can't run (an import's missing tool, say); null or unset if they can. */
   unrunnable?: string | null;
+  /** Its versions' tools with their settings, by key (none if unset). */
+  toolSettings?: Record<string, object>;
   /** Who may mention it ("everyone" if unset), and its own caps. */
   invocable_by?: InvocableBy;
   limits?: Partial<Limits>;
@@ -157,6 +159,16 @@ export type TurnRow = {
   tool_calls: number;
   input_tokens: number;
   output_tokens: number;
+  /** What the run was told about tools left out of the turn (none if unset). */
+  notices?: string[];
+};
+
+/** One of a connector's tools, as GET /connectors/:id/tools answers it. */
+export type ConnectorToolRow = {
+  name: string;
+  description: string;
+  input_schema: object;
+  read_only: boolean;
 };
 
 export type SchemaChangeRow = {
@@ -1014,6 +1026,24 @@ export class FakeApi {
   ];
   /** Each scope saved: the connector, the ids picked, and whether restricted ones were accepted. */
   scopeSaves: { id: number; items: string[]; acknowledged: boolean }[] = [];
+  /** What each provider's connector offers as tools (GET /connectors/:id/tools): the test
+   * provider's two, as the server's test provider serves them. */
+  connectorTools: Record<string, ConnectorToolRow[]> = {
+    test: [
+      {
+        name: "post_message",
+        description: "Post a message to a channel.",
+        input_schema: { type: "object", properties: { channel: { type: "string" }, text: { type: "string" } } },
+        read_only: false,
+      },
+      {
+        name: "read_channel",
+        description: "Read a channel's messages.",
+        input_schema: { type: "object", properties: { channel: { type: "string" } } },
+        read_only: true,
+      },
+    ],
+  };
   /** Each connector removed, and whether its content was kept. */
   connectorRemovals: { id: number; keep: boolean }[] = [];
   /** Each Sync now and Full resync asked for: the source's id, and whether it was full. */
@@ -2677,7 +2707,10 @@ export class FakeApi {
             };
           }),
       ),
-      tools: [],
+      tools: Object.entries(agent.toolSettings ?? {}).map(([key, config]) => {
+        const tool = this.tools.find((t) => t.key === key);
+        return { key, name: tool?.name ?? key, description: tool?.description ?? "", config, available: true };
+      }),
       unrunnable: agent.unrunnable ?? null,
     };
   }
@@ -3534,6 +3567,10 @@ export class FakeApi {
         if (!connector) return fail(404, "Not Found");
         const action = m[2] ?? "";
         if (action === "" && method === "GET") return reply(200, this.connectorOut(connector));
+        if (action === "/tools" && method === "GET") {
+          if (connector.status === "needs_reauth") return fail(409, "This connector needs reconnecting first.");
+          return reply(200, this.connectorTools[connector.provider] ?? []);
+        }
         if (this.roleOf(this.me.id) !== "admin") return notAdmin();
         if (action === "/reconnect" && method === "POST") {
           connector.status = "active";
@@ -4056,6 +4093,7 @@ export class FakeApi {
           invocation: null,
           turns: run.turns.map((t) => ({
             ...t,
+            notices: t.notices ?? [],
             agent_version: this.agentVersions.get(t.agent_version_id)![1],
           })),
           messages: [],

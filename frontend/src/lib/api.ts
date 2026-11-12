@@ -442,6 +442,18 @@ export type Connector = {
   created_at: string;
 };
 
+/** One of a connector's tools, as its provider offers it now, for the agent editor. */
+export type ConnectorTool = {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  /** Marked read-only by the provider: calling it changes nothing. */
+  read_only: boolean;
+};
+
+/** A connector's tools an agent version may use (the `connector` tool's settings). */
+export type ConnectorPin = { connector_id: number; provider: string; tools: string[] };
+
 /** The source a document belongs to: Uploads for an upload. */
 export type DocumentSource = Pick<Source, "id" | "kind" | "name">;
 
@@ -639,8 +651,9 @@ export type SchemaProperty = {
   minimum?: number;
   maximum?: number;
   items?: SchemaProperty;
-  /** A field that picks things of the organisation's: "workflows" picks workflows by id. */
-  "x-picker"?: "workflows";
+  /** A field that picks things of the organisation's: "workflows" picks workflows by id;
+   * "connectors" picks connectors' tools by name (`ConnectorPin`s). */
+  "x-picker"?: "workflows" | "connectors";
 };
 
 /** A tool in the library, which can be given to agents. */
@@ -1002,6 +1015,9 @@ export type Turn = {
   tool_calls: number;
   input_tokens: number;
   output_tokens: number;
+  /** What the run was told about tools left out of the turn (a connector's that's unavailable,
+   * a tool that vanished upstream). */
+  notices: string[];
 };
 
 export type Run = RunSummary & {
@@ -1805,6 +1821,9 @@ export const api = {
       json("PUT", { items, acknowledge_restricted }),
     ),
   /** Admins only (202): stops it at once; its content is kept as Uploads documents, or deleted. */
+  /** The tools the connector offers now, for the agent editor. A 409 while it needs
+   * reconnecting. */
+  connectorTools: (id: number) => request<ConnectorTool[]>(`${organisationApi()}/connectors/${id}/tools`),
   removeConnector: (id: number, keep: boolean) =>
     request<void>(`${organisationApi()}/connectors/${id}?keep=${keep}`, { method: "DELETE" }),
   deleteDocument: (id: number) => request<void>(`${organisationApi()}/documents/${id}`, { method: "DELETE" }),
