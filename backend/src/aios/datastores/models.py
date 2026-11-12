@@ -1232,6 +1232,11 @@ class TableOwner(StoreBase):
     set_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), comment="When it was set."
     )
+    access_pending_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        comment="When a change to who may write it was made that the grants don't carry yet;"
+        " null: they do.",
+    )
 
     __table_args__ = (
         Index("ix_table_owners_agent_id", "agent_id"),

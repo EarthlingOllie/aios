@@ -282,13 +282,9 @@ a run's sandbox's bearer token (`sandbox_sessions.secret`) and the audit log's d
 columns. It's a few grant lines, applied every time a store is migrated (the default
 privileges would otherwise give a new table's every column).
 
-`write_data` writes as the store's **writer** role, `ds_<id>_writer` (no login): `_rw` may
-`SET ROLE` to it but doesn't inherit its privileges, and the tool does so for each call's
-transaction (`SET LOCAL ROLE`, so nothing outlives it on a pooled connection). The writer may
-read, insert, update and delete in `data` (dropped tables and columns aside, as `_rw`), read the
-bookkeeping it plans with (`aios.embedding_columns`, `aios.dropped_objects`) and nothing else:
-it writes only in the `data` schema, and can't read the deny list either. Provisioning creates
-it, and migrating a store made before it creates it and gives it its grants.
+`write_data` writes as **the agent's own login role**, `ds_<id>_agent_<agent id>`
+(`aios.datastores.agent_roles`; see Table ownership below). Stores made before it had one
+writer role, `ds_<id>_writer`, which `_rw` switched to; the store migration command drops it.
 
 ### The audit log
 
@@ -377,7 +373,7 @@ The Tables list shows each table's owner ("No owner", or read-only while its own
 and shares, and editors and admins change them there: `PUT .../tables/{table}/owner` (assign,
 transfer, or `null` to clear), `POST .../tables/{table}/shares` and
 `DELETE .../tables/{table}/shares/{agent}`, each answering with the table's access and a
-`pending` flag (always false until the database enforces access), and each audited
+`pending` flag (true until the database's grants carry the change), and each audited
 (`table.owner_assigned`, `table.transferred`, `table.owner_cleared`, `table.shared`,
 `table.unshared`). Assigning an owner to a table with none only tightens access, so any editor
 may; transferring or clearing an owner is an ownership change, which needs the role of the
@@ -386,8 +382,42 @@ agent, with the owner, twice, or sharing a table with no owner is refused (409),
 archived agent the owner; a new owner loses any share it had. An agent's archive dialog lists the
 tables it owns, which archiving leaves read-only. Ownership rows name a table as it's named now:
 a drop renames them with the table, a restore renames them back, and a purge deletes them, its
-shares with them. `make seed` makes owned tables. For now `write_data` enforces this; the
-database will, with a login role per agent.
+shares with them. `make seed` makes owned tables.
+
+**The database enforces it** (`aios.datastores.agent_roles`). Each agent that has the
+`write_data` tool gets its own login role in its store, `ds_<id>_agent_<agent id>`, with a
+generated password kept encrypted in the platform's `agent_store_roles` and given to Postgres
+only as a SCRAM verifier. `write_data` writes as it (through the pooler, with its own
+`CONNECTION LIMIT`, `DATA_STORE_AGENT_CONNECTION_LIMIT`, default 4, and a pool of one connection
+plus one while busy per process), and only for writes: nothing else connects as it. Each login:
+
+- is a member of the store's agents' group, `ds_<id>_agents` (no login), inheriting it but
+  unable to `SET ROLE` to it (Postgres 16's membership options), and of nothing else; it may
+  connect to its own store only, with the store's statement and idle timeouts;
+- writes exactly the `data` tables it owns or is shared (column by column where columns are
+  dropped), while the group reads every table in the store but the deny list (conversation
+  content and memory included), writes the tables nobody owns, and inserts into an explicit list
+  of platform tables, `provision.AGENT_WRITES` (the audit log and the event outbox: what a write
+  records in its transaction). It never writes conversation content or memory.
+
+`query_data`, the only tool running SQL a model wrote, stays on the store's read-only role. (`_rw`
+still writes `data` tables, though nothing of an agent's runs as it; it loses that with the old
+forms, phase 3 ticket 09.) Grants are derived from the ownership records in one
+place (`dropped.grant_access`): schema changes, drops, restores and purges set them in their own
+transactions, and the urgent lane's `aios.apply_agent_access` task (`agent_roles.apply`) makes
+logins and re-derives every grant after a share, unshare or transfer, an agent archived,
+unarchived or given (or losing) the tool, and an applied schema change. A table's access shows as
+`pending` (`aios.table_owners.access_pending_since`) until then; a write the records allow but
+the database doesn't yet, or by an agent whose login isn't made yet, answers "being set up, try
+again" without failing the turn, and queues the task. Archiving an agent takes away its login and
+grants and ends its connections; unarchiving gives back the same login. The store migration
+command applies every store's and then verifies them against the records
+(`agent_roles.verify`), failing the store on drift. Any role may change its own password and
+settings in Postgres; applying sets the platform's verifier and settings again.
+
+The escape suite (`tests/test_agent_logins.py`, the `test_escape_*` tests) tries every known way
+out of an agent's role, as the login and through `query_data`; it runs in the backend shards, so
+`backend-gate` requires it.
 
 ### Quotas
 

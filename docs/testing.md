@@ -117,3 +117,9 @@ timestamp, a random token).
 
 Branch protection requires `checks`, `backend-gate`, `frontend-gate`, `fullstack` and `terraform`.
 Requiring the gate rather than each shard keeps that list the same when the shard count changes.
+
+**The escape suite** (`backend/tests/test_agent_logins.py`, its `test_escape_*` tests) tries every
+known way out of an agent's database role, as the agent's login and through `query_data`
+([Data stores](stores.md), Table ownership). It's an ordinary part of the backend suite, so it
+runs in the shards and `backend-gate` requires it: a change to grants that opens a hole can't
+merge. It needs the shards' real Postgres (and `DATABASE_ADMIN_URL`, to read role verifiers).

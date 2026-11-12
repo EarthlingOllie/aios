@@ -101,3 +101,28 @@ class DataStore(Base):
             name="ck_data_stores_owner_organisation",
         ),
     )
+
+
+class AgentStoreRole(Base):
+    """An agent's own login role in its organisation's store (`aios.datastores.agent_roles`),
+    which `write_data` writes as: named from the store and the agent, with its password
+    generated here, kept encrypted (`aios.datastores.credentials`) and given to Postgres only as
+    a SCRAM verifier. Kept while the agent is archived (unarchiving restores the same login);
+    `dropped_at` once the role is gone (its store was deleted)."""
+
+    __tablename__ = "agent_store_roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="CASCADE")
+    )
+    # The agent, by its id in the store (`aios.agents.id` there): ids repeat across stores.
+    agent_id: Mapped[int] = mapped_column(Integer)
+    role_name: Mapped[str] = mapped_column(String(63), unique=True)
+    password: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    dropped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("uq_agent_store_roles_store_agent", "data_store_id", "agent_id", unique=True),
+    )

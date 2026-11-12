@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import psycopg
 import pytest
-from conftest import join_organisation, org_of, store_of, user_store
+from conftest import as_agent, join_organisation, org_of, store_of, user_store
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from test_agents import agent_body, make_agent, make_skill
@@ -21,7 +21,6 @@ from aios.datastores import DataStoreBusy, provision
 from aios.db import SessionLocal
 from aios.models import AuditOutbox, DataStore
 from aios.testing.fake_model import ToolCall
-from aios.tools import write_data
 
 
 def record_one(user, action: str = "agent.archived") -> int:
@@ -416,7 +415,8 @@ def test_write_data_cant_insert_update_or_delete_audit_entries(api, user, data_a
 @pytest.mark.parametrize(
     "statement",
     [
-        "INSERT INTO aios.audit_log (actor_kind, action) VALUES ('system', 'forged.entry')",
+        # Not inserting into `aios.audit_log`: the agent's role records each write there itself
+        # (an explicitly allowed platform table), and only the tool, never a model, uses it.
         "UPDATE aios.audit_log SET action = 'forged.entry'",
         "DELETE FROM aios.audit_log",
         "SELECT details FROM aios.audit_log",
@@ -424,12 +424,13 @@ def test_write_data_cant_insert_update_or_delete_audit_entries(api, user, data_a
         "DELETE FROM reporting.audit_log",
     ],
 )
-def test_the_role_write_data_writes_as_cant_touch_the_audit_log(user, data_agent, statement):
-    with user_store(user) as session:
-        pg = session.connection().connection.driver_connection
-        write_data.as_writer(pg)
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            pg.execute(statement)
+def test_the_role_write_data_writes_as_cant_touch_the_audit_log(db, user, data_agent, statement):
+    store = db.get(DataStore, store_of(user))
+    # The reporting view's columns aren't all the table's, so an insert through it is refused
+    # before its privileges are checked.
+    refused = (psycopg.errors.InsufficientPrivilege, psycopg.errors.FeatureNotSupported)
+    with as_agent(store, data_agent) as conn, pytest.raises(refused):
+        conn.execute(statement)
 
 
 def test_each_write_data_call_is_audited_with_its_table_operation_rows_and_run(

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # connection (no pooler) counts against this. Past it, a connection is refused, which
     # answers 503 (try again).
     data_store_connection_limit: int = Field(default=100, ge=1)
+    # The same for each agent's own login role in its store (`aios.datastores.agent_roles`),
+    # which only `write_data` connects as: each process pools one connection per (store, agent),
+    # and one more while busy, through the pooler.
+    data_store_agent_connection_limit: int = Field(default=4, ge=1)
     # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
     # either is cut short there, and says so (`truncated`).
     query_data_max_rows: int = Field(default=200, ge=1)

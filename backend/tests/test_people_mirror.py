@@ -333,7 +333,7 @@ def test_the_deny_list_holds_in_a_store_migrated_to_the_mirror(api, db, user, da
     assert set(query(api, data_agent, "SELECT email FROM aios.people")) == {"error"}
 
 
-def test_dropping_a_store_drops_its_writer_role_too(db, new_user):
+def test_dropping_a_store_drops_its_agents_group_role_too(db, new_user):
     store_id = store_of(new_user())
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
@@ -342,8 +342,9 @@ def test_dropping_a_store_drops_its_writer_role_too(db, new_user):
     provision.drop(names)
 
     with psycopg.connect(libpq_conninfo(get_settings().data_store_provisioner_url)) as conn:
-        found = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (names.writer,))
-        assert found.fetchone() is None
+        for role in (names.group, names.writer):
+            found = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            assert found.fetchone() is None
 
 
 def test_make_seed_fills_the_mirror(db):

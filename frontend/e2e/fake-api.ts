@@ -1018,8 +1018,24 @@ export class FakeApi {
       name: table.name,
       owner: table.owner == null ? null : this.tableAgent(table.owner),
       shares: (table.shares ?? []).map((id) => this.tableAgent(id)),
-      pending: false,
+      pending: this.accessPending.has(table.name),
     };
+  }
+
+  /**
+   * Whether a change to a table's access is applied as it's made. Off, it's pending (as the
+   * server answers until the urgent lane applies it) until `applyAccess`.
+   */
+  accessApplied = true;
+  private accessPending = new Set<string>();
+
+  /** The urgent lane applies every pending change to tables' access. */
+  applyAccess() {
+    this.accessPending.clear();
+  }
+
+  private accessChanged(name: string) {
+    if (!this.accessApplied) this.accessPending.add(name);
   }
 
   /** Every share, unshare and transfer the app made, as [table, what, agent id or null]. */
@@ -1051,6 +1067,7 @@ export class FakeApi {
       table.owner = agentId;
       table.shares = shares.filter((id) => id !== agentId);
       this.accessChanges.push([name, "owner", agentId]);
+      this.accessChanged(name);
       return [200, this.tableAccess(table)];
     }
     if (what === "shares" && method === "POST" && agent) {
@@ -1060,12 +1077,14 @@ export class FakeApi {
       if (shares.includes(agent.id)) return [409, { detail: `\`data.${name}\` is shared with the agent ${agent.name} already.` }];
       table.shares = [...shares, agent.id];
       this.accessChanges.push([name, "share", agent.id]);
+      this.accessChanged(name);
       return [201, this.tableAccess(table)];
     }
     if (what === "shares" && method === "DELETE" && agentId !== null) {
       if (!shares.includes(agentId)) return [404, { detail: "The table isn't shared with that agent" }];
       table.shares = shares.filter((id) => id !== agentId);
       this.accessChanges.push([name, "unshare", agentId]);
+      this.accessChanged(name);
       return [200, this.tableAccess(table)];
     }
     return [405, { detail: "Method Not Allowed" }];

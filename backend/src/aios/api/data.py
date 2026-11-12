@@ -16,7 +16,8 @@ from pydantic import BaseModel
 
 from aios.auth import CurrentDataStore, CurrentStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import ownership, store_session, tables
+from aios.datastores import agent_roles, ownership, store_session, tables
+from aios.datastores.connections import store_id_of
 from aios.permissions import Action, CurrentRole, allow
 
 router = APIRouter(prefix="/api/data")
@@ -130,6 +131,8 @@ def set_owner(table: str, body: OwnerIn, user: CurrentUser, role: CurrentRole, s
     with _access_refusals():
         access = ownership.set_owner(store, table, body.agent_id, user.id, role)
     store.commit()
+    # Applied on the urgent lane: pending until then.
+    agent_roles.enqueue(store_id_of(store))
     return TableAccessOut(name=table, **_access(access))
 
 
@@ -144,6 +147,8 @@ def share(table: str, body: ShareIn, user: CurrentUser, store: CurrentStore):
     with _access_refusals():
         access = ownership.share(store, table, body.agent_id, user.id)
     store.commit()
+    # Applied on the urgent lane: pending until then.
+    agent_roles.enqueue(store_id_of(store))
     return TableAccessOut(name=table, **_access(access))
 
 
@@ -157,6 +162,8 @@ def unshare(table: str, agent_id: int, user: CurrentUser, store: CurrentStore):
     with _access_refusals():
         access = ownership.unshare(store, table, agent_id, user.id)
     store.commit()
+    # Applied on the urgent lane: pending until then.
+    agent_roles.enqueue(store_id_of(store))
     return TableAccessOut(name=table, **_access(access))
 
 

@@ -2,14 +2,14 @@
 (`aios.datastores.schema_changes`), until a member restores it or it's purged.
 
 A drop renames the table or column to `_dropped_<timestamp>_<name>` and records it in
-`aios.dropped_objects`. Applying it then takes the store's login roles' access to it away
+`aios.dropped_objects`. Applying it then takes the store's roles' access to it away
 (`grant_access`), so it's gone from the data tools and anything else that reads the store as
 them, and Postgres refuses it to `query_data` and `write_data` by name:
 
-- A dropped table: neither role has any privilege on it.
-- A table with dropped columns: both roles have `SELECT` (and `rw` `INSERT` and `UPDATE`) on
-  its other columns only, rather than on the table, so `SELECT *` on it is refused until the
-  columns are restored or purged. Such a column isn't NOT NULL any more, so rows can be
+- A dropped table: no role but the owner has any privilege on it.
+- A table with dropped columns: the readers have `SELECT` (and its writers `INSERT` and
+  `UPDATE`) on its other columns only, rather than on the table, so `SELECT *` on it is refused
+  until the columns are restored or purged. Such a column isn't NOT NULL any more, so rows can be
   written without it.
 
 What reads the store's catalog to show its tables keeps out dropped ones with the predicates
@@ -128,27 +128,78 @@ _COLUMNS_SQL = """
 """
 
 
+# Who may write a `data` table, as the store records it (`aios.datastores.ownership`): its owner,
+# whether the owner is archived, and the agents it's shared with that aren't.
+_WRITERS_SQL = """
+    SELECT o.agent_id, a.archived_at IS NOT NULL,
+           ARRAY(SELECT s.agent_id FROM aios.table_shares s
+                 JOIN aios.agents sa ON sa.id = s.agent_id
+                 WHERE s.table_name = o.table_name AND sa.archived_at IS NULL ORDER BY s.agent_id)
+    FROM aios.table_owners o LEFT JOIN aios.agents a ON a.id = o.agent_id
+    WHERE o.table_name = %s
+"""
+
+
+def agent_roles_present(
+    conn: psycopg.Connection, names: "StoreNames", live: bool = False
+) -> set[str]:
+    """The store's agents' login roles there are now (`aios.datastores.agent_roles`); if
+    `live`, only those that may log in (not an archived agent's)."""
+    return {
+        name
+        for (name,) in conn.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname LIKE %s AND (rolcanlogin OR NOT %s)",
+            (names.agent_pattern, live),
+        )
+    }
+
+
+def writers_of(conn: psycopg.Connection, names: "StoreNames", table: str) -> list[str]:
+    """The roles that may write `data.<table>` (not a dropped one), by its ownership records:
+    the agents' group if nobody owns it (any agent with the write tool); none if its owner is
+    archived; otherwise its owner's role and those of the agents it's shared with (that aren't
+    archived). Only roles that exist and may log in: one still being made gets its grants once
+    it is."""
+    row = conn.execute(_WRITERS_SQL, (table,)).fetchone()
+    if row is None or row[0] is None:
+        return [names.group]
+    owner, archived, shared = row
+    if archived:
+        return []
+    present = agent_roles_present(conn, names, live=True)
+    return [r for r in (names.agent(a) for a in (owner, *shared)) if r in present]
+
+
 def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> None:
-    """Give the store's roles (`rw` and `write_data`'s writer, which write, and `ro`) the access
-    to `data.<table>` it calls for now: none if it's dropped; only to its other columns if it has
-    dropped columns; otherwise what the store's default privileges give a new table. Run as the
-    owner, in the transaction that changed it."""
+    """Give the store's roles the access to `data.<table>` its ownership and drops call for now
+    (the one derivation every change goes through: applying a schema change, a drop, restore or
+    purge, and applying agents' access after a share, transfer or archive):
+
+    - Reads: `rw`, `ro` and the agents' group (so every agent) read it.
+    - Writes: `writers_of` it, and `rw` (until it loses its writes to data tables, which only
+      agents' logins will make).
+    - None of it if it's dropped; only its other columns if it has dropped columns.
+
+    Run as the owner, in the transaction that changed it."""
     relation = sql.Identifier(SCHEMA, table)
-    writers = sql.SQL("{}, {}").format(sql.Identifier(names.rw), sql.Identifier(names.writer))
-    both = sql.SQL("{}, {}, {}").format(
-        sql.Identifier(names.rw), sql.Identifier(names.ro), sql.Identifier(names.writer)
+    agents = sorted(agent_roles_present(conn, names))
+    everyone = sql.SQL(", ").join(
+        sql.Identifier(r) for r in (names.rw, names.ro, names.group, *agents)
     )
     # Takes its column privileges too.
-    conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(relation, both))
+    conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(relation, everyone))
     if is_dropped(table):
         return
+    readers = sql.SQL(", ").join(sql.Identifier(r) for r in (names.rw, names.ro, names.group))
+    writers = [names.rw, *writers_of(conn, names, table)]
+    can_write = sql.SQL(", ").join(sql.Identifier(r) for r in writers)
     qualified = sql.Identifier(SCHEMA, table).as_string(conn)
     columns = [name for (name,) in conn.execute(_COLUMNS_SQL, (qualified,))]
     kept = [c for c in columns if not is_dropped(c)]
     if kept == columns:
-        conn.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(relation, both))
+        conn.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(relation, readers))
         conn.execute(
-            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(relation, writers)
+            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(relation, can_write)
         )
         return
     listed = sql.SQL(", ").join(map(sql.Identifier, kept))
@@ -156,15 +207,15 @@ def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> N
     # table-wide `SELECT` would give those, but no column grant does unless they're named.
     conn.execute(
         sql.SQL("GRANT SELECT ({}, tableoid, ctid) ON TABLE {} TO {}").format(
-            listed, relation, both
+            listed, relation, readers
         )
     )
     conn.execute(
         sql.SQL("GRANT INSERT ({0}), UPDATE ({0}) ON TABLE {1} TO {2}").format(
-            listed, relation, writers
+            listed, relation, can_write
         )
     )
-    conn.execute(sql.SQL("GRANT DELETE ON TABLE {} TO {}").format(relation, writers))
+    conn.execute(sql.SQL("GRANT DELETE ON TABLE {} TO {}").format(relation, can_write))
 
 
 # --- The Dropped section, and restoring ---------------------------------------------------------

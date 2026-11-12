@@ -100,13 +100,16 @@ def _ready_store(db: Session, data_store_id: uuid.UUID) -> DataStore:
     return store
 
 
-def store_url(store: DataStore, role: Role) -> URL:
+def store_url(store: DataStore, role: Role, login: tuple[str, str] | None = None) -> URL:
     """Where the app reaches the store's database, as its `role`: at the pooler, if one is
     configured (`data_store_pooler_address`), which passes the role and database on.
 
     Otherwise, a store with no host of its own is on the platform database's instance, so it's
     reached at DATABASE_URL's address, with its options (e.g. `sslmode`): where the provisioner
-    reached it from may not resolve here (Compose's `db`, with the API on the host)."""
+    reached it from may not resolve here (Compose's `db`, with the API on the host).
+
+    `login`, (role name, encrypted password), connects as that role instead: an agent's own
+    (`agent_session`)."""
     settings = get_settings()
     url = make_url(settings.database_url)
     if settings.data_store_pooler_address:
@@ -114,9 +117,12 @@ def store_url(store: DataStore, role: Role) -> URL:
         url = url.set(host=host, port=int(port))
     elif store.host is not None:
         url = url.set(host=store.host, port=store.port)
-    password = store.rw_password if role == "rw" else store.ro_password
+    username, password = login or (
+        f"{store.role_prefix}_{role}",
+        store.rw_password if role == "rw" else store.ro_password,
+    )
     return url.set(
-        username=f"{store.role_prefix}_{role}",
+        username=username,
         password=credentials.decrypt(password),
         database=store.dbname,
     )
@@ -160,7 +166,13 @@ def _pool_class(data_store_id: uuid.UUID) -> type[QueuePool]:
     return StorePool
 
 
-def _engine(store: DataStore, role: Role) -> Engine:
+def _engine(
+    store: DataStore,
+    role: str,
+    login: tuple[str, str] | None = None,
+    pool_size: int = POOL_SIZE,
+    max_overflow: int = MAX_OVERFLOW,
+) -> Engine:
     key = (store.id, role)
     with _engines_lock:
         engine = _engines.get(key)
@@ -173,10 +185,10 @@ def _engine(store: DataStore, role: Role) -> Engine:
         # `DISCARD ALL`, which drops them).
         connect_args = {"prepare_threshold": None}
         engine = create_engine(
-            store_url(store, role),
+            store_url(store, role, login),
             poolclass=_pool_class(store.id),
-            pool_size=POOL_SIZE,
-            max_overflow=MAX_OVERFLOW,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
             pool_timeout=POOL_TIMEOUT,
             pool_pre_ping=True,
             connect_args=connect_args,
@@ -197,7 +209,16 @@ def dispose_engines() -> None:
             engine.dispose()
 
 
-def dispose_engine(data_store_id: uuid.UUID, role: Role) -> None:
+def dispose_store_engines(data_store_id: uuid.UUID) -> None:
+    """Close every cached engine on the store, as any role (its agents' too)."""
+    with _engines_lock:
+        keys = [k for k in _engines if k[0] == data_store_id]
+        engines = [_engines.pop(k) for k in keys]
+    for engine in engines:
+        engine.dispose()
+
+
+def dispose_engine(data_store_id: uuid.UUID, role: str) -> None:
     """Close the store's cached engine as `role`, if there is one: for a process that visits
     every store in turn (measuring them), and would otherwise hold a connection to each."""
     with _engines_lock:
@@ -275,3 +296,77 @@ def store_status(data_store_id: uuid.UUID) -> DataStoreStatus:
     if status is None:
         raise DataStoreNotFound(data_store_id)
     return status
+
+
+# --- Agents' own login roles (`aios.datastores.agent_roles`) ------------------------------------
+
+
+class AgentRoleMissing(RuntimeError):
+    """The agent has no login role in the store yet, or it can't log in as it (being made, its
+    grants being applied, or archived): worth trying again shortly."""
+
+    def __init__(self, data_store_id: uuid.UUID, agent_id: int):
+        super().__init__(f"Agent {agent_id} has no login role in data store {data_store_id} yet")
+        self.data_store_id = data_store_id
+        self.agent_id = agent_id
+
+
+# How Postgres (or the pooler) refuses a login role that isn't there, or may not log in, or
+# whose password isn't the one recorded (its verifier not applied yet).
+_LOGIN_REFUSALS = (
+    "authentication failed",
+    "does not exist",
+    "not permitted to log in",
+    "permission denied for database",
+)
+
+
+def agent_key(agent_id: int) -> str:
+    """The engine cache's name for an agent's login role."""
+    return f"agent:{agent_id}"
+
+
+# Each agent's pool, in each process: one connection kept, one more while busy.
+AGENT_POOL_SIZE, AGENT_MAX_OVERFLOW = 1, 1
+
+
+@contextmanager
+def agent_session(data_store_id: uuid.UUID, agent_id: int) -> Iterator[Session]:
+    """A session on the store's database as the agent's own login role, through the pooler
+    when one is configured: only `write_data` connects so, for writes.
+
+    Raises as `store_session` does, and `AgentRoleMissing` if the agent has no role yet, or
+    can't connect as it."""
+    from sqlalchemy.exc import OperationalError
+
+    from aios.models import AgentStoreRole
+
+    with SessionLocal() as db:
+        store = _ready_store(db, data_store_id)
+        row = db.scalar(
+            select(AgentStoreRole).where(
+                AgentStoreRole.data_store_id == data_store_id,
+                AgentStoreRole.agent_id == agent_id,
+                AgentStoreRole.dropped_at.is_(None),
+            )
+        )
+    if row is None:
+        raise AgentRoleMissing(data_store_id, agent_id)
+    engine = _engine(
+        store,
+        agent_key(agent_id),
+        (row.role_name, row.password),
+        AGENT_POOL_SIZE,
+        AGENT_MAX_OVERFLOW,
+    )
+    with Session(engine, expire_on_commit=False) as session:
+        session.info[_STORE_ID] = data_store_id
+        try:
+            session.connection()
+        except OperationalError as exc:
+            if any(refusal in str(exc.orig) for refusal in _LOGIN_REFUSALS):
+                # Its pool may hold the old password (a role made again): start afresh.
+                dispose_engine(data_store_id, agent_key(agent_id))
+                raise AgentRoleMissing(data_store_id, agent_id) from exc
+            raise
+        yield session

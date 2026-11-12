@@ -379,7 +379,9 @@ class Crash(Exception):
     pass
 
 
-@pytest.mark.parametrize("crash_after", range(len(provision.STEPS) - 1))
+# Up to marking it ready: what comes after (its agents' logins) is applied again on the urgent
+# lane whenever it's needed.
+@pytest.mark.parametrize("crash_after", range(provision.STEPS.index(provision._mark_ready)))
 def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
     db, new_user, monkeypatch, next_revision, crash_after
 ):

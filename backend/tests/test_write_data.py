@@ -8,14 +8,14 @@ import math
 
 import psycopg
 import pytest
-from conftest import add_document, store_of
+from conftest import add_document, as_agent, store_of
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools, set_status
 from test_provisioning import login_url
 
 from aios import worker
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import store_not_ready, store_session
+from aios.datastores import store_not_ready
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
 from aios.testing.fake_model import ToolCall
@@ -413,7 +413,9 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agen
         # Once the turn has started: making the run, and starting its turn, read the store.
         url = get_settings().data_store_provisioner_url
         with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
-            provisioner.execute(f'ALTER ROLE "{store.role_prefix}_rw" {change}')
+            # The read-only role: what the tool finds the run's agent with, before it connects
+            # as the agent.
+            provisioner.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
         dispose_engines()
 
     (result,) = run_tools(
@@ -428,7 +430,7 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agen
     assert store.role_prefix not in result["error"]
 
 
-def test_it_writes_as_the_stores_writer_reached_as_its_read_write_role(api, store, agent):
+def test_it_writes_as_the_agents_own_login(api, store, agent):
     with as_owner(store) as conn:
         conn.execute(
             "CREATE TABLE data.audit (id int PRIMARY KEY, who text DEFAULT current_user,"
@@ -439,8 +441,8 @@ def test_it_writes_as_the_stores_writer_reached_as_its_read_write_role(api, stor
 
     with as_owner(store) as conn:
         assert conn.execute("SELECT who, via FROM data.audit").fetchone() == (
-            f"{store.role_prefix}_writer",
-            f"{store.role_prefix}_rw",
+            f"{store.role_prefix}_agent_{agent['id']}",
+            f"{store.role_prefix}_agent_{agent['id']}",
         )
 
 
@@ -461,25 +463,19 @@ def test_it_writes_as_the_stores_writer_reached_as_its_read_write_role(api, stor
         "DROP TABLE data.fish",
     ],
 )
-def test_the_role_write_data_writes_as_cant_write_outside_the_data_schema(store, statement):
-    """Adversarial: whatever the tool lets through, the role it runs as may write only in `data`
-    (and can't read people's emails). The tool sends no SQL of the model's, so nothing can reset
-    the role within its transaction."""
-    with store_session(store.id, "rw") as session:
-        pg = session.connection().connection.driver_connection
-        write_data.as_writer(pg)
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            pg.execute(statement)
+def test_the_role_write_data_writes_as_cant_write_outside_the_data_schema(store, agent, statement):
+    """Adversarial: whatever the tool lets through, the agent's role it runs as may write only
+    in `data` (and can't read people's emails). The escape suite (`test_agent_logins`) tries
+    the rest."""
+    with as_agent(store, agent) as conn, pytest.raises(psycopg.errors.InsufficientPrivilege):
+        conn.execute(statement)
 
 
-def test_the_writer_writes_in_the_data_schema(store):
-    with store_session(store.id, "rw") as session:
-        pg = session.connection().connection.driver_connection
-        write_data.as_writer(pg)
-        pg.execute("INSERT INTO data.fish (name) VALUES ('eel')")
-        pg.execute("UPDATE data.fish SET weight_kg = 1 WHERE name = 'eel'")
-        pg.execute("DELETE FROM data.fish WHERE name = 'pike'")
-        session.commit()
+def test_the_agents_role_writes_an_unowned_table_in_the_data_schema(store, agent):
+    with as_agent(store, agent) as conn:
+        conn.execute("INSERT INTO data.fish (name) VALUES ('eel')")
+        conn.execute("UPDATE data.fish SET weight_kg = 1 WHERE name = 'eel'")
+        conn.execute("DELETE FROM data.fish WHERE name = 'pike'")
     assert [name for name, *_ in fish(store)] == ["perch", "eel"]
 
 

@@ -87,6 +87,25 @@ test("an admin transfers a table and clears its owner", async ({ page }) => {
   await expect(notes.getByLabel("Share with")).toHaveCount(0);
 });
 
+test("a change shows as pending until the database applies it, then stops on its own", async ({ page }) => {
+  const api = await fakeApi(page);
+  const scribe = api.addAgent("Scribe");
+  api.addAgent("Helper");
+  api.addTable("notes", ["note"], [], { owner: scribe.id });
+  api.accessApplied = false;
+  await page.goto(inOrg("/data/tables"));
+  const notes = access(page, "notes");
+
+  await notes.getByLabel("Share with").selectOption("Helper");
+  await notes.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(notes.getByRole("list", { name: "Shared with" })).toHaveText(["Helper"]);
+  await expect(card(page, "notes").getByText("pending", { exact: true })).toBeVisible();
+
+  // The urgent lane applies it: the list is read again, with no reload.
+  api.applyAccess();
+  await expect(card(page, "notes").getByText("pending", { exact: true })).toBeHidden({ timeout: 10_000 });
+});
+
 test("participants see who may write a table but can't change it", async ({ page }) => {
   const api = await fakeApi(page);
   api.actAs("participant");

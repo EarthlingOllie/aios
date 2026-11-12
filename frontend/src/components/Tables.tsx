@@ -70,6 +70,9 @@ export function TablesSection() {
   );
 }
 
+/** How often the tables are read again while a change to one's access is pending. */
+const PENDING_POLL_MS = 2000;
+
 /** The store's tables, read once the store is ready. */
 function useTables(ready: boolean) {
   const [list, setList] = useState<DataTable[]>();
@@ -95,6 +98,14 @@ function useTables(ready: boolean) {
     };
   }, [ready, round]);
   const reload = useCallback(() => setRound((n) => n + 1), []);
+  // A change to a table's access is pending until the urgent lane applies it to the database:
+  // read the list again until none is.
+  const pending = list?.some((t) => t.pending) ?? false;
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(reload, PENDING_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [pending, list, reload]);
   /** A table's access, as a change to it answered. */
   const setAccess = useCallback(
     (access: TableAccess) =>

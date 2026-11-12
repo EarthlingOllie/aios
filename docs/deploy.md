@@ -62,6 +62,8 @@ per-database pools.
   `max_db_connections` with the instance's `max_connections`, not with the number of tasks.
 - **Connection limit.** Each store role's `CONNECTION LIMIT` (`DATA_STORE_CONNECTION_LIMIT`,
   100) is a backstop behind the pools, applied to existing stores at their next migration.
+  Agents' own login roles, which only `write_data` connects as, each get
+  `DATA_STORE_AGENT_CONNECTION_LIMIT` (4), and a pool of their own in the pooler.
 - **No session state.** Through a transaction-mode pooler, store connections prepare no
   statements (`MAX_PREPARED_STATEMENTS=0`), pass no startup settings and take no session
   advisory locks; a run's turns take turns through a lease on the run's row

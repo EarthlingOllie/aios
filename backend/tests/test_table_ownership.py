@@ -147,9 +147,11 @@ def test_a_shared_agent_writes_until_its_unshared(api, store):
         "name": "notes",
         "owner": who(scribe),
         "shares": [who(helper)],
-        "pending": False,
+        # Answered before the urgent lane applies it (here, straight after).
+        "pending": True,
     }
     assert listed(api)["notes"]["shares"] == [who(helper)]
+    assert listed(api)["notes"]["pending"] is False
     assert write(api, helper, "notes", note="helped")["row_count"] == 1
 
     resp = unshare(api, "notes", helper)

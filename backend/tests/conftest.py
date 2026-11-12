@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import psycopg
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
@@ -22,13 +23,13 @@ from aios import jev, organisations, ratelimits
 from aios import run_service as run_service_package
 from aios.api import provenance
 from aios.auth import current_user
-from aios.config import get_settings
-from aios.datastores import data_store_for, files, provision, resolve, store_session
+from aios.config import get_settings, libpq_conninfo
+from aios.datastores import credentials, data_store_for, files, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, Organisation, OrganisationMember, User
+from aios.models import AgentStoreRole, DataStore, Organisation, OrganisationMember, User
 from aios.passwords import hash_password
 from aios.run_service import executor
 from aios.sandbox import runner
@@ -130,6 +131,45 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
     return queued
+
+
+class AgentAccess:
+    """Applying agents' logins and grants (`aios.datastores.agent_roles`), as the urgent lane
+    would: at once when queued, as if its worker were always idle. With `auto` off, stores wait
+    in `queued` until the test applies them (`apply`). As the task's failure would, one that
+    fails (a store only marked ready, with no database) fails nothing but itself: it's kept in
+    `failed`."""
+
+    def __init__(self) -> None:
+        self.auto = True
+        self.queued: list[uuid.UUID] = []
+        self.failed: list[BaseException] = []
+
+    def enqueue(self, data_store_id: uuid.UUID) -> None:
+        from aios.datastores import agent_roles
+
+        if not self.auto:
+            self.queued.append(data_store_id)
+            return
+        try:
+            agent_roles.apply(data_store_id)
+        except Exception as exc:  # noqa: BLE001 - the task's failure, not the caller's
+            self.failed.append(exc)
+
+    def apply(self) -> None:
+        from aios.datastores import agent_roles
+
+        while self.queued:
+            agent_roles.apply(self.queued.pop(0))
+
+
+@pytest.fixture(autouse=True)
+def agent_access(monkeypatch) -> AgentAccess:
+    from aios.datastores import agent_roles
+
+    access = AgentAccess()
+    monkeypatch.setattr(agent_roles, "enqueue", access.enqueue)
+    return access
 
 
 @pytest.fixture(autouse=True)
@@ -553,3 +593,31 @@ def workdir(monkeypatch):
         monkeypatch.setattr(runner, "WORKDIR", str(work))
         runner.prepare_workdir()
         yield work
+
+
+# --- Agents' own logins (`aios.datastores.agent_roles`) ------------------------------------------
+
+
+def role_row(store: DataStore, agent: dict) -> AgentStoreRole | None:
+    with SessionLocal() as db:
+        return db.scalar(
+            select(AgentStoreRole).where(
+                AgentStoreRole.data_store_id == store.id, AgentStoreRole.agent_id == agent["id"]
+            )
+        )
+
+
+def login(store: DataStore, agent: dict, database: str | None = None) -> str:
+    """libpq connection info for the agent's own login, straight to Postgres."""
+    row = role_row(store, agent)
+    url = get_settings().database_url
+    return libpq_conninfo(
+        url,
+        database=database or store.dbname,
+        username=row.role_name,
+        password=credentials.decrypt(row.password),
+    )
+
+
+def as_agent(store: DataStore, agent: dict, database: str | None = None) -> psycopg.Connection:
+    return psycopg.connect(login(store, agent, database), autocommit=True)

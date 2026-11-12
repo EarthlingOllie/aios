@@ -36,6 +36,7 @@ from aios.models.notifications import (
     Notification,
 )
 from aios.models.stores import (
+    AgentStoreRole,
     DataStore,
     DataStoreStatus,
 )
@@ -74,6 +75,7 @@ __all__ = [
     "Role",
     "DataStoreStatus",
     "DataStore",
+    "AgentStoreRole",
     "AgentRunStatus",
     "WorkflowNodeKind",
     "WorkflowRunStatus",
