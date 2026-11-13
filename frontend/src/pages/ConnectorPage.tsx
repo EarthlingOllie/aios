@@ -26,7 +26,8 @@ import { syncSummary } from "@/lib/sources";
 /**
  * One connector's page (`/data/connectors/:connectorId`): its state and source, and, for admins,
  * Reconnect when its access failed, choosing what it syncs (restricted items need the
- * acknowledgement), and removing it, keeping or deleting what it synced. Everyone else sees it,
+ * acknowledgement; GitHub's documentation files on or off), and removing it, keeping or deleting
+ * what it synced. Everyone else sees it,
  * with the actions disabled and why.
  */
 export function ConnectorPage() {
@@ -183,6 +184,7 @@ function ScopePicker({
     connector.scope.map((i) => i.id),
   );
   const [acknowledged, setAcknowledged] = useState(false);
+  const [docs, setDocs] = useState(connector.docs);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const usable =
@@ -210,7 +212,8 @@ function ScopePicker({
     ),
   ];
   const restricted = restrictedPicked(known, picked);
-  const changed = scopeChanged(connector.scope, picked);
+  const changed =
+    scopeChanged(connector.scope, picked) || docs !== connector.docs;
 
   function toggle(id: string, on: boolean) {
     setPicked((now) => (on ? [...now, id] : now.filter((x) => x !== id)));
@@ -220,7 +223,12 @@ function ScopePicker({
     setBusy(true);
     setError(undefined);
     try {
-      await api.setConnectorScope(connector.id, picked, acknowledged);
+      await api.setConnectorScope(
+        connector.id,
+        picked,
+        acknowledged,
+        docs ?? undefined,
+      );
       setAcknowledged(false);
       onSaved();
     } catch (err) {
@@ -266,6 +274,24 @@ function ScopePicker({
             </li>
           ))}
         </ul>
+      )}
+      {docs !== null && (
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={docs}
+            disabled={!usable}
+            onChange={(e) => setDocs(e.target.checked)}
+          />
+          <span className="flex flex-col">
+            Also sync README and docs files
+            <span className="text-muted-foreground text-xs">
+              The README and Markdown files under docs/ on each repository's
+              default branch, as documents. Turning it off removes them.
+            </span>
+          </span>
+        </label>
       )}
       {usable && restricted.length > 0 && (
         <div

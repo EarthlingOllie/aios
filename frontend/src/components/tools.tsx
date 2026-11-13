@@ -14,7 +14,14 @@ import {
   type ToolInfo,
   type WorkflowSummary,
 } from "@/lib/api";
-import { connectorToolOptions, pinConnectorTools, workflowOptions } from "@/lib/tools";
+import {
+  connectorToolOptions,
+  parseTargets,
+  pinConnectorTargets,
+  pinConnectorTools,
+  targetsLabel,
+  workflowOptions,
+} from "@/lib/tools";
 
 type Config = Record<string, unknown>;
 
@@ -214,7 +221,9 @@ function ConnectorToolPicker({
           key={connector.id}
           connector={connector}
           pinned={value.find((p) => p.connector_id === connector.id)?.tools ?? []}
+          targets={value.find((p) => p.connector_id === connector.id)?.targets ?? []}
           onChange={(tools) => onChange(pinConnectorTools(value, connector, tools))}
+          onTargets={(targets) => onChange(pinConnectorTargets(value, connector.id, targets))}
         />
       ))}
       {removed.map((pin) => (
@@ -237,18 +246,23 @@ function ConnectorToolPicker({
   );
 }
 
-/** One connector's tools, as checkboxes. */
+/** One connector's tools, as checkboxes, and, once any is picked, what they may act on. */
 function ConnectorGroup({
   connector,
   pinned,
+  targets,
   onChange,
+  onTargets,
 }: {
   connector: Connector;
   pinned: string[];
+  targets: string[];
   onChange: (tools: string[]) => void;
+  onTargets: (targets: string[]) => void;
 }) {
   const [offered, setOffered] = useState<ConnectorTool[]>();
   const [error, setError] = useState<string>();
+  const [typed, setTyped] = useState(() => targets.join(", "));
   useEffect(() => {
     let live = true;
     api
@@ -294,6 +308,24 @@ function ConnectorGroup({
           </span>
         </label>
       ))}
+      {pinned.length > 0 && (
+        <label className="mt-1 flex flex-col gap-1 text-sm">
+          <span>{targetsLabel(connector.provider)}</span>
+          <Input
+            value={typed}
+            placeholder={connector.provider === "github" ? "owner/repository, …" : "Any"}
+            onChange={(e) => {
+              setTyped(e.target.value);
+              onTargets(parseTargets(e.target.value));
+            }}
+          />
+          <span className="text-muted-foreground text-xs">
+            {connector.provider === "github"
+              ? "Its tools act only in these repositories (owner/name, separated by commas): with none, they can't act at all."
+              : "Separated by commas. Left empty, its tools may act on anything the connector reaches."}
+          </span>
+        </label>
+      )}
     </div>
   );
 }
@@ -301,7 +333,8 @@ function ConnectorGroup({
 function formatSetting(value: unknown): string | undefined {
   if (Array.isArray(value) && value.some((v) => v && typeof v === "object" && "tools" in v)) {
     const pins = value as ConnectorPin[];
-    return pins.map((p) => `${p.provider}: ${p.tools.join(", ")}`).join("; ") || undefined;
+    const on = (p: ConnectorPin) => (p.targets?.length ? ` (on ${p.targets.join(", ")})` : "");
+    return pins.map((p) => `${p.provider}: ${p.tools.join(", ")}${on(p)}`).join("; ") || undefined;
   }
   if (Array.isArray(value)) return value.length ? value.join(", ") : undefined;
   if (value === null || value === undefined || value === "") return undefined;

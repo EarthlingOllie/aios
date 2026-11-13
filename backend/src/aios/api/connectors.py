@@ -69,6 +69,9 @@ class ConnectorOut(BaseModel):
     # can't, the connector doesn't sync, and its content stays searchable.
     unavailable: str | None
     scope: list[ScopeItemOut]
+    # Whether it also syncs documentation files (GitHub's README and docs Markdown); null if its
+    # provider has none to sync.
+    docs: bool | None = None
     # Its source (made when its scope is first saved), with its health and last sync.
     source_id: int | None
     source: SourceOut | None
@@ -99,6 +102,8 @@ class ScopeIn(BaseModel):
     items: list[str] = Field(max_length=1000)
     # Accepting that everyone in the organisation will be able to search what's restricted.
     acknowledge_restricted: bool = False
+    # Also sync documentation files (a provider with them: GitHub); null leaves it as it is.
+    docs: bool | None = None
 
 
 def _title(provider: str) -> str:
@@ -108,14 +113,19 @@ def _title(provider: str) -> str:
 
 def _outs(store: Session, rows: list[Connector]) -> list[ConnectorOut]:
     sources = {s.id: s for s in sources_out(store)}
-    by_connector = dict(
-        store.execute(
-            select(Source.connector_id, Source.id).where(Source.connector_id.is_not(None))
+    by_connector = {
+        connector_id: (source_id, settings)
+        for connector_id, source_id, settings in store.execute(
+            select(Source.connector_id, Source.id, Source.settings).where(
+                Source.connector_id.is_not(None)
+            )
         ).all()
-    )
+    }
     outs = []
     for c in rows:
-        source_id = by_connector.get(c.id)
+        source_id, settings = by_connector.get(c.id, (None, None))
+        found = source_providers.provider(c.provider)
+        docs = bool((settings or {}).get("docs")) if found is not None and found.docs else None
         outs.append(
             ConnectorOut(
                 id=c.id,
@@ -124,6 +134,7 @@ def _outs(store: Session, rows: list[Connector]) -> list[ConnectorOut]:
                 status=c.status,
                 unavailable=source_providers.why_unavailable(c.provider),
                 scope=[ScopeItemOut(**i) for i in c.scope or []],
+                docs=docs,
                 source_id=source_id,
                 source=sources.get(source_id),
                 created_at=c.created_at,
@@ -263,10 +274,12 @@ def connect_callback(
     state: str = Query(max_length=4096),
     code: str | None = Query(None, max_length=4096),
     error: str | None = Query(None, max_length=1024),
+    installation_id: str | None = Query(None, max_length=32),
 ):
     """Where a provider sends the browser back. The state must be one aios signed (400), not
     expired (400), and started in this session by this person (403), who must still be an admin
-    of its organisation (403). Lands on the connector's page."""
+    of its organisation (403). GitHub also says which installation was made (`installation_id`).
+    Lands on the connector's page."""
     try:
         found = connectors.read_state(state, request.session, user.id)
     except connectors.BadState as exc:
@@ -285,7 +298,8 @@ def connect_callback(
     store_id = data_store_for(org.id, db)
     db.commit()
     try:
-        grant = provider.exchange(code)
+        extra = {} if installation_id is None else {"installation_id": installation_id}
+        grant = provider.exchange(code, **extra)
     except Exception as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"{provider.title} didn't accept the authorisation."
@@ -418,11 +432,18 @@ def set_scope(
     org: CurrentOrganisation,
     store_id: CurrentDataStore,
 ):
-    """Choose what the connector syncs. 422 for something it can't sync, or for something
-    restricted at its source without the acknowledgement. The first scope makes its source, which
-    syncs at once; a changed one is synced in full next, removing what's no longer in it."""
+    """Choose what the connector syncs, and (`docs`, a provider with them) whether it syncs
+    documentation files too. 422 for something it can't sync, or for something restricted at its
+    source without the acknowledgement. The first scope makes its source, which syncs at once; a
+    changed one is synced in full next, removing what's no longer in it. Turning documentation
+    files on or off brings them in or removes them at the next sync, queued at once."""
     with store_session(store_id, "rw") as store:
         connector = _locked(store, connector_id)
+        if body.docs and not source_providers.provider(connector.provider).docs:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"{connector.name} has no documentation files to sync.",
+            )
         options = {o.id: o for o in _options(store_id, connector)}
         picked = list(dict.fromkeys(body.items))
         unknown = [i for i in picked if i not in options]
@@ -443,7 +464,11 @@ def set_scope(
         source = store.scalar(
             select(Source).where(Source.connector_id == connector_id).with_for_update()
         )
+        docs_before = bool((source.settings or {}).get("docs")) if source is not None else False
+        docs = docs_before if body.docs is None else body.docs
         settings = {"provider": connector.provider, "scope": picked}
+        if docs:
+            settings["docs"] = True
         if source is None:
             source = Source(
                 kind=SourceKind.connector,
@@ -459,6 +484,13 @@ def set_scope(
             # Synced in full next, so what's left the scope goes.
             source.last_reconciled_at = None
             source.next_sync_at = None
+        elif docs != docs_before:
+            # The next sync brings the files in, or removes them.
+            source.settings = settings
+            source.next_sync_at = None
+        details = {}
+        if docs != docs_before:
+            details["docs"] = docs
         audit.configured(
             store,
             user.id,
@@ -468,10 +500,11 @@ def set_scope(
             added=[i for i in picked if i not in before],
             removed=[i for i in before if i not in picked],
             restricted_acknowledged=bool(restricted),
+            **details,
         )
         store.commit()
         source_id = source.id
-        changed = set(before) != set(picked) or not before
+        changed = set(before) != set(picked) or not before or docs != docs_before
         status_now = source.status
         out = _one(store, connector_id)
     if changed and status_now == SourceStatus.active:

@@ -536,6 +536,9 @@ export type Connector = {
   /** Why its provider can't be used here now (switched off, say); null if it can. */
   unavailable: string | null;
   scope: ScopeItem[];
+  /** Whether it also syncs documentation files (GitHub's README and docs Markdown); null if its
+   * provider has none. */
+  docs: boolean | null;
   /** Its source, once its scope is first saved. */
   source_id: number | null;
   source: Source | null;
@@ -552,7 +555,14 @@ export type ConnectorTool = {
 };
 
 /** A connector's tools an agent version may use (the `connector` tool's settings). */
-export type ConnectorPin = { connector_id: number; provider: string; tools: string[] };
+export type ConnectorPin = {
+  connector_id: number;
+  provider: string;
+  tools: string[];
+  /** What its calls may act on (channels, repositories). GitHub's tools act only on these; for
+   * other providers, an empty list allows any. */
+  targets?: string[];
+};
 
 /** The source a document belongs to: Uploads for an upload. */
 export type DocumentSource = Pick<Source, "id" | "kind" | "name">;
@@ -1975,10 +1985,11 @@ export const api = {
   connectorScopeOptions: (id: number, q = "") =>
     request<ScopeItem[]>(`${organisationApi()}/connectors/${id}/scope-options?${new URLSearchParams({ q })}`),
   /** Admins only: a 422 if something restricted is picked without `acknowledge_restricted`. */
-  setConnectorScope: (id: number, items: string[], acknowledge_restricted: boolean) =>
+  /** Admins only. `docs` (a provider with documentation files) turns syncing them on or off. */
+  setConnectorScope: (id: number, items: string[], acknowledge_restricted: boolean, docs?: boolean) =>
     request<Connector>(
       `${organisationApi()}/connectors/${id}/scope`,
-      json("PUT", { items, acknowledge_restricted }),
+      json("PUT", docs === undefined ? { items, acknowledge_restricted } : { items, acknowledge_restricted, docs }),
     ),
   /** Admins only (202): stops it at once; its content is kept as Uploads documents, or deleted. */
   /** The tools the connector offers now, for the agent editor. A 409 while it needs

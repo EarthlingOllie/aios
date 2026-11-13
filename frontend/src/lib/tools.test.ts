@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { ConnectorTool } from "@/lib/api";
-import { connectorToolOptions, pinConnectorTools, workflowOptions } from "@/lib/tools";
+import {
+  connectorToolOptions,
+  parseTargets,
+  pinConnectorTargets,
+  pinConnectorTools,
+  targetsLabel,
+  workflowOptions,
+} from "@/lib/tools";
 
 const live = [
   { id: 1, name: "Summarise" },
@@ -84,5 +91,34 @@ describe("pinConnectorTools", () => {
   it("drops a group left with no tools", () => {
     const pins = [{ connector_id: 2, provider: "slack", tools: ["send"] }];
     expect(pinConnectorTools(pins, slack, [])).toEqual([]);
+  });
+});
+
+describe("allowed targets", () => {
+  const github = { id: 3, provider: "github" };
+
+  it("keeps a group's allowed targets when its tools change", () => {
+    const pins = [{ connector_id: 3, provider: "github", tools: ["open_issue"], targets: ["acme/api"] }];
+    expect(pinConnectorTools(pins, github, ["open_issue", "comment_on_issue"])).toEqual([
+      { connector_id: 3, provider: "github", tools: ["open_issue", "comment_on_issue"], targets: ["acme/api"] },
+    ]);
+  });
+
+  it("sets a pinned group's allowed targets, and leaves unpinned connectors alone", () => {
+    const pins = [{ connector_id: 3, provider: "github", tools: ["open_issue"] }];
+    expect(pinConnectorTargets(pins, 3, ["acme/api", "acme/web"])).toEqual([
+      { connector_id: 3, provider: "github", tools: ["open_issue"], targets: ["acme/api", "acme/web"] },
+    ]);
+    expect(pinConnectorTargets(pins, 9, ["acme/api"])).toEqual(pins);
+  });
+
+  it("reads targets typed with commas, spaces or new lines, once each", () => {
+    expect(parseTargets(" acme/api, acme/web\nacme/api  ")).toEqual(["acme/api", "acme/web"]);
+    expect(parseTargets("  ")).toEqual([]);
+  });
+
+  it("names what a provider's tools act on", () => {
+    expect(targetsLabel("github")).toBe("Allowed repositories");
+    expect(targetsLabel("test")).toBe("Allowed targets");
   });
 });

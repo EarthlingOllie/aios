@@ -355,6 +355,8 @@ export type ConnectorRow = {
   status: "active" | "needs_reauth" | "removing";
   unavailable: string | null;
   scope: ScopeItemRow[];
+  /** Whether it syncs documentation files too (GitHub); null if its provider has none. */
+  docs: boolean | null;
   source_id: number | null;
   created_at: string;
 };
@@ -1092,8 +1094,9 @@ export class FakeApi {
     { id: "random", name: "random", restricted: false },
     { id: "board", name: "board", restricted: true },
   ];
-  /** Each scope saved: the connector, the ids picked, and whether restricted ones were accepted. */
-  scopeSaves: { id: number; items: string[]; acknowledged: boolean }[] = [];
+  /** Each scope saved: the connector, the ids picked, whether restricted ones were accepted, and
+   * the docs setting sent (if any). */
+  scopeSaves: { id: number; items: string[]; acknowledged: boolean; docs?: boolean }[] = [];
   /** What each provider's connector offers as tools (GET /connectors/:id/tools): the test
    * provider's two, as the server's test provider serves them. */
   connectorTools: Record<string, ConnectorToolRow[]> = {
@@ -1109,6 +1112,26 @@ export class FakeApi {
         description: "Read a channel's messages.",
         input_schema: { type: "object", properties: { channel: { type: "string" } } },
         read_only: true,
+      },
+    ],
+    github: [
+      {
+        name: "comment_on_issue",
+        description: "Comment on an issue or pull request in a GitHub repository.",
+        input_schema: {
+          type: "object",
+          properties: { repository: { type: "string" }, number: { type: "integer" }, body: { type: "string" } },
+        },
+        read_only: false,
+      },
+      {
+        name: "open_issue",
+        description: "Open an issue in a GitHub repository.",
+        input_schema: {
+          type: "object",
+          properties: { repository: { type: "string" }, title: { type: "string" }, body: { type: "string" } },
+        },
+        read_only: false,
       },
     ],
   };
@@ -1583,6 +1606,7 @@ export class FakeApi {
       status: "active",
       unavailable: null,
       scope: [],
+      docs: provider === "github" ? false : null,
       source_id: null,
       created_at: NOW,
       ...fields,
@@ -3901,8 +3925,11 @@ export class FakeApi {
           const acknowledged = Boolean(body.acknowledge_restricted);
           const picked = items.map((id) => this.scopeOptions.find((o) => o.id === id)!);
           if (picked.some((o) => o.restricted) && !acknowledged) return fail(422, RESTRICTED_WARNING);
-          this.scopeSaves.push({ id: connector.id, items, acknowledged });
+          const docs = typeof body.docs === "boolean" ? body.docs : undefined;
+          if (docs && connector.docs === null) return fail(422, `${connector.name} has no documentation files to sync.`);
+          this.scopeSaves.push({ id: connector.id, items, acknowledged, ...(docs === undefined ? {} : { docs }) });
           connector.scope = picked;
+          if (docs !== undefined && connector.docs !== null) connector.docs = docs;
           if (connector.source_id === null) {
             connector.source_id = this.addSource(connector.name, "connector", {
               provider: connector.provider,

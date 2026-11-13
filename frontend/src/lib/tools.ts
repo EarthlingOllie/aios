@@ -74,17 +74,33 @@ export function connectorToolOptions(
   ];
 }
 
-/** The `connector` tool's settings with `connector`'s group set to `tools`: added if it's new,
- * dropped if it's left with none. */
+/** The `connector` tool's settings with `connector`'s group set to `tools` (keeping its allowed
+ * targets): added if it's new, dropped if it's left with none. */
 export function pinConnectorTools(
   pins: ConnectorPin[],
   connector: { id: number; provider: string },
   tools: string[],
 ): ConnectorPin[] {
-  const group = { connector_id: connector.id, provider: connector.provider, tools };
   const at = pins.findIndex((p) => p.connector_id === connector.id);
+  const group = { ...pins[at], connector_id: connector.id, provider: connector.provider, tools };
   if (at < 0) return tools.length ? [...pins, group] : pins;
   return tools.length
     ? pins.map((p, i) => (i === at ? group : p))
     : pins.filter((_, i) => i !== at);
+}
+
+/** The `connector` tool's settings with a pinned connector's allowed targets (the channels or
+ * repositories its calls may act on) set to `targets`. */
+export function pinConnectorTargets(pins: ConnectorPin[], connectorId: number, targets: string[]): ConnectorPin[] {
+  return pins.map((p) => (p.connector_id === connectorId ? { ...p, targets } : p));
+}
+
+/** Targets as typed: separated by commas, spaces or new lines, each once. */
+export function parseTargets(text: string): string[] {
+  return [...new Set(text.split(/[\s,]+/).filter(Boolean))];
+}
+
+/** What a provider's tools act on, as its allowed list is called in the agent editor. */
+export function targetsLabel(provider: string): string {
+  return provider === "github" ? "Allowed repositories" : "Allowed targets";
 }

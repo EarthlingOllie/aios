@@ -1,0 +1,220 @@
+{
+  "_about": "Responses recorded from GitHub's REST API (api.github.com, 2022-11-28 version) for a test App installed on the acme organisation, trimmed to the fields aios reads, with ids, logins and text replaced. Replayed by tests/fake_github.py; nothing here is sent anywhere.",
+  "installation": {
+    "id": 4242001,
+    "account": {"login": "acme", "id": 9001, "type": "Organization"},
+    "repository_selection": "selected",
+    "app_slug": "aios-test"
+  },
+  "access_token": {
+    "token": "ghs_recordedInstallationToken000000000000",
+    "expires_at": "2026-11-13T12:00:00Z",
+    "permissions": {"issues": "write", "metadata": "read", "pull_requests": "read", "contents": "read"},
+    "repository_selection": "selected"
+  },
+  "oauth_access_token": {
+    "access_token": "ghu_recordedUserToken0000000000000000000",
+    "expires_in": 28800,
+    "refresh_token": "ghr_recordedRefreshToken000000000000000000000000000000000000000000000000000",
+    "token_type": "bearer",
+    "scope": ""
+  },
+  "oauth_bad_code": {
+    "error": "bad_verification_code",
+    "error_description": "The code passed is incorrect or expired.",
+    "error_uri": "https://docs.github.com/apps/managing-oauth-apps/troubleshooting-oauth-app-access-token-request-errors/#bad-verification-code"
+  },
+  "repositories": [
+    {
+      "id": 70001,
+      "name": "api",
+      "full_name": "acme/api",
+      "private": false,
+      "html_url": "https://github.com/acme/api",
+      "default_branch": "main",
+      "owner": {"login": "acme", "id": 9001, "type": "Organization"}
+    },
+    {
+      "id": 70002,
+      "name": "secret-plans",
+      "full_name": "acme/secret-plans",
+      "private": true,
+      "html_url": "https://github.com/acme/secret-plans",
+      "default_branch": "trunk",
+      "owner": {"login": "acme", "id": 9001, "type": "Organization"}
+    }
+  ],
+  "repository_added_later": {
+    "id": 70003,
+    "name": "website",
+    "full_name": "acme/website",
+    "private": false,
+    "html_url": "https://github.com/acme/website",
+    "default_branch": "main",
+    "owner": {"login": "acme", "id": 9001, "type": "Organization"}
+  },
+  "issues": {
+    "acme/api": [
+      {
+        "id": 900101,
+        "number": 12,
+        "title": "Login fails for SSO users",
+        "body": "Users signing in through SSO see a blank page after the redirect.",
+        "state": "open",
+        "html_url": "https://github.com/acme/api/issues/12",
+        "user": {"login": "octocat", "id": 583231, "type": "User"},
+        "labels": [{"id": 1, "name": "bug", "color": "d73a4a"}, {"id": 2, "name": "auth", "color": "0e8a16"}],
+        "comments": 1,
+        "created_at": "2026-10-01T09:00:00Z",
+        "updated_at": "2026-10-02T10:00:00Z",
+        "closed_at": null
+      },
+      {
+        "id": 900102,
+        "number": 13,
+        "title": "Add retry to the webhook sender",
+        "body": "Retries with jittered backoff, as discussed.",
+        "state": "closed",
+        "html_url": "https://github.com/acme/api/pull/13",
+        "user": {"login": "hubot", "id": 1000, "type": "User"},
+        "labels": [{"id": 3, "name": "enhancement", "color": "a2eeef"}],
+        "comments": 0,
+        "created_at": "2026-10-03T09:00:00Z",
+        "updated_at": "2026-10-04T11:30:00Z",
+        "closed_at": "2026-10-04T11:30:00Z",
+        "pull_request": {
+          "url": "https://api.github.com/repos/acme/api/pulls/13",
+          "html_url": "https://github.com/acme/api/pull/13",
+          "merged_at": "2026-10-04T11:30:00Z"
+        }
+      },
+      {
+        "id": 900103,
+        "number": 14,
+        "title": "Typo in the error page",
+        "body": "It says 'occured'.",
+        "state": "open",
+        "html_url": "https://github.com/acme/api/issues/14",
+        "user": {"login": "monalisa", "id": 2000, "type": "User"},
+        "labels": [],
+        "comments": 0,
+        "created_at": "2026-10-05T09:00:00Z",
+        "updated_at": "2026-10-05T09:00:00Z",
+        "closed_at": null
+      }
+    ],
+    "acme/secret-plans": [
+      {
+        "id": 900201,
+        "number": 1,
+        "title": "Q4 launch checklist",
+        "body": "Narwhal pricing goes live in December.",
+        "state": "open",
+        "html_url": "https://github.com/acme/secret-plans/issues/1",
+        "user": {"login": "octocat", "id": 583231, "type": "User"},
+        "labels": [],
+        "comments": 0,
+        "created_at": "2026-10-01T09:00:00Z",
+        "updated_at": "2026-10-01T09:00:00Z",
+        "closed_at": null
+      }
+    ],
+    "acme/website": [
+      {
+        "id": 900301,
+        "number": 3,
+        "title": "Footer links are broken",
+        "body": "The footer still points at the old blog.",
+        "state": "open",
+        "html_url": "https://github.com/acme/website/issues/3",
+        "user": {"login": "monalisa", "id": 2000, "type": "User"},
+        "labels": [],
+        "comments": 0,
+        "created_at": "2026-10-01T09:00:00Z",
+        "updated_at": "2026-10-01T09:00:00Z",
+        "closed_at": null
+      }
+    ]
+  },
+  "issue_comments": {
+    "acme/api": [
+      {
+        "id": 51001,
+        "body": "I can reproduce this with the Okta tenant.",
+        "html_url": "https://github.com/acme/api/issues/12#issuecomment-51001",
+        "issue_url": "https://api.github.com/repos/acme/api/issues/12",
+        "user": {"login": "monalisa", "id": 2000, "type": "User"},
+        "created_at": "2026-10-02T10:00:00Z",
+        "updated_at": "2026-10-02T10:00:00Z"
+      }
+    ]
+  },
+  "review_comments": {
+    "acme/api": [
+      {
+        "id": 61001,
+        "pull_request_review_id": 71001,
+        "body": "Cap the backoff at a minute, or a dead endpoint holds the queue.",
+        "path": "sender/retry.py",
+        "html_url": "https://github.com/acme/api/pull/13#discussion_r61001",
+        "pull_request_url": "https://api.github.com/repos/acme/api/pulls/13",
+        "user": {"login": "octocat", "id": 583231, "type": "User"},
+        "created_at": "2026-10-04T10:00:00Z",
+        "updated_at": "2026-10-04T10:00:00Z"
+      }
+    ]
+  },
+  "trees": {
+    "acme/api": [
+      {"path": "README.md", "type": "blob", "content": "# acme api\n\nThe API behind the axolotl tracker.\n"},
+      {"path": "docs", "type": "tree"},
+      {"path": "docs/deploying.md", "type": "blob", "content": "# Deploying\n\nDeploys go out on Tuesdays through the blue-green pipeline.\n"},
+      {"path": "docs/diagram.png", "type": "blob", "content": "not markdown"},
+      {"path": "src/app.py", "type": "blob", "content": "print('hello')\n"},
+      {"path": "CONTRIBUTING.md", "type": "blob", "content": "# Contributing\n"}
+    ]
+  },
+  "created_comment": {
+    "id": 51999,
+    "html_url": "https://github.com/acme/api/issues/12#issuecomment-51999",
+    "issue_url": "https://api.github.com/repos/acme/api/issues/12",
+    "user": {"login": "aios-test[bot]", "id": 3000, "type": "Bot"},
+    "created_at": "2026-11-13T10:00:00Z",
+    "updated_at": "2026-11-13T10:00:00Z"
+  },
+  "created_issue": {
+    "id": 900199,
+    "number": 15,
+    "html_url": "https://github.com/acme/api/issues/15",
+    "state": "open",
+    "user": {"login": "aios-test[bot]", "id": 3000, "type": "Bot"},
+    "labels": [],
+    "created_at": "2026-11-13T10:00:00Z",
+    "updated_at": "2026-11-13T10:00:00Z"
+  },
+  "moved_permanently": {
+    "message": "Moved Permanently",
+    "url": "https://api.github.com/repositories/70009/issues/1",
+    "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue"
+  },
+  "issue_deleted": {
+    "message": "This issue was deleted",
+    "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
+    "status": "410"
+  },
+  "not_found": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "404"
+  },
+  "bad_credentials": {
+    "message": "Bad credentials",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "401"
+  },
+  "rate_limited": {
+    "message": "API rate limit exceeded for installation ID 4242001.",
+    "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
+    "status": "403"
+  }
+}

@@ -376,9 +376,15 @@ class Settings(BaseSettings):
     # rather than send admins to a consent error. Files over `drive_file_max_bytes` are skipped.
     google_drive_verified: bool = False
     drive_file_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    # The aios GitHub App (`aios.source_providers.github`): its id, private key (PEM) and slug,
+    # and its OAuth client id and secret, with which connecting checks that the admin can see
+    # the installation GitHub sent them back with (the App asks for user authorisation during
+    # installation).
     github_app_id: str = ""
     github_app_private_key: SecretStr = SecretStr("")
     github_app_slug: str = ""
+    github_app_client_id: str = ""
+    github_app_client_secret: SecretStr = SecretStr("")
     # Insights (`aios.insights`): each panel's data is kept for `insights_cache_seconds` per
     # organisation, panel, range and grouping. Each store usage measurement also keeps a sample
     # (`aios.datastores.quota`), pruned after `storage_history_days`.

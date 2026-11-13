@@ -386,7 +386,7 @@ once, and leaves their content searchable), and one without its app settings is 
   where it can), and then deletes its content or keeps it: file items' documents move to Uploads,
   and message items become Markdown documents in Uploads, grouped as the provider says
   (`Provider.keep_groups`: the test provider's are one per channel per month, as Slack's will be;
-  GitHub's will be one per issue or pull request with its comments). A
+  GitHub's are one per issue or pull request with its comments). A
   removal that stopped part way is finished by the run service's sync sweep. A connector's source
   is removed only with its connector (409).
 
@@ -405,6 +405,32 @@ chosen folder (ancestry looked up once per sync): moved in, added; moved out, tr
 no longer visible, removed; a changed checksum or modified time, re-exported and re-ingested. A
 folder moved into or out of scope, trashed or deleted makes the sync list the chosen folders
 afresh. Reconciliation lists the chosen folders. Drive has no tools.
+
+**GitHub** (`aios.source_providers.github`) is the aios GitHub App, unavailable until a
+deployment sets `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_APP_SLUG`,
+`GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET`. The App needs metadata read, issues read
+and write, pull requests read and (for docs syncing) contents read, its setup URL set to
+`/api/connectors/callback`, and "Request user authorization (OAuth) during installation" on.
+
+- **Connecting** sends the admin to install the App on the repositories they choose; GitHub sends
+  them back with the installation's id and an OAuth code. The code is exchanged for the admin's
+  own GitHub token, used once to check they can see that installation (so an id typed into the
+  address bar can't connect someone else's), then dropped. Only the installation id is kept
+  (credential kind `github_installation`); installation tokens are minted from the App's private
+  key when a sync or tool call needs one, held in memory until shortly before they expire, and
+  never stored. Removing the connector uninstalls the App.
+- **Scope** is the repositories the installation covers (private ones restricted). Only those
+  picked in aios sync: a repository added to the installation later isn't synced until it's
+  picked, and one taken off the installation is skipped and its items go at reconciliation.
+- **What syncs:** issues and pull requests as message items (state, labels, author, link), their
+  comments and review comments as children; and, with **docs syncing** on (`PUT
+  /connectors/{id}/scope` with `docs`, shown as `docs` on the connector), the README and Markdown
+  files under `docs/` on the default branch as documents. Incremental syncs read what was updated
+  since the cursor (per repository) and compare the docs files' blob shas with the last seen, so
+  a changed file is re-ingested and a deleted one removed; turning docs off removes them all.
+  Reconciliation re-lists everything, removing transferred or deleted issues and deleted
+  comments, which the change feed never reports. A rate-limited sync fails saying so and is
+  retried; an uninstalled App needs reconnecting.
 
 Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
 Agents act in connected systems with [connector tools](tools.md#connector-tools).
