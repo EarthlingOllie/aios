@@ -1084,6 +1084,16 @@ export type Turn = {
   notices: string[];
 };
 
+/** Where a run's earlier turns were summarised for its model: the last turn the summary covers,
+ * and the first message it doesn't (the model read the rest verbatim after it). The history
+ * itself is never altered. */
+export type RunCompaction = {
+  id: number;
+  last_turn_id: number | null;
+  kept_from_message_id: string;
+  created_at: string;
+};
+
 export type Run = RunSummary & {
   /** The agent's name, so the page needn't read the agent as well. */
   agent_name: string;
@@ -1099,6 +1109,8 @@ export type Run = RunSummary & {
   invocation: InvocationRecord | null;
   /** Its turns, oldest first. */
   turns: Turn[];
+  /** Where its earlier turns were summarised for its model, oldest first. */
+  summaries: RunCompaction[];
 };
 
 /** approval: waits for a person in its role to approve or reject it; it runs nothing. */

@@ -108,11 +108,17 @@ def count(
     )
 
 
-def end(store: Session, turn_id: int, error: str | None) -> bool:
+def end(store: Session, turn_id: int, error: str | None, *, message_end: int | None = None) -> bool:
     """End the running turn: succeeded, or failed with `error`. Whether it was still running (a
     turn failed as stalled stays failed). Its run's card is published (`aios.streams`): a turn
     that ends waiting on an approval finishes no invocation and posts no message, and its card
-    says so only by this."""
+    says so only by this.
+
+    `message_end` is how many messages the run's conversation had once the turn ended, which
+    places the turn's messages in it (`Turn.message_end`, for compaction and retention); kept
+    whether or not the turn was still running."""
+    if message_end is not None:
+        store.execute(update(Turn).where(Turn.id == turn_id).values(message_end=message_end))
     ended = store.execute(
         update(Turn)
         .where(Turn.id == turn_id, Turn.status == AgentRunStatus.running)

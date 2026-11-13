@@ -134,6 +134,16 @@ type AgentRunRow = AgentRunCounters & {
   ui_messages: unknown[];
   /** Its turns, oldest first. */
   turns: TurnRow[];
+  /** Where its earlier turns were summarised for its model, oldest first. */
+  summaries?: RunSummaryRow[];
+};
+
+/** Where a run's earlier turns were summarised for its model (`aios.compaction`). */
+type RunSummaryRow = {
+  id: number;
+  last_turn_id: number | null;
+  kept_from_message_id: string;
+  created_at: string;
 };
 
 /** Something an agent remembered, as its Memory tab lists it (`aios.api.agents.memories`). */
@@ -2196,6 +2206,19 @@ export class FakeApi {
     return turn;
   }
 
+  /** Records that the run's turns up to `lastTurn` were summarised for its model, which read its
+   * messages from `keptFromMessageId` on verbatim (`aios.compaction`). */
+  addSummary(run: AgentRunRow, lastTurn: TurnRow, keptFromMessageId: string): RunSummaryRow {
+    const summary: RunSummaryRow = {
+      id: this.id(),
+      last_turn_id: lastTurn.id,
+      kept_from_message_id: keptFromMessageId,
+      created_at: NOW,
+    };
+    run.summaries = [...(run.summaries ?? []), summary];
+    return summary;
+  }
+
   /** Adds a workflow; `nodes` name their target as `{ agent }` or `{ workflow }`, at its latest. */
   addWorkflow(
     name: string,
@@ -2796,7 +2819,7 @@ export class FakeApi {
   }
 
   private agentRunOut(run: AgentRunRow) {
-    const { ui_messages: _, turns: __, ...summary } = run;
+    const { ui_messages: _, turns: __, summaries: ___, ...summary } = run;
     const invocation = [...this.invocations.values()].find(
       (i) => i.target_kind === "agent" && i.run_id === run.id,
     );
@@ -4352,6 +4375,7 @@ export class FakeApi {
             notices: t.notices ?? [],
             agent_version: this.agentVersions.get(t.agent_version_id)![1],
           })),
+          summaries: run.summaries ?? [],
           messages: [],
           instructions: agent.base_prompt,
           schema_change_requests: this.schemaChanges

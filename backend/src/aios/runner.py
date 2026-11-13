@@ -5,6 +5,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from aios import llm
 from aios.agent import ChatDeps
+from aios.compaction import CompactionMiddleware
 from aios.datastores.models import AgentVersion
 from aios.jev import UNTRUSTED_RULE
 from aios.model_rate_limit import RateLimitMiddleware
@@ -54,16 +55,20 @@ def build_agent(
     """A LangGraph agent for one turn of a run: its version's model, instructions and tools,
     the user and run as runtime context (`ChatDeps`), and the run's history in `checkpointer`.
     Its instructions end with what an untrusted block is, and every tool result reaches it
-    checked by Jev and wrapped as one (`aios.tool_checks`). `response_format`, if given, is the
+    checked by Jev and wrapped as one (`aios.tool_checks`). A long run's oldest turns reach it
+    as a summary (`aios.compaction`). `response_format`, if given, is the
     structured output it gives (a workflow node's, `aios.workflows.structured.output_format`)."""
     return create_agent(
         llm.chat_model(model),
         server_tools(tools, model),
         system_prompt=f"{instructions}\n\n{UNTRUSTED_RULE}" if instructions else UNTRUSTED_RULE,
+        # The run's latest summary in place of the turns it covers, folding in more once the
+        # input passes the threshold (`aios.compaction`), before anything else sees the call.
         # Each tool result checked by Jev and wrapped as untrusted (`aios.tool_checks`).
         # And each model call charged to the turn and checked against its caps (`aios.usage`),
         # then paced by its model's rate limit (`aios.model_rate_limit`).
         middleware=[
+            CompactionMiddleware(),
             ToolResultChecks(),
             UsageMiddleware(llm.model_name(model)),
             RateLimitMiddleware(llm.model_name(model)),

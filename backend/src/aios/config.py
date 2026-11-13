@@ -192,6 +192,13 @@ class Settings(BaseSettings):
     handback_input_limit: int = Field(default=60_000, ge=100)
     handback_raw_limit: int = Field(default=8_000, ge=100)
     handback_timeout_seconds: float = Field(default=60.0, gt=0)
+    # Compaction (`aios.compaction`): once the model's input for a call of a run passes about
+    # `compaction_threshold_tokens` tokens, its oldest whole turns beyond the latest
+    # `compaction_turns_kept` are folded into a summary of at most about
+    # `compaction_summary_tokens` tokens by the handoff model, in what the model sees.
+    compaction_threshold_tokens: int = Field(default=120_000, ge=1)
+    compaction_turns_kept: int = Field(default=6, ge=1)
+    compaction_summary_tokens: int = Field(default=4_000, ge=100)
 
     # The usage ledger (`aios.usage`): estimated prices in pounds sterling, by model ("provider:
     # model", as `llm_model` and `embedding_model` name them), as a JSON object. A chat model's

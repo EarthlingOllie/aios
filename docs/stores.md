@@ -616,8 +616,13 @@ transaction:
 - **Runs** finished longer ago than the setting go: an agent run with its turns, sandbox session
   (stopped too), checkpoint thread and search items; a workflow run with its steps and its agent
   nodes' runs. Never pruned: a run with a running turn, a held lease, an unfinished invocation or
-  a request it still waits on, or a turn since the cutoff (phase 1 prunes whole runs); a workflow
-  run queued, running or waiting; an agent node's run on its own.
+  a request it still waits on, or a turn since the cutoff; a workflow run queued, running or
+  waiting; an agent node's run on its own.
+- **Turns** of a conversation run (`chat_id` set) used again lately go turn by turn, oldest
+  first, older than the run setting, while the run is idle: each turn with its messages in the
+  checkpointed history (only the latest checkpoint is kept) and its search items; the latest turn
+  always stays. The cut is made only before a person's message, so a tool call is never parted
+  from its result. A compaction summary goes once every turn it covers has.
 - **Messages** older than the setting go, with their mentions, the invocations they started
   (and those invocations' cards, results, briefs and search items) and their search items. Never
   pruned: a message whose invocation, or one it started, is unfinished or finished after the
@@ -625,7 +630,23 @@ transaction:
 - Documents, data tables, memory, usage and the audit log are never pruned.
 
 Each run of the job writes one audit entry per kind with a setting (`runs.pruned`,
-`messages.pruned`, by the platform) with the `count` and the `cutoff`.
+`turns.pruned`, `messages.pruned`, by the platform) with the `count` and the `cutoff`.
+
+### Compaction
+
+**Long conversations keep working** (`aios.compaction`). Before each model call of a run, a
+middleware on every agent (`CompactionMiddleware`) puts the run's latest summary
+(`aios.run_summaries`, store revision `0038`, renumbered from `0037` behind P2-06) in place of the turns it covers, wrapped as
+untrusted with the source `derived:compaction` (verdict `derived`). If the model's input still
+passes `COMPACTION_THRESHOLD_TOKENS` (120,000, estimated), the oldest whole turns beyond the latest
+`COMPACTION_TURNS_KEPT` (6) are folded, with the previous summary, into a new one of at most about
+`COMPACTION_SUMMARY_TOKENS` (4,000) by the handoff model. A turn, as the model sees it, begins at
+a person's message, so the cut never parts a tool call from its result. Each summary records the
+last turn it covers and the first message it doesn't; turns record where their messages end in
+the history (`turns.message_end`). Each compaction is a usage ledger entry with the purpose
+`compaction`, traced as a child of the turn's trace and tagged `compaction`. The checkpointed
+history, the run page (which marks where earlier turns were summarised) and search keep every
+turn.
 
 ## The search index
 
