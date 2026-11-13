@@ -370,9 +370,15 @@ class Settings(BaseSettings):
     slack_client_secret: SecretStr = SecretStr("")
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
+    # The aios GitHub App (`aios.source_providers.github`): its id, private key (PEM) and slug,
+    # and its OAuth client id and secret, with which connecting checks that the admin can see
+    # the installation GitHub sent them back with (the App asks for user authorisation during
+    # installation).
     github_app_id: str = ""
     github_app_private_key: SecretStr = SecretStr("")
     github_app_slug: str = ""
+    github_app_client_id: str = ""
+    github_app_client_secret: SecretStr = SecretStr("")
     # Insights (`aios.insights`): each panel's data is kept for `insights_cache_seconds` per
     # organisation, panel, range and grouping. Each store usage measurement also keeps a sample
     # (`aios.datastores.quota`), pruned after `storage_history_days`.

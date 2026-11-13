@@ -86,7 +86,12 @@ def test_a_version_pins_the_connector_and_the_tool_names_it_may_use(api):
     assert tool["key"] == "connector"
     assert tool["config"] == {
         "connectors": [
-            {"connector_id": connector_id, "provider": "test", "tools": ["post_message"]}
+            {
+                "connector_id": connector_id,
+                "provider": "test",
+                "tools": ["post_message"],
+                "targets": [],
+            }
         ]
     }
 
@@ -170,6 +175,28 @@ def test_a_turn_is_given_only_the_pinned_tools_and_its_calls_act_upstream(api, f
     assert result.status != "error"
     assert tool_output(result).startswith("Posted posted-0 to ")
     assert run["turns"][0]["notices"] == []
+
+
+def test_a_call_to_a_target_outside_the_pins_targets_is_refused_and_the_model_told(api, feeds):
+    allowed, other = feeds(), feeds()
+    agent = make_agent(api, "Poster", base_prompt="Poster")
+    tools = pin(connect(api), "post_message")
+    tools["config"]["connectors"][0]["targets"] = [allowed.name]
+    assert save(api, agent, tools).status_code == 200
+    script = Script([post(other.name)], [post(allowed.name)])
+
+    ask(api, agent, script)
+
+    assert other.items == {} and len(allowed.items) == 1
+    refused, posted = script.results
+    assert refused.status == "error"
+    assert tool_output(refused) == (
+        f"The Test connector's post_message may act only on this agent's allowed targets"
+        f" ({allowed.name}); {other.name} isn't one of them, so nothing was done."
+    )
+    assert posted.status != "error"
+    outcomes = [e["details"]["outcome"] for e in reversed(tool_entries(api))]
+    assert outcomes == ["refused", "succeeded"]
 
 
 def test_a_tool_that_vanished_upstream_is_left_out_and_the_turn_still_runs(api, feeds, test_tools):

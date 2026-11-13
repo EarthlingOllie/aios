@@ -101,3 +101,42 @@ test("a turn that left tools out says so with the run's turns", async ({ page })
 
   await expect(page.getByTestId("turn-notices")).toHaveText(notice);
 });
+
+test("an editor limits a GitHub connector's tools to allowed repositories", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.actAs("editor");
+  api.addTool("connector", "Connector tools", CONNECTOR, { connectors: [] });
+  const github = api.addConnector("github");
+  const reporter = api.addAgent("Reporter");
+  await page.goto(inOrg(`/agents/${reporter.id}/edit`));
+
+  await page.getByRole("checkbox", { name: /Connector tools/ }).check();
+  const group = page.getByTestId("connector-group");
+  await expect(group.getByRole("textbox", { name: "Allowed repositories" })).toHaveCount(0);
+  await group.getByRole("checkbox", { name: /comment_on_issue/ }).check();
+  await group.getByRole("checkbox", { name: /open_issue/ }).check();
+  const allowed = group.getByRole("textbox", { name: "Allowed repositories" });
+  await expect(group).toContainText("with none, they can't act at all");
+  await allowed.fill("acme/api, acme/website");
+  await page.getByRole("button", { name: "Save changes" }).click();
+
+  await expect(page).toHaveURL(inOrg(`/agents/${reporter.id}`));
+  const [, , body] = api.writes.at(-1)!;
+  expect(body).toMatchObject({
+    tools: [
+      {
+        key: "connector",
+        config: {
+          connectors: [
+            {
+              connector_id: github.id,
+              provider: "github",
+              tools: ["comment_on_issue", "open_issue"],
+              targets: ["acme/api", "acme/website"],
+            },
+          ],
+        },
+      },
+    ],
+  });
+});

@@ -193,3 +193,59 @@ test("a connector whose provider was switched off says so", async ({
   );
   await expect(page.getByText("what it synced stays searchable")).toBeVisible();
 });
+
+test("an admin turns a GitHub connector's README and docs syncing on, and its health shows on the Data page", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.scopeOptions = [
+    { id: "acme/api", name: "acme/api", restricted: false },
+    { id: "acme/secret-plans", name: "acme/secret-plans", restricted: true },
+  ];
+  const source = api.addSource("GitHub", "connector", {
+    provider: "github",
+    status: "failing",
+    health: "failing",
+  });
+  const github = api.addConnector("github", {
+    scope: [{ id: "acme/api", name: "acme/api", restricted: false }],
+    source_id: source.id,
+  });
+  await page.goto(inOrg(`/data/connectors/${github.id}`));
+
+  const docs = page.getByRole("checkbox", {
+    name: /Also sync README and docs files/,
+  });
+  await expect(docs).not.toBeChecked();
+  await docs.check();
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect
+    .poll(() => api.scopeSaves)
+    .toEqual([
+      { id: github.id, items: ["acme/api"], acknowledged: false, docs: true },
+    ]);
+  await expect(docs).toBeChecked();
+
+  await page.goto(inOrg("/data/sources"));
+  await expect(
+    page
+      .getByRole("list", { name: "Sources" })
+      .getByRole("listitem")
+      .filter({ hasText: "GitHub" })
+      .getByLabel("Health: Failing"),
+  ).toBeVisible();
+});
+
+test("connectors without documentation files don't offer docs syncing", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const connector = api.addConnector("test");
+  await page.goto(inOrg(`/data/connectors/${connector.id}`));
+
+  await expect(page.getByRole("region", { name: "What it syncs" })).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: /Also sync README and docs files/ }),
+  ).toHaveCount(0);
+});

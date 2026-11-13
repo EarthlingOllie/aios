@@ -10,8 +10,9 @@ An item (`Item`) is named by its external id, and carries a content hash that ch
 its content does, so the loop fetches and indexes again only what changed. A provider raises
 `NeedsReconnecting` on a final authorisation failure, and anything else when a sync can't go on.
 
-**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive, GitHub and the
-development-only test provider (`aios.source_providers.test`). Each says why it's unavailable here,
+**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive, GitHub
+(`aios.source_providers.github`) and the development-only test provider
+(`aios.source_providers.test`). Each says why it's unavailable here,
 if it is (`why_unavailable`): switched off in this deployment (`connector_enabled_providers`, which
 stops its syncs at once and leaves its content), missing its app settings, or not built yet. A
 connector's provider also runs its connect flow (`Provider.authorise_url`, `exchange`, `revoke`)
@@ -19,7 +20,8 @@ and says how its message items are kept as documents when its connector is remov
 (`Provider.keep_groups`). Its calls go through `aios.outbound`, which reaches only its hosts.
 
 A provider with tools says where they're served (`Provider.tools`): its MCP server, which the
-connector tool kind lists and calls (`aios.tools.connector`, `aios.mcp_client`).
+connector tool kind lists and calls (`aios.tools.connector`, `aios.mcp_client`), or aios itself
+(GitHub's, called natively).
 """
 
 from collections.abc import Callable, Iterable
@@ -132,13 +134,24 @@ class KeptDocument:
 @dataclass(frozen=True)
 class Tools:
     """Where a provider's tools are served: its MCP server's endpoint (called with the
-    connector's credential, through `aios.outbound`'s check), and the arguments that name what a
-    call acts on (a channel, a repository), for the audit log."""
+    connector's credential, through `aios.outbound`'s check), or aios itself (`listing` and
+    `invoke`, for a provider with no MCP server aios can use); and the arguments that name what a
+    call acts on (a channel, a repository), for the audit log and the allowed lists."""
 
-    url: str
+    url: str | None = None
     # Hands requests to a server inside the process (the test provider's); None for the network.
     transport: Callable[[], httpx.AsyncBaseTransport] | None = None
     target_args: tuple[str, ...] = ("channel", "repository", "repo", "folder")
+    # Served by aios: the tools (`aios.mcp_client.Tool`s), and a call (the connector's
+    # credential, the tool's name, its arguments and the calling agent's name) that answers its
+    # result's text and whether it's an error.
+    listing: Callable[[], list[Any]] | None = None
+    invoke: Callable[[str, str, dict[str, Any], str], tuple[str, bool]] | None = None
+    # Every call that acts on a target must name one on the agent's allowed list for the
+    # connector (`aios.tools.connector.ConnectorPin.targets`), as what it acts on is called here
+    # ("repositories").
+    targets_required: bool = False
+    targets_name: str = "targets"
 
 
 @dataclass(frozen=True)
@@ -153,7 +166,9 @@ class Provider:
     # The connect flow: where to send the admin's browser with the signed state, and what the
     # code it comes back with is worth. None: it can't be connected (yet).
     authorise_url: Callable[[str], str] | None = None
-    exchange: Callable[[str], Grant] | None = None
+    # Takes the code, and anything else the provider sent back that it names (GitHub's
+    # `installation_id`).
+    exchange: Callable[..., Grant] | None = None
     # Revokes a grant at the provider, where it can.
     revoke: Callable[[str], None] | None = None
     # Its message items as documents, grouped as the provider's content is (a removed connector's
@@ -161,15 +176,27 @@ class Provider:
     keep_groups: Callable[[Iterable["SyncedItem"]], list[KeptDocument]] | None = None
     # Its tools, for agents; None if it has none (yet).
     tools: Tools | None = None
+    # It can also sync documentation files (a source's `docs` setting): GitHub's README and docs
+    # Markdown.
+    docs: bool = False
 
 
-def _app_settings(title: str, *values: Any) -> str | None:
+def needs_app_settings(title: str, *values: Any) -> str | None:
+    """Why a provider is unavailable for want of its app settings (None if it has them all)."""
+
     def present(v: Any) -> bool:
         return bool(v.get_secret_value() if hasattr(v, "get_secret_value") else v)
 
     if all(present(v) for v in values):
-        return f"{title} isn't available in this version of aios yet."
+        return None
     return f"{title} isn't set up in this deployment: it needs its app settings."
+
+
+def _app_settings(title: str, *values: Any) -> str | None:
+    """A provider not built yet: unavailable whatever its settings."""
+    return needs_app_settings(title, *values) or (
+        f"{title} isn't available in this version of aios yet."
+    )
 
 
 def _test_unavailable() -> str | None:
@@ -182,6 +209,12 @@ def _test_provider() -> Provider:
     from aios.source_providers import test
 
     return test.PROVIDER
+
+
+def _github_provider() -> Provider:
+    from aios.source_providers import github
+
+    return github.PROVIDER
 
 
 TEST = "test"
@@ -200,13 +233,7 @@ def _providers() -> dict[str, Provider]:
             "Google Drive",
             lambda: _app_settings("Google Drive", s.google_client_id, s.google_client_secret),
         ),
-        "github": Provider(
-            "github",
-            "GitHub",
-            lambda: _app_settings(
-                "GitHub", s.github_app_id, s.github_app_private_key, s.github_app_slug
-            ),
-        ),
+        "github": _github_provider(),
         TEST: _test_provider(),
     }
 

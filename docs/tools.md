@@ -122,8 +122,15 @@ nothing. See `aios.tools.connector`.
   and the turn still runs. A connector that's paused, being removed, needs reconnecting or whose
   provider is unavailable leaves all its tools out. Either way the model is told (after its
   instructions) and the turn notes it (`turns.notices`, shown with the run's turns).
+- **Allowed targets.** Each pinned connector also has `targets`: the channels or repositories its
+  tools may act on. A call naming anything else is refused before it's made, the model is told,
+  and the refusal is audited (`outcome: refused`). GitHub's tools need a target on the list, so
+  with none they can't act at all; for other providers an empty list allows any.
 - **A call** goes to the connector's MCP server with its credential, through `aios.outbound`'s
   allowed hosts, after checking the connector again, so stopping it stops its tools at once.
+  GitHub's tools (`comment_on_issue` on an issue or pull request, and `open_issue`) are served
+  by aios itself, calling GitHub's REST API as the App with an installation token; what they
+  post is signed "— <agent name> via aios".
   The result is cut to `CONNECTOR_TOOL_RESULT_CAP_BYTES` (64 KiB), saying so; it comes from
   outside, so Jev checks it inline and it's wrapped as untrusted, and a flagged or unchecked
   result reaches the agent as an error. A tool's own error reaches it as an error too.
