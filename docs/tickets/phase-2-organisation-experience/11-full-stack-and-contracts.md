@@ -11,7 +11,7 @@ The docs pages are brought up to date at the same time.
 
 **Blocked by:** [05: One chat experience: "Chat with this agent"](05-one-chat-experience.md), [08: Handback, and delivery to chats](08-handback-and-delivery.md), [09: post_message tool](09-post-message.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The three full-stack scenarios pass in CI, sharded like the rest of the suite.
-- [ ] The docs pages for chats, triggers and tools, and the glossary, match the behaviour of phase 2.
+- [x] The three full-stack scenarios pass in CI, sharded like the rest of the suite. (`frontend/fullstack/chats.spec.ts`; the full-stack job now runs 2 shards, split by test. Both shards passed locally against the stack run by hand; CI itself not run from here.)
+- [x] The docs pages for chats, triggers and tools, and the glossary, match the behaviour of phase 2.

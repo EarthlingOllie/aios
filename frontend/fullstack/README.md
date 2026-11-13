@@ -20,12 +20,18 @@ The stack shares the dev stack's database, Redis and storage services (and their
 the dev stack first, or give one a different project name (`docker compose -p ...`).
 
 - The API refuses to start with scripted models enabled while secure cookies are on.
-- A scenario is a script of the model's turns: add one to `SCENARIOS` for each new story, and a
-  test here that tells it, rather than a new harness. The backend tests script the same model
-  (`aios.testing.fake_model`).
+- The stories: the core loop and what grew from it (`core-loop.spec.ts`), and phase 2's chats
+  (`chats.spec.ts`: **Chat with this agent** streaming its reply, a mentioned workflow's
+  handback, and a member reading a chat they haven't joined and posting to join it).
+- A scenario is a script of the model's turns: add one to `SCENARIOS` (or a case to the
+  `core-loop` one) for each new story, and a test here that tells it, rather than a new harness;
+  what the stories share (registering, an organisation, mentioning) is in `stack.ts`. The backend
+  tests script the same model (`aios.testing.fake_model`), and tell each story there too
+  (`backend/tests/test_scripted_models.py`).
 - One test restarts the run service mid-turn, with `docker compose ... restart
   fullstack-run-service` from `frontend/`; `FULLSTACK_RESTART_RUN_SERVICE` names another command
   for a stack run some other way.
 - A step that never comes (a worker stopped, say) fails the test within its timeout
-  (`playwright.fullstack.config.ts`). CI runs the tests in shards (default 1), each on its own
-  machine with its own stack, and keeps the merged report and each failing shard's stack logs.
+  (`playwright.fullstack.config.ts`). CI runs the tests in shards (2), split by test (each tells
+  its story in an organisation of its own), each shard on its own machine with its own stack,
+  and keeps the merged report and each failing shard's stack logs.

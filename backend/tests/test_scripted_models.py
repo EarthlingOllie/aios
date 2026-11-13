@@ -10,14 +10,17 @@ from unittest import mock
 
 import pytest
 import test_schema_change_requests
-from conftest import store_of
+from conftest import drain_run, store_of
 from pydantic import SecretStr
 from test_chat_agent_invocations import replies_from, say
+from test_chat_invocations import queued as queued_runs  # noqa: F401 (a fixture)
+from test_chat_invocations import say as say_workflow
 from test_chats import add, make_chat, messages
 from test_data_tools import as_owner, provisioned
 from test_schema_change_requests import run_queued
+from test_workflows import agent_node, make_workflow
 
-from aios import dispatcher, embeddings, handoff, llm, tracing
+from aios import dispatcher, embeddings, handback, handoff, llm, streams, tracing
 from aios.config import get_settings
 from aios.main import create_app
 from aios.models import DataStore
@@ -27,8 +30,10 @@ from aios.testing import scenarios
 # The tasks the code queued (applying a change, resuming a run), to run as the workers would.
 queued = test_schema_change_requests.queued
 
-# The handoff's own model, as the app has it: every test's is scripted by default (conftest).
+# The handoff's and handback's own models, as the app has them: every test's are scripted by
+# default (conftest).
 APP_HANDOFF_MODEL = handoff.model
+APP_HANDBACK_MODEL = handback.model
 
 TOOLS = [
     {"key": "request_schema_change", "config": {}},
@@ -71,13 +76,17 @@ def no_providers(monkeypatch):
 @pytest.fixture
 def scripted(monkeypatch, no_providers):
     """Scripted models enabled, the deployment's model the core loop's scenario, and the
-    handoff on it too (the deployment's), with Langfuse configured as if for real."""
+    handoff and handback on it too (the deployment's), with Langfuse configured as if for
+    real."""
     settings = get_settings()
     monkeypatch.setattr(settings, "scripted_models_enabled", True)
     monkeypatch.setattr(settings, "llm_model", "scripted:core-loop")
     monkeypatch.setattr(settings, "langfuse_public_key", "pk-lf-test")
     monkeypatch.setattr(settings, "langfuse_secret_key", SecretStr("sk-lf-test"))
-    with mock.patch.object(handoff, "model", APP_HANDOFF_MODEL):
+    with (
+        mock.patch.object(handoff, "model", APP_HANDOFF_MODEL),
+        mock.patch.object(handback, "model", APP_HANDBACK_MODEL),
+    ):
         yield
 
 
@@ -231,6 +240,87 @@ def test_a_turn_asked_to_take_its_time_survives_a_run_service_restart(
     assert replies_from(api, chat) == [("Notes", scenarios.WRITTEN_SLOWLY)]
     [invocation] = messages(api, chat)["invocations"]
     assert (invocation["status"], invocation["error"]) == ("succeeded", None)
+
+
+@pytest.fixture
+def published_drafts(monkeypatch) -> list[str]:
+    """Each draft a chat following a turn is sent (`aios.streams.Draft`), as it's published."""
+    monkeypatch.setattr(get_settings(), "draft_publish_interval_seconds", 0)
+    published = []
+    flush = streams.Draft.flush
+
+    def recording(draft):
+        if draft.text and draft.text != draft._published:
+            published.append(draft.text)
+        flush(draft)
+
+    monkeypatch.setattr(streams.Draft, "flush", recording)
+    return published
+
+
+def test_chat_with_an_agent_told_to_write_as_it_goes_streams_its_reply_in_pieces(
+    api, store, scripted, published_drafts, monkeypatch
+):
+    """The full-stack test's **Chat with this agent** story, here: the agent's reply is written
+    a piece at a time, each a draft the chat is sent, then posted whole."""
+    monkeypatch.setattr(scenarios, "PIECE_SECONDS", 0)
+    agent = api.post(
+        "/api/agents", json={"name": "Researcher", "base_prompt": scenarios.AS_IT_GOES}
+    ).json()
+    chat = api.post("/api/chats", json={"agent_id": agent["id"]})
+    assert chat.status_code == 201, chat.text
+
+    say(api, chat.json(), f"@[Researcher](agent:{agent['id']}) find papers", ("agent", agent))
+
+    whole = "".join(scenarios.PIECES)
+    assert replies_from(api, chat.json()) == [("Researcher", whole)]
+    pieces = [scenarios.PIECES[0]]
+    for piece in scenarios.PIECES[1:]:
+        pieces.append(pieces[-1] + piece)
+    assert published_drafts == pieces
+
+
+def test_a_mentioned_workflows_json_result_is_handed_back_in_short_with_the_full_output_kept(
+    api,
+    store,
+    scripted,
+    queued_runs,  # noqa: F811
+):
+    """The full-stack test's handback story, here: a workflow whose agent replies in JSON is
+    mentioned; its result is posted as the scripted handback's short summary of it, and the
+    output it summarised is kept whole on the invocation."""
+    output = '{"papers": ["A", "B", "C"], "found": 3}'
+    agent = api.post(
+        "/api/agents", json={"name": "Lister", "base_prompt": f"{scenarios.REPLY_WITH}{output}"}
+    ).json()
+    workflow = make_workflow(api, "Survey", [agent_node("list", agent)])
+    chat = make_chat(api, "Reading")
+    add(api, chat, "workflow", workflow)
+
+    say_workflow(api, chat, f"@[Survey](workflow:{workflow['id']}) list them", workflow)
+    drain_run(queued_runs.store, queued_runs[0])
+
+    summary = "In short: 2 fields, papers and found."
+    assert replies_from(api, chat, "workflow") == [("Survey", summary)]
+    [invocation] = messages(api, chat)["invocations"]
+    assert invocation["status"] == "succeeded"
+    assert invocation["full_output"] == output
+    assert invocation["handback_error"] is None
+
+
+@pytest.mark.parametrize(
+    ("output", "summary"),
+    [
+        ('{"total": 3}', "In short: 1 field, total."),
+        ('{"a": 1, "b": 2, "c": 3}', "In short: 3 fields, a, b and c."),
+        ('["x", "y"]', "In short: 2 items."),
+        ("{}", "{}"),
+        ("Paid.", "Paid."),
+        ("42", "42"),
+    ],
+)
+def test_the_scripted_handback_shortens_json_and_passes_anything_else_as_it_came(output, summary):
+    assert scenarios.handed_back(output) == summary
 
 
 def test_embeddings_are_a_deterministic_fake(scripted):

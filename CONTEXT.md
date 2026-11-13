@@ -196,7 +196,31 @@ The summary of a chat that an agent or workflow is given before it acts on a men
 _Avoid_: Context, prompt
 
 **Handback**:
-The summary of a run's result that is posted back to a chat in place of its raw output.
+The summary of a run's result that is posted back to a chat in place of its raw output: a
+mentioned workflow's result, a delivered result, or an agent's reply that's long or JSON. The
+full output stays one click away on the run card.
+
+**Draft**:
+An agent's reply as it's being written, streamed into the chat and replaced in place by the
+reply once it's posted. Never stored.
+
+**Delivery**:
+Posting a trigger's run result into a chosen chat once the run ends, as a handback (or a short
+failure message), from the agent or workflow.
+
+**Chat with this agent**:
+The action on an agent's page that makes a new open chat including only that agent, named for
+the agent, the person and the date. Not a private conversation.
+_Avoid_: Agent chat, direct message
+
+**Default chat agents**:
+The ordered list of agents, chosen by admins, that every new chat includes (the organisation
+assistant unless they chose otherwise); not used by **Chat with this agent**.
+
+**Notification**:
+An entry in a person's bell, across all their organisations, saying that something needs them or
+has happened to what they asked: a run failed, a reply came, they were mentioned, an approval
+needs them. It holds references, never content.
 
 ## Context coming in
 
