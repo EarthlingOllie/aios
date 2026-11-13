@@ -1,0 +1,83 @@
+[
+ {
+  "method": "GET",
+  "path": "/api/auth.test",
+  "json": {
+   "ok": true,
+   "url": "https://acme.slack.com/",
+   "team": "Acme",
+   "user_id": "U0BOT"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/users.info",
+  "json": {
+   "ok": true,
+   "user": {
+    "id": "U0ANN",
+    "name": "ann",
+    "real_name": "Ann Archer",
+    "profile": {
+     "display_name": "Ann",
+     "real_name": "Ann Archer"
+    }
+   }
+  },
+  "query": {
+   "user": "U0ANN"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/users.info",
+  "json": {
+   "ok": true,
+   "user": {
+    "id": "U0BOB",
+    "name": "bob",
+    "real_name": "Bob Baker",
+    "profile": {
+     "display_name": "",
+     "real_name": "Bob Baker"
+    }
+   }
+  },
+  "query": {
+   "user": "U0BOB"
+  },
+  "repeat": true
+ },
+ {
+  "method": "POST",
+  "path": "/api/chat.postMessage",
+  "json": {
+   "ok": true,
+   "channel": "C0GENERAL",
+   "ts": "1800000001.000100",
+   "message": {
+    "type": "message",
+    "bot_id": "B0AIOS",
+    "ts": "1800000001.000100"
+   }
+  },
+  "query": {
+   "channel": "C0GENERAL"
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/api/chat.getPermalink",
+  "json": {
+   "ok": true,
+   "channel": "C0GENERAL",
+   "permalink": "https://acme.slack.com/archives/C0GENERAL/p1800000001000100"
+  },
+  "query": {
+   "channel": "C0GENERAL",
+   "message_ts": "1800000001.000100"
+  }
+ }
+]

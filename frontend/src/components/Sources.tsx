@@ -177,14 +177,19 @@ function ConnectorsSection() {
                         : `Syncs ${connector.scope.map((i) => i.name).join(", ")}`
                       : (provider.unavailable ?? "Not connected.")}
                   </p>
+                  {connector?.attention && connector.attention.length > 0 && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      Needs attention: {connector.attention.map((i) => i.name).join(", ")}
+                    </p>
+                  )}
                 </div>
                 {connector ? (
-                  <>
-                    {connector.source && !connectorState(connector).attention && (
+                  <span className="flex items-center gap-2">
+                    {connector.source && connector.status === "active" && !connector.unavailable && (
                       <SourceBadge source={connector.source} />
                     )}
                     <ConnectorBadge connector={connector} />
-                  </>
+                  </span>
                 ) : (
                   <Button
                     size="sm"

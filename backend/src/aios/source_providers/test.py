@@ -25,7 +25,6 @@ message items are kept as one Markdown document per feed (channel) per month.
 import hashlib
 import json
 import secrets
-from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
@@ -47,6 +46,7 @@ from aios.source_providers import (
     SourceView,
     Tools,
     _test_unavailable,
+    kept,
 )
 from aios.testing.fake_mcp import FakeServer, FakeTool
 
@@ -298,42 +298,11 @@ def _revoke(secret: str) -> None:
     REVOKED.append(secret)
 
 
-def _when(row: SyncedItem):
-    return row.source_updated_at or row.created_at
-
-
 def _keep_groups(rows: Iterable[SyncedItem]) -> list[KeptDocument]:
-    """One Markdown document per feed (channel) per month, its messages in time order, each
-    reply under its thread's first message."""
-    rows = list(rows)
-    replies: dict[int, list[SyncedItem]] = defaultdict(list)
-    for r in rows:
-        if r.parent_id is not None:
-            replies[r.parent_id].append(r)
-    ids = {r.id for r in rows}
-    groups: dict[tuple[str, str], list[SyncedItem]] = defaultdict(list)
-    for r in rows:
-        if r.parent_id is None or r.parent_id not in ids:
-            channel = r.external_id.split("/", 1)[0] if "/" in r.external_id else "test"
-            groups[(channel, _when(r).strftime("%Y-%m"))].append(r)
-    kept = []
-    for (channel, month), tops in sorted(groups.items()):
-        lines = [f"# {channel}, {month}", ""]
-        for top in sorted(tops, key=_when):
-            lines += _message_lines(top, "")
-            for reply in sorted(replies.get(top.id, []), key=_when):
-                lines += _message_lines(reply, "> ")
-        kept.append(KeptDocument(f"{channel} {month}.md", "\n".join(lines).rstrip() + "\n"))
-    return kept
-
-
-def _message_lines(row: SyncedItem, quote: str) -> list[str]:
-    who = row.author_name or "Someone"
-    head = f"**{who}**, {_when(row):%Y-%m-%d %H:%M} UTC"
-    if row.url:
-        head += f" ([link]({row.url}))"
-    body = [quote + line if line else quote.rstrip() for line in (row.text or "").splitlines()]
-    return [quote + head, quote.rstrip(), *body, ""]
+    """One Markdown document per feed (channel) per month (`kept.by_channel_and_month`)."""
+    return kept.by_channel_and_month(
+        rows, lambda r: r.external_id.split("/", 1)[0] if "/" in r.external_id else "test"
+    )
 
 
 # --- Its tools ----------------------------------------------------------------------------------

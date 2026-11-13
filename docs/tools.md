@@ -138,6 +138,14 @@ nothing. See `aios.tools.connector`.
   in the audit log as `connector.tool_called`: the agent and run, the connector, the tool, its
   target (the channel or repository it names), the turn, the person behind the invocation, and
   whether it succeeded, never the content.
+- **Limited and signed tools.** A provider can limit a tool to targets an editor allows
+  (`Tools.limited`): the version keeps them in the pin's `allowed` (by tool name), a version
+  giving such a tool none is refused, the model is told which it may use, and a call on any other
+  target is refused before anything is sent, the model told why, and audited with outcome
+  `refused`. A signed tool's text (`Tools.signed`) ends with "— <agent name> via aios".
+- **Slack's `post_to_slack`** is served by aios itself over MCP in the process
+  (`aios.mcp_local`): it posts as the bot to an allowed channel, signed, and answers with the
+  message's permalink.
 
 Participants cause these actions by mentioning the agent; the agent's **invocable by** still
 limits who can start it. The connector's credential never reaches the model, the API, logs,

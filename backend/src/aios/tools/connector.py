@@ -11,6 +11,10 @@ the pin's `targets` is refused before it's made, and the model is told. A provid
 need it (`Tools.targets_required`: GitHub) refuses every call without such a target, so an empty
 list allows nothing; for the others an empty list allows any target.
 
+**Limited tools.** A tool its provider limits to chosen targets (`Tools.limited`: Slack's
+`post_to_slack`, to chosen channels) also has the targets it's allowed (`allowed`); a version
+giving it none is refused.
+
 **Checked** (`check`) whenever a version is saved, restored or run: a connector that isn't the
 organisation's is refused, and one since removed too ("the Test connector was removed"), so a
 version using it can't start. New settings, and a restored version's, are also checked against
@@ -32,6 +36,11 @@ agent as an error. A call to a tool with side effects (any not marked read-only)
 the audit log (`connector.tool_called`): the agent and run, the tool, its target (the channel or
 repository it acts on), the turn and the person behind the invocation, never the content; and so
 is a call refused for its target.
+
+**A limited tool's call** on a target it isn't allowed is refused before anything is sent: the
+model is told which targets it may use, and the refusal is audited (outcome `refused`). **A signed
+tool's text** (`Tools.signed`) ends with "— <agent name> via aios", so what an agent posts says
+who posted it (GitHub's tools, served by aios, sign their own).
 """
 
 import asyncio
@@ -65,6 +74,12 @@ EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 LEFT_OUT = "The {title} connector's tools aren't available in this turn: {why}"
 VANISHED = "The {title} connector no longer offers the tool {name}, so it was left out."
 CUT = "\n\n[Cut: the result was {size} bytes, over the {cap}-byte cap.]"
+NOT_ALLOWED = (
+    "{tool} may act only on the {arg}s it's allowed ({allowed}); {target} isn't one of them, so "
+    "nothing was done."
+)
+NONE_ALLOWED = "{tool} isn't allowed any {arg}, so nothing was done."
+SIGNATURE = "\n\n— {agent} via aios"
 
 
 class ConnectorPin(BaseModel):
@@ -76,11 +91,25 @@ class ConnectorPin(BaseModel):
     tools: list[str] = Field(default_factory=list, max_length=200)
     # What its calls may act on (channels, repositories), by name.
     targets: list[str] = Field(default_factory=list, max_length=200)
+    # A limited tool's allowed targets (channels, repositories), by tool name.
+    allowed: dict[str, list[str]] = Field(
+        default_factory=dict, max_length=200, exclude_if=lambda v: not v
+    )
 
     @field_validator("tools", "targets")
     @classmethod
     def _distinct(cls, names: list[str]) -> list[str]:
         return list(dict.fromkeys(t.strip()[:255] for t in names if t.strip()))
+
+    @field_validator("allowed")
+    @classmethod
+    def _targets(cls, allowed: dict[str, list[str]]) -> dict[str, list[str]]:
+        cleaned = {}
+        for tool, targets in allowed.items():
+            if len(targets) > 1000:
+                raise ValueError("at most 1000 targets per tool")
+            cleaned[tool.strip()] = list(dict.fromkeys(t.strip() for t in targets if t.strip()))
+        return {k: v for k, v in cleaned.items() if k}
 
 
 class ConnectorToolsConfig(BaseModel):
@@ -226,6 +255,10 @@ def check(config: ConnectorToolsConfig, org: ToolOrganisation) -> str | None:
             continue
         if missing := [n for n in pin.tools if n not in names]:
             reasons.append(f"the {title} connector doesn't offer {', '.join(missing)}")
+        limited = _limited(pin.provider)
+        for name in pin.tools:
+            if name in limited and not pin.allowed.get(name):
+                reasons.append(f"{name} needs at least one {limited[name]} it may use")
     return "; ".join(reasons) or None
 
 
@@ -238,6 +271,16 @@ def _capped(text: str) -> str:
     if len(data) <= cap:
         return text
     return data[:cap].decode(errors="ignore") + CUT.format(size=len(data), cap=cap)
+
+
+def _limited(provider: str) -> dict[str, str]:
+    found = source_providers.provider(provider)
+    return dict(found.tools.limited) if found and found.tools else {}
+
+
+def _signed(provider: str) -> dict[str, str]:
+    found = source_providers.provider(provider)
+    return dict(found.tools.signed) if found and found.tools else {}
 
 
 def _target(provider: str, arguments: dict[str, Any]) -> str | None:
@@ -333,8 +376,10 @@ async def call(
     tool: mcp_client.Tool,
     arguments: dict[str, Any],
     targets: list[str] | None = None,
+    allowed: list[str] | None = None,
 ) -> str:
-    """Call the connector's tool: its result (capped), or `ToolException` with why not."""
+    """Call the connector's tool: its result (capped), or `ToolException` with why not. A limited
+    tool may act only on its `allowed` targets."""
     title = title_of(provider)
     charge = usage.current()
     target = _target(provider, arguments)
@@ -356,6 +401,32 @@ async def call(
             server = await run_in_threadpool(_server, store_id, connector_id, provider)
     except Unavailable as exc:
         raise ToolException(LEFT_OUT.format(title=title, why=exc)) from exc
+    arg = _limited(provider).get(tool.name)
+    if arg is not None:
+        limited_target = arguments.get(arg)
+        if not isinstance(limited_target, str) or limited_target not in (allowed or []):
+            await run_in_threadpool(
+                _audit,
+                store_id,
+                charge,
+                connector_id,
+                provider,
+                tool.name,
+                str(limited_target) if limited_target is not None else None,
+                "refused",
+            )
+            if not allowed:
+                raise ToolException(NONE_ALLOWED.format(tool=tool.name, arg=arg))
+            raise ToolException(
+                NOT_ALLOWED.format(
+                    tool=tool.name, arg=arg, allowed=", ".join(allowed), target=limited_target
+                )
+            )
+    if text_arg := _signed(provider).get(tool.name):
+        arguments = {
+            **arguments,
+            text_arg: str(arguments.get(text_arg) or "").rstrip() + SIGNATURE.format(agent=agent),
+        }
     if native is not None:
         try:
             text, is_error = await run_in_threadpool(
@@ -395,11 +466,14 @@ def _agent_tool(
     provider: str,
     tool: mcp_client.Tool,
     targets: list[str],
+    allowed: list[str] | None = None,
 ) -> StructuredTool:
     async def run(**arguments: Any) -> str:
-        return await call(store_id, connector_id, provider, tool, arguments, targets)
+        return await call(store_id, connector_id, provider, tool, arguments, targets, allowed)
 
     description = f"[{title_of(provider)} connector] {tool.description}".strip()
+    if arg := _limited(provider).get(tool.name):
+        description += f" Allowed {arg}s: {', '.join(allowed or []) or 'none'}."
     return StructuredTool(
         name=f"{provider}{SEPARATOR}{tool.name}"[:64],
         description=description,
@@ -430,7 +504,14 @@ def build_in(config: ConnectorToolsConfig, org: ToolOrganisation) -> list[AgentT
                 org.notices.append(VANISHED.format(title=title, name=name))
                 continue
             tools.append(
-                _agent_tool(store_id, connector.id, connector.provider, found, pin.targets)
+                _agent_tool(
+                    store_id,
+                    connector.id,
+                    connector.provider,
+                    found,
+                    pin.targets,
+                    pin.allowed.get(name),
+                )
             )
     return tools
 

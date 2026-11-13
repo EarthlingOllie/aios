@@ -122,6 +122,18 @@ export function ConnectorPage() {
           </p>
         )}
         <SourceSummary connector={connector} />
+        {connector.attention && connector.attention.length > 0 && (
+          <Section title="Needs attention" label="Needs attention">
+            <ul className="divide-y rounded-md border border-amber-500/50">
+              {connector.attention.map((item) => (
+                <li key={item.id} className="px-3 py-2 text-sm">
+                  <span className="font-medium">{item.name}</span>
+                  <p className="text-muted-foreground text-xs">{item.reason}</p>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
         {!removing && (
           <ScopePicker
             connector={connector}
@@ -242,6 +254,11 @@ function ScopePicker({
   return (
     <Section title="What it syncs" label="What it syncs">
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      {connector.scope_hint && (
+        <p role="note" className="text-muted-foreground text-sm">
+          {connector.scope_hint}
+        </p>
+      )}
       {usable && (
         <Input
           aria-label="Search what it can sync"

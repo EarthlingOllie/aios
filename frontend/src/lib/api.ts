@@ -539,6 +539,11 @@ export type Connector = {
   /** Whether it also syncs documentation files (GitHub's README and docs Markdown); null if its
    * provider has none. */
   docs: boolean | null;
+  /** What an admin picking its scope should know (why a private channel isn't listed, say). */
+  scope_hint?: string | null;
+  /** Parts of its scope its last sync couldn't read (archived, or left by the app): their items
+   * were removed. */
+  attention?: { id: string; name: string; reason: string }[];
   /** Its source, once its scope is first saved. */
   source_id: number | null;
   source: Source | null;
@@ -552,9 +557,15 @@ export type ConnectorTool = {
   input_schema: Record<string, unknown>;
   /** Marked read-only by the provider: calling it changes nothing. */
   read_only: boolean;
+  /** The argument naming what it acts on (a channel), if it may act only on targets an editor
+   * allows; null if it isn't limited. */
+  limited_by?: string | null;
+  /** What a limited tool can be allowed to act on. */
+  targets?: ScopeItem[];
 };
 
-/** A connector's tools an agent version may use (the `connector` tool's settings). */
+/** A connector's tools an agent version may use (the `connector` tool's settings), and a limited
+ * tool's allowed targets, by tool name. */
 export type ConnectorPin = {
   connector_id: number;
   provider: string;
@@ -562,6 +573,8 @@ export type ConnectorPin = {
   /** What its calls may act on (channels, repositories). GitHub's tools act only on these; for
    * other providers, an empty list allows any. */
   targets?: string[];
+  /** A limited tool's allowed targets, by tool name. */
+  allowed?: Record<string, string[]>;
 };
 
 /** The source a document belongs to: Uploads for an upload. */

@@ -183,6 +183,9 @@ export type ConnectorToolRow = {
   description: string;
   input_schema: object;
   read_only: boolean;
+  /** The argument naming what it acts on, if it's limited to targets an editor allows. */
+  limited_by?: string | null;
+  targets?: ScopeItemRow[];
 };
 
 export type SchemaChangeRow = {
@@ -357,6 +360,8 @@ export type ConnectorRow = {
   scope: ScopeItemRow[];
   /** Whether it syncs documentation files too (GitHub); null if its provider has none. */
   docs: boolean | null;
+  scope_hint?: string | null;
+  attention?: { id: string; name: string; reason: string }[];
   source_id: number | null;
   created_at: string;
 };
@@ -1132,6 +1137,19 @@ export class FakeApi {
           properties: { repository: { type: "string" }, title: { type: "string" }, body: { type: "string" } },
         },
         read_only: false,
+      },
+    ],
+    slack: [
+      {
+        name: "post_to_slack",
+        description: "Post a message to a Slack channel, as the aios app.",
+        input_schema: { type: "object", properties: { channel: { type: "string" }, text: { type: "string" } } },
+        read_only: false,
+        limited_by: "channel",
+        targets: [
+          { id: "C0GENERAL", name: "#general", restricted: false },
+          { id: "G0PLANS", name: "#plans", restricted: true },
+        ],
       },
     ],
   };

@@ -15,9 +15,9 @@ An adapter can leave a file out (unsupported, or too big): it lists it as skippe
 its sync record and removes any copy it had. A change feed that can't say exactly what changed
 (a folder moved) can answer a full listing instead (`Changes.complete`).
 
-**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive
-(`aios.source_providers.google_drive`), GitHub (`aios.source_providers.github`) and the
-development-only test provider
+**Providers** (`PROVIDERS`) are found by name: Slack (`aios.source_providers.slack`), Google
+Drive (`aios.source_providers.google_drive`), GitHub (`aios.source_providers.github`) and
+the development-only test provider
 (`aios.source_providers.test`). Each says why it's unavailable here,
 if it is (`why_unavailable`): switched off in this deployment (`connector_enabled_providers`, which
 stops its syncs at once and leaves its content), missing its app settings, or not built yet. A
@@ -104,6 +104,15 @@ class Changes:
     cursor: str | None = None
     skipped: list[Skipped] = field(default_factory=list)
     complete: bool = False
+    # What this read went over, if not everything (a listing) or only what changed (a change
+    # feed): the stored items (by external id) it covers. A stored item it covers that it didn't
+    # return is gone at the source, and is removed. A provider that re-reads a window of its
+    # history (Slack) says which items that window holds; a full listing that covers everything
+    # needn't say.
+    covers: Callable[[str], bool] | None = field(default=None, compare=False)
+    # Parts of the scope that need an admin's attention (a channel archived, or left by the app),
+    # by scope option id, each with why; None leaves what the source last recorded.
+    attention: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,11 @@ class SourceView:
     name: str
     settings: dict[str, Any]
     credential: str | None = field(default=None, repr=False)
+    # An admin asked for a full resync: re-read everything, however old.
+    resync: bool = False
+    # Where its last sync left off (what `Adapter.changes` is also given), for a listing that
+    # re-reads only part of the source's history.
+    cursor: str | None = None
 
 
 class Adapter(Protocol):
@@ -176,6 +190,12 @@ class Tools:
     # ("repositories").
     targets_required: bool = False
     targets_name: str = "targets"
+    # Tools that may act only on targets an editor allowed (`ConnectorPin.allowed`), each with the
+    # argument naming its target: a call on any other target is refused, and the model told.
+    limited: dict[str, str] = field(default_factory=dict)
+    # Tools whose text is signed with the agent's name ("— <agent name> via aios"), each with the
+    # argument holding the text.
+    signed: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -203,6 +223,8 @@ class Provider:
     # It can also sync documentation files (a source's `docs` setting): GitHub's README and docs
     # Markdown.
     docs: bool = False
+    # What an admin picking its scope should know (why something isn't listed, say).
+    scope_hint: str | None = None
 
 
 def needs_app_settings(title: str, *values: Any) -> str | None:
@@ -214,13 +236,6 @@ def needs_app_settings(title: str, *values: Any) -> str | None:
     if all(present(v) for v in values):
         return None
     return f"{title} isn't set up in this deployment: it needs its app settings."
-
-
-def _app_settings(title: str, *values: Any) -> str | None:
-    """A provider not built yet: unavailable whatever its settings."""
-    return needs_app_settings(title, *values) or (
-        f"{title} isn't available in this version of aios yet."
-    )
 
 
 def _test_unavailable() -> str | None:
@@ -250,14 +265,15 @@ def _github_provider() -> Provider:
 TEST = "test"
 
 
+def _slack_provider() -> Provider:
+    from aios.source_providers import slack
+
+    return slack.PROVIDER
+
+
 def _providers() -> dict[str, Provider]:
-    s = get_settings()
     return {
-        "slack": Provider(
-            "slack",
-            "Slack",
-            lambda: _app_settings("Slack", s.slack_client_id, s.slack_client_secret),
-        ),
+        "slack": _slack_provider(),
         "google_drive": _google_drive_provider(),
         "github": _github_provider(),
         TEST: _test_provider(),
