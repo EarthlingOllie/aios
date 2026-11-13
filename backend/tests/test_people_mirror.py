@@ -87,11 +87,11 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
         conn.execute("DROP TABLE aios.turns")
         conn.execute("DROP TYPE aios.turn_status")
         conn.execute(
-            "DROP TABLE aios.schema_change_requests, aios.invocations, aios.chat_messages,"
+            "DROP TABLE aios.approvals, aios.invocations, aios.chat_messages,"
             " aios.chat_members, aios.chats, aios.triggers CASCADE"
         )
         conn.execute(
-            "DROP TYPE aios.schema_change_status, aios.invocation_status, aios.invocation_cause,"
+            "DROP TYPE aios.approval_status, aios.invocation_status, aios.invocation_cause,"
             " aios.chat_message_kind, aios.chat_author_kind,"
             " aios.chat_member_kind, aios.trigger_status,"
             " aios.trigger_target_kind, aios.trigger_kind, aios.event_type"

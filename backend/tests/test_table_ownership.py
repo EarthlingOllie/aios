@@ -15,9 +15,9 @@ from test_data_tools import as_owner, provisioned, run_tools
 from test_permissions import set_role
 
 from aios.datastores import data_store_for, dropped, ownership, schema_changes, store_session
-from aios.datastores.models import SchemaChangeRequest
+from aios.datastores.models import Approval
 from aios.datastores.schema_changes import SchemaChange
-from aios.models import DataStore, Role, SchemaChangeStatus, User
+from aios.models import ApprovalStatus, DataStore, Role, User
 from aios.testing.fake_model import ToolCall
 
 TOOLS = [{"key": "write_data", "config": {}}, {"key": "query_data", "config": {}}]
@@ -54,11 +54,9 @@ def create_table(api, store: DataStore, agent: dict, name: str) -> None:
     )
     request = schema_changes.propose(store.id, spec, "Notes", run_id=run["id"], tool_call_id="c1")
     StoreRows(store.id).execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(status=SchemaChangeStatus.approved)
+        update(Approval).where(Approval.id == request.id).values(status=ApprovalStatus.approved)
     )
-    assert schema_changes.apply(store.id, request.id) == SchemaChangeStatus.applied
+    assert schema_changes.apply(store.id, request.id) == ApprovalStatus.applied
 
 
 def listed(api) -> dict[str, dict]:
@@ -300,12 +298,10 @@ def drop_table(store: DataStore, table: str) -> str:
     request = schema_changes.propose(store.id, spec, "Gone", run_id=None, tool_call_id=None)
     rows = StoreRows(store.id)
     rows.execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(status=SchemaChangeStatus.approved)
+        update(Approval).where(Approval.id == request.id).values(status=ApprovalStatus.approved)
     )
-    assert schema_changes.apply(store.id, request.id) == SchemaChangeStatus.applied
-    return rows.get(SchemaChangeRequest, request.id).ops[0]["dropped_as"]
+    assert schema_changes.apply(store.id, request.id) == ApprovalStatus.applied
+    return rows.get(Approval, request.id).ops[0]["dropped_as"]
 
 
 def ownership_rows(store: DataStore) -> list[tuple]:

@@ -69,11 +69,11 @@ from aios.config import get_settings
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
+    Approval,
     Chat,
     ChatMessage,
     Event,
     Invocation,
-    SchemaChangeRequest,
     Trigger,
     Workflow,
     WorkflowRun,
@@ -889,11 +889,7 @@ def finish_turn(store: Session, invocation_id: int, error: str | None) -> None:
 def waiting_on_a_request(run_id):
     """Whether the agent run (an id, or a column of one) waits on a schema change request: not
     yet resumed with its outcome."""
-    return (
-        select(SchemaChangeRequest.id)
-        .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
-        .exists()
-    )
+    return select(Approval.id).where(Approval.requested_by_run == run_id, *not_given()).exists()
 
 
 def finish_resumed(store: Session, run_id: int, error: str | None) -> None:

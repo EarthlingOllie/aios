@@ -40,9 +40,9 @@ from aios.datastores.models import (
     AgentRun,
     AgentVersion,
     AgentVersionTool,
+    Approval,
     Event,
     Invocation,
-    SchemaChangeRequest,
     Trigger,
     Workflow,
     WorkflowNode,
@@ -53,11 +53,11 @@ from aios.datastores.models import (
 from aios.db import DB, DbId, SessionLocal
 from aios.limits import RunLimits
 from aios.models import (
+    ApprovalStatus,
     InvocableBy,
     InvocationCause,
     InvocationStatus,
     Role,
-    SchemaChangeStatus,
     TriggerTargetKind,
     WorkflowNodeKind,
     WorkflowRunStatus,
@@ -1217,7 +1217,7 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
     return stale
 
 
-def waiting_requests(store: Session, steps: Sequence[WorkflowRunStep]) -> list[SchemaChangeRequest]:
+def waiting_requests(store: Session, steps: Sequence[WorkflowRunStep]) -> list[Approval]:
     """The requests the waiting steps among `steps` (the store's) wait on, oldest first: those
     their agent runs made that they haven't been given, and each one's recorded request (its
     agent run may have gone)."""
@@ -1228,21 +1228,21 @@ def waiting_requests(store: Session, steps: Sequence[WorkflowRunStep]) -> list[S
         return []
     return list(
         store.scalars(
-            select(SchemaChangeRequest)
+            select(Approval)
             .where(
                 or_(
-                    SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
-                    SchemaChangeRequest.id.in_(recorded),
+                    Approval.requested_by_run.in_(agent_run_ids),
+                    Approval.id.in_(recorded),
                 ),
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+                Approval.resumed_at.is_(None),
+                Approval.status != ApprovalStatus.cancelled,
             )
-            .order_by(SchemaChangeRequest.created_at, SchemaChangeRequest.id)
+            .order_by(Approval.created_at, Approval.id)
         )
     )
 
 
-def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list[uuid.UUID]:
+def waits_on(step: WorkflowRunStep, requests: list[Approval]) -> list[uuid.UUID]:
     if step.status != WorkflowStepStatus.waiting:
         return []
     return [

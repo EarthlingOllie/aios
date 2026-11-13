@@ -14,7 +14,7 @@ from aios import approvals, invocations
 from aios.config import get_settings
 from aios.datastores import store_id_of, store_session
 from aios.datastores.models import (
-    SchemaChangeRequest,
+    Approval,
     WorkflowRun,
     WorkflowRunStep,
 )
@@ -51,10 +51,10 @@ def _not_given(
     agent_run_ids, request_ids = list(agent_run_ids), list(request_ids)
     return [
         or_(
-            SchemaChangeRequest.requested_by_run.in_(agent_run_ids) if agent_run_ids else false(),
-            SchemaChangeRequest.id.in_(request_ids) if request_ids else false(),
+            Approval.requested_by_run.in_(agent_run_ids) if agent_run_ids else false(),
+            Approval.id.in_(request_ids) if request_ids else false(),
         ),
-        SchemaChangeRequest.resumed_at.is_(None),
+        Approval.resumed_at.is_(None),
     ]
 
 
@@ -67,7 +67,7 @@ def decided_wait(store: Session, step: WorkflowRunStep) -> bool:
     request_ids = [step.approval_id] if step.approval_id is not None else []
     return (
         store.scalar(
-            select(SchemaChangeRequest.id)
+            select(Approval.id)
             .where(*_not_given(agent_run_ids, request_ids), approvals.decided_clause())
             .limit(1)
         )
@@ -75,7 +75,7 @@ def decided_wait(store: Session, step: WorkflowRunStep) -> bool:
     )
 
 
-def workflow_run_waiting_on(store: Session, request: SchemaChangeRequest) -> int | None:
+def workflow_run_waiting_on(store: Session, request: Approval) -> int | None:
     """The workflow run (in the request's store, `store`) whose agent node made the request, if
     one did: the run to resume once it's decided. Found by the step's agent run, or, if the step
     has lost it, by the request the step waits on."""
@@ -202,7 +202,7 @@ def close_requests(
     applied still is). In the caller's transaction."""
     not_given = _not_given(agent_run_ids, request_ids)
     cancelled = approvals.cancel(store, *not_given)
-    store.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
+    store.execute(update(Approval).where(*not_given).values(resumed_at=func.now()))
     return cancelled
 
 

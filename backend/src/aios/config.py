@@ -106,10 +106,8 @@ class Settings(BaseSettings):
     # How long (days) a dropped table or column is kept, for a member to restore, before it's
     # purged for good (`aios.datastores.dropped`).
     data_store_dropped_retention_days: float = Field(default=30, ge=0)
-    # A schema change request nobody has decided after this many days expires, which counts as
-    # a rejection: the run that asked carries on, told so. Checked every
-    # `schema_change_expiry_check_seconds` by the routine worker's beat.
-    schema_change_request_expiry_days: float = Field(default=7, gt=0)
+    # How often (seconds) the routine worker's beat expires approvals nobody decided before
+    # their expiry time (`aios.approvals.expire`; the organisation's setting, or the node's).
     schema_change_expiry_check_seconds: float = Field(default=60 * 60, gt=0)
     # An organisation scheduled for deletion is deleted this many days later, unless its creator
     # cancels (`aios.organisations`); the routine worker's beat looks for those whose grace

@@ -72,10 +72,10 @@ from aios.datastores import (
 from aios.datastores.models import (
     Agent,
     AgentRun,
+    Approval,
     ChatMessage,
     Event,
     Invocation,
-    SchemaChangeRequest,
     SyncKind,
     Trigger,
     Turn,
@@ -711,7 +711,7 @@ def resume_for(data_store_id: uuid.UUID, request_id: uuid.UUID) -> Work | None:
     a run made it) hasn't been given the outcome yet: an advance of the workflow run whose agent
     node made it, which resumes the node where it waited; or a resume of the agent run."""
     with store_session(data_store_id, "ro") as store:
-        request = store.get(SchemaChangeRequest, request_id)
+        request = store.get(Approval, request_id)
         if request is None or not approvals.decided(request) or request.resumed_at is not None:
             return None
         run_id = request.requested_by_run

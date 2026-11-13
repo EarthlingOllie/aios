@@ -17,8 +17,8 @@ waits on any more (`cancel`), clearing their notifications once they no longer w
 
 Approvals are in their store, the source of truth, and notifications on the platform, which name
 each by its id, from its store's organisation: an approval is closed in its store first, and its
-notifications are cleared once that has committed (`clear_notifications_of`). Still kept in
-`schema_change_requests` (`SchemaChangeRequest`) until the rename to approvals.
+notifications are cleared once that has committed (`clear_notifications_of`). They're kept in
+each store's `approvals` (`aios.datastores.models.Approval`).
 """
 
 import logging
@@ -31,7 +31,6 @@ from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios import approval_rules, notifications
-from aios.config import get_settings
 from aios.datastores.connections import (
     DataStoreBusy,
     DataStoreNotFound,
@@ -39,14 +38,14 @@ from aios.datastores.connections import (
     ready_stores,
     store_session,
 )
-from aios.datastores.models import SchemaChangeRequest, WorkflowRunStep
+from aios.datastores.models import Approval, WorkflowRunStep
 from aios.db import SessionLocal
 from aios.models import (
     ApprovalKind,
+    ApprovalStatus,
     DataStore,
     Organisation,
     Role,
-    SchemaChangeStatus,
 )
 from aios.models.approvals import decided as status_decided
 
@@ -54,8 +53,6 @@ log = logging.getLogger(__name__)
 
 # An approval, named outside its store: the store, and the approval's id.
 StoredRequest = tuple[uuid.UUID, uuid.UUID]
-
-Approval = SchemaChangeRequest
 
 # The longest an approval node may set its own expiry to, in days.
 MAX_EXPIRY_DAYS = 365
@@ -201,12 +198,10 @@ def decided_clause() -> ColumnElement[bool]:
     """`decided`, in SQL."""
     return or_(
         and_(
-            SchemaChangeRequest.kind == ApprovalKind.workflow_step.value,
-            SchemaChangeRequest.status != SchemaChangeStatus.pending,
+            Approval.kind == ApprovalKind.workflow_step.value,
+            Approval.status != ApprovalStatus.pending,
         ),
-        SchemaChangeRequest.status.not_in(
-            [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
-        ),
+        Approval.status.not_in([ApprovalStatus.pending, ApprovalStatus.approved]),
     )
 
 
@@ -226,10 +221,10 @@ def outcome(approval: Approval, organisation_id: int) -> dict[str, Any]:
     """What an approval node outputs once its approval is decided (`OUTCOME_SCHEMA`): whether
     it was approved (an expired or cancelled one wasn't), the decider's note, who decided it
     (none for an expired or cancelled one), and how it ended."""
-    status = SchemaChangeStatus(approval.status)
+    status = ApprovalStatus(approval.status)
     decider = approval.decided_by_user_id
     return {
-        "approved": status == SchemaChangeStatus.approved,
+        "approved": status == ApprovalStatus.approved,
         "note": approval.note,
         "decided_by": None
         if decider is None
@@ -245,8 +240,8 @@ def not_given() -> list[ColumnElement[bool]]:
     """An approval the run waiting on it still waits on: not yet given its outcome, nor
     cancelled (whose run has been told, or is gone)."""
     return [
-        SchemaChangeRequest.resumed_at.is_(None),
-        SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+        Approval.resumed_at.is_(None),
+        Approval.status != ApprovalStatus.cancelled,
     ]
 
 
@@ -288,7 +283,7 @@ def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: dateti
 
 
 def _close(
-    store: Session, status: SchemaChangeStatus, *where: ColumnElement[bool], **values: Any
+    store: Session, status: ApprovalStatus, *where: ColumnElement[bool], **values: Any
 ) -> list[uuid.UUID]:
     """Take the store's pending approvals matching `where` out of `pending` with `status` (and
     `values`); returns their ids, whose notifications to clear once this commits
@@ -297,10 +292,10 @@ def _close(
     it. In the caller's transaction."""
     return list(
         store.scalars(
-            update(SchemaChangeRequest)
-            .where(*where, SchemaChangeRequest.status == SchemaChangeStatus.pending)
+            update(Approval)
+            .where(*where, Approval.status == ApprovalStatus.pending)
             .values(status=status, decided_at=func.now(), **values)
-            .returning(SchemaChangeRequest.id)
+            .returning(Approval.id)
         ).all()
     )
 
@@ -310,20 +305,12 @@ def cancel(store: Session, *where: ColumnElement[bool]) -> list[uuid.UUID]:
     notifications to clear once this commits (`clear_notifications_of`). Nothing will resume the
     runs waiting on them (they're gone, cancelled, or have been told the call didn't finish), so
     they count as given. In the caller's transaction."""
-    return _close(store, SchemaChangeStatus.cancelled, *where, resumed_at=func.now())
+    return _close(store, ApprovalStatus.cancelled, *where, resumed_at=func.now())
 
 
 def overdue() -> ColumnElement[bool]:
-    """A pending approval past its expiry time; one made before expiry times were recorded,
-    past the deployment's schema change expiry."""
-    age = timedelta(days=get_settings().schema_change_request_expiry_days)
-    return or_(
-        SchemaChangeRequest.expires_at < func.now(),
-        and_(
-            SchemaChangeRequest.expires_at.is_(None),
-            SchemaChangeRequest.created_at < func.now() - age,
-        ),
-    )
+    """A pending approval past its expiry time."""
+    return Approval.expires_at < func.now()
 
 
 def expire() -> list[StoredRequest]:
@@ -335,7 +322,7 @@ def expire() -> list[StoredRequest]:
     for store_id, _ in ready_stores():
         try:
             with store_session(store_id) as store:
-                ids = _close(store, SchemaChangeStatus.expired, overdue())
+                ids = _close(store, ApprovalStatus.expired, overdue())
                 store.commit()
         except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
             log.warning("couldn't expire the approvals of data store %s: %s", store_id, exc)
@@ -353,26 +340,26 @@ def expired_not_resumed() -> list[StoredRequest]:
     One nothing can resume any more (its agent run is gone, and no workflow step waits on it)
     counts as given instead, so it isn't looked at again."""
     not_resumed = [
-        SchemaChangeRequest.status == SchemaChangeStatus.expired,
-        SchemaChangeRequest.resumed_at.is_(None),
+        Approval.status == ApprovalStatus.expired,
+        Approval.resumed_at.is_(None),
     ]
     found: list[StoredRequest] = []
     for store_id, _ in ready_stores():
         try:
             with store_session(store_id) as store:
                 waited = select(WorkflowRunStep.id).where(
-                    WorkflowRunStep.approval_id == SchemaChangeRequest.id
+                    WorkflowRunStep.approval_id == Approval.id
                 )
                 store.execute(
-                    update(SchemaChangeRequest)
+                    update(Approval)
                     .where(
                         *not_resumed,
-                        SchemaChangeRequest.requested_by_run.is_(None),
+                        Approval.requested_by_run.is_(None),
                         ~waited.exists(),
                     )
                     .values(resumed_at=func.now())
                 )
-                ids = list(store.scalars(select(SchemaChangeRequest.id).where(*not_resumed)))
+                ids = list(store.scalars(select(Approval.id).where(*not_resumed)))
                 store.commit()
         except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
             continue

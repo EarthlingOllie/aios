@@ -12,9 +12,9 @@ from test_data_tools import as_owner, provisioned
 
 from aios.config import get_settings
 from aios.datastores import schema_changes
-from aios.datastores.models import SchemaChangeRequest
+from aios.datastores.models import Approval
 from aios.datastores.schema_changes import Invalid, SchemaChange
-from aios.models import DataStore, SchemaChangeStatus
+from aios.models import ApprovalStatus, DataStore
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ CONTACTS = {
 STORE_OF: dict = {}
 
 
-def propose(store: DataStore, *ops: dict) -> SchemaChangeRequest:
+def propose(store: DataStore, *ops: dict) -> Approval:
     request = schema_changes.propose(
         store.id, spec(*ops), "Because", run_id=None, tool_call_id=None
     )
@@ -55,16 +55,14 @@ def propose(store: DataStore, *ops: dict) -> SchemaChangeRequest:
     return request
 
 
-def approve(db, request: SchemaChangeRequest) -> SchemaChangeRequest:
+def approve(db, request: Approval) -> Approval:
     """Approve the request behind the API's back and apply it; returns it as it is then."""
     rows = StoreRows(STORE_OF[request.id])
     rows.execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(status=SchemaChangeStatus.approved)
+        update(Approval).where(Approval.id == request.id).values(status=ApprovalStatus.approved)
     )
     schema_changes.apply(rows.store_id, request.id)
-    return rows.get(SchemaChangeRequest, request.id)
+    return rows.get(Approval, request.id)
 
 
 def tables(store: DataStore) -> dict[str, list[str]]:
@@ -89,7 +87,7 @@ def history(store: DataStore) -> list[tuple]:
 def test_a_request_is_checked_against_the_stores_schema_and_compiled(db, store):
     request = propose(store, CONTACTS)
 
-    assert request.status == SchemaChangeStatus.pending
+    assert request.status == ApprovalStatus.pending
     assert request.base_revision == 0
     assert request.sql.startswith('CREATE TABLE "data"."contacts" (')
     assert request.summary == "Create table data.contacts"
@@ -109,7 +107,7 @@ def test_an_approved_request_is_applied_in_one_go_and_logged(db, store):
 
     applied = approve(db, request)
 
-    assert applied.status == SchemaChangeStatus.applied
+    assert applied.status == ApprovalStatus.applied
     assert applied.applied_at is not None and applied.error is None
     assert tables(store) == {
         "contacts": ["id", "name", "bio", "bio_embedding"],
@@ -133,12 +131,14 @@ def test_an_approved_request_is_applied_in_one_go_and_logged(db, store):
     assert propose(store, {**CONTACTS, "name": "more"}).base_revision == revision
 
 
-def test_the_read_write_role_writes_the_new_table(db, store):
+def test_the_read_write_role_reads_the_new_table_but_never_writes_it(db, store):
+    """Only agents' own logins write data tables (`aios.datastores.agent_roles`)."""
     approve(db, propose(store, CONTACTS))
 
     with psycopg.connect(_login(store, "rw"), autocommit=True) as rw:
-        rw.execute("INSERT INTO data.contacts (name) VALUES ('Ada')")
-        assert rw.execute("SELECT name FROM data.contacts").fetchall() == [("Ada",)]
+        assert rw.execute("SELECT name FROM data.contacts").fetchall() == []
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            rw.execute("INSERT INTO data.contacts (name) VALUES ('Ada')")
 
 
 def _login(store: DataStore, role: str) -> str:
@@ -160,7 +160,7 @@ def test_a_failed_apply_leaves_the_schema_unchanged(db, store):
 
     failed = approve(db, request)
 
-    assert failed.status == SchemaChangeStatus.failed
+    assert failed.status == ApprovalStatus.failed
     assert failed.error == 'could not create unique index "fish_name_idx"'
     assert tables(store) == {"fish": ["id", "name"]}
     assert history(store) == []
@@ -176,13 +176,13 @@ def test_two_requests_on_the_same_revision_the_second_is_checked_again(db, store
     )
     assert first.base_revision == clashing.base_revision == unrelated.base_revision
 
-    assert approve(db, first).status == SchemaChangeStatus.applied
+    assert approve(db, first).status == ApprovalStatus.applied
     stale = approve(db, clashing)
     applied = approve(db, unrelated)
 
-    assert stale.status == SchemaChangeStatus.stale
+    assert stale.status == ApprovalStatus.stale
     assert "`data.contacts` already exists" in stale.error
-    assert applied.status == SchemaChangeStatus.applied
+    assert applied.status == ApprovalStatus.applied
     assert tables(store) == {
         "contacts": ["id", "name", "bio", "bio_embedding"],
         "fish": [
@@ -211,7 +211,7 @@ def test_a_change_applied_while_a_request_is_made_still_gets_it_checked_again(
     second = propose(store, CONTACTS)
     monkeypatch.undo()
 
-    assert approve(db, second).status == SchemaChangeStatus.stale
+    assert approve(db, second).status == ApprovalStatus.stale
 
 
 def test_an_apply_waits_for_a_lock_no_longer_than_its_timeout(db, store, monkeypatch):
@@ -236,7 +236,7 @@ def test_an_apply_waits_for_a_lock_no_longer_than_its_timeout(db, store, monkeyp
         release.set()
         holder.join()
 
-    assert failed.status == SchemaChangeStatus.failed
+    assert failed.status == ApprovalStatus.failed
     assert "lock timeout" in failed.error
     assert tables(store) == {"fish": ["id", "name"]}
 
@@ -246,7 +246,5 @@ def test_only_an_approved_request_is_applied(db, store):
 
     schema_changes.apply(store.id, request.id)
 
-    assert StoreRows(store.id).get(SchemaChangeRequest, request.id).status == (
-        SchemaChangeStatus.pending
-    )
+    assert StoreRows(store.id).get(Approval, request.id).status == (ApprovalStatus.pending)
     assert tables(store) == {"fish": ["id", "name"]}

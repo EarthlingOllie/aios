@@ -6,8 +6,9 @@ three roles named after it (never after a user):
 - `<prefix>_owner` (no login) owns the database and everything in it. The provisioner is a
   member, and `SET ROLE`s to it to migrate the store.
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
-  it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
-  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`,
+  it and nothing else, use its schemas, and read its tables; `rw`, the platform's own, also
+  writes the platform's tables (`grant_rw`), but never `data` tables, which only agents'
+  logins write, nor the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`,
   `aios.embedding_columns`, `aios.dropped_objects`), which both only read, and dropped tables
   and columns (`aios.datastores.dropped`), which neither may. Neither may create anything.
   Each has its own connection limit, and default statement and idle-in-transaction timeouts,
@@ -289,11 +290,11 @@ def _set_up_database(run: _Run) -> None:
             )
         )
         owner, both = sql.Identifier(n.owner), _ident(n.rw, n.ro)
+        # Reads everywhere; `rw`'s writes are on the platform's own schemas only, given as the
+        # store is migrated (`grant_rw`), once they're there.
         for grant in (
             sql.SQL("GRANT USAGE ON SCHEMAS TO {}").format(both),
             sql.SQL("GRANT SELECT ON TABLES TO {}").format(both),
-            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLES TO {}").format(sql.Identifier(n.rw)),
-            sql.SQL("GRANT USAGE, SELECT ON SEQUENCES TO {}").format(sql.Identifier(n.rw)),
         ):
             conn.execute(sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner) + grant)
 
@@ -385,6 +386,40 @@ def _apply_deny_list(conn: psycopg.Connection, names: StoreNames) -> None:
             conn.execute(
                 sql.SQL("GRANT INSERT ON TABLE {} TO {}").format(relation, _ident(names.group))
             )
+
+
+def grant_rw(conn: psycopg.Connection, names: StoreNames) -> None:
+    """Give the read-write role, the platform's own, writes on the platform's tables in the
+    store (`PLATFORM_SCHEMAS`: documents, chunks, runs and so on), now and by default privilege
+    for new ones, and none on `data` tables, which only agents' own logins write
+    (`aios.datastores.agent_roles`): no default privilege gives it any, and whatever a store
+    made before had is taken back. Every time the store is migrated, as the owner, before the
+    bookkeeping and the audit log are taken back from it."""
+    owner, rw = sql.Identifier(names.owner), sql.Identifier(names.rw)
+    default = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner)
+    # Stores made before had them for every schema, `data` included.
+    conn.execute(default + sql.SQL("REVOKE INSERT, UPDATE, DELETE ON TABLES FROM {}").format(rw))
+    conn.execute(default + sql.SQL("REVOKE USAGE, SELECT ON SEQUENCES FROM {}").format(rw))
+    for schema in _schemas(conn, PLATFORM_SCHEMAS):
+        ident = sql.Identifier(schema)
+        in_schema = default + sql.SQL("IN SCHEMA {} ").format(ident)
+        conn.execute(in_schema + sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLES TO {}").format(rw))
+        conn.execute(in_schema + sql.SQL("GRANT USAGE, SELECT ON SEQUENCES TO {}").format(rw))
+        conn.execute(
+            sql.SQL("GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {} TO {}").format(
+                ident, rw
+            )
+        )
+        conn.execute(
+            sql.SQL("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(ident, rw)
+        )
+    if _schemas(conn, ("data",)):
+        conn.execute(
+            sql.SQL(
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA data FROM {}"
+            ).format(rw)
+        )
+        conn.execute(sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA data FROM {}").format(rw))
 
 
 def _schemas(conn: psycopg.Connection, wanted: tuple[str, ...]) -> list[str]:
@@ -493,6 +528,7 @@ def upgrade_store(names: StoreNames) -> Revisions:
 
             checkpoints.set_up_store(pg)
             # Every time, not in a revision: the tree doesn't know the store's role names.
+            grant_rw(pg, names)
             conn.exec_driver_sql(
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
             )

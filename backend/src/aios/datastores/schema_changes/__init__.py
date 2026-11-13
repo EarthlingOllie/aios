@@ -17,7 +17,7 @@ that drops anything takes the names of the tables it drops from, typed (`confirm
 The flow (see `aios.tools.schema_change` and `aios.api.approvals`):
 
 1. `propose` checks a spec against the store's schema (read as its read-only role), compiles
-   it, and records a `SchemaChangeRequest` (in the store, `aios.schema_change_requests`) at the
+   it, and records an `Approval` (in the store, `aios.approvals`) at the
    store's current data schema revision (`read_revision`: the latest `aios.schema_history`
    entry), and then notifies each user who can decide it that an approval is needed
    (`aios.notifications`, on the platform, naming the request by its id).

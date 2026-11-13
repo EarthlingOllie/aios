@@ -318,9 +318,8 @@ def verify(data_store_id: uuid.UUID) -> list[str]:
                     " OR has_table_privilege(%s, %s, 'DELETE')",
                     (role, qualified, role, qualified),
                 ).fetchone()
-                if role == names.rw:
-                    expected = not dropped.is_dropped(table)
-                elif role in (names.ro, names.group):
+                if role in (names.rw, names.ro, names.group):
+                    # `rw`, the platform's own, never writes data tables; `ro` neither.
                     expected = role in writers
                 else:
                     # A live login's own grants, and its group's; none for one that isn't.
