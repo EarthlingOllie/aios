@@ -151,7 +151,7 @@ jobs:
           echo "frontend: ${{ needs.frontend.result }}, browser shards: ${{ needs.browser.result }}"
           exit 1
 
-  # The full-stack stories (the core loop, phase 2's chats) against the real stack (Compose's `fullstack` profile, on the scripted model):
+  # The full-stack stories (the core loop, phase 2's chats, the inflow loop) against the real stack (Compose's `fullstack` profile, on the scripted model):
   # frontend/fullstack/README.md. Split across machines like the browser tests; each shard
   # brings up its own stack on its own machine, so shards share nothing.
   fullstack-shard:

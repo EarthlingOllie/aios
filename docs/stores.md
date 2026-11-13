@@ -318,7 +318,13 @@ Uploads. Uploads can't be paused, changed or removed (409).
 whatever its kind, plugged in through an adapter (`aios.source_providers`: changes since a
 cursor, a full listing, fetching an item, scope options). So far the only provider is the
 development-only test provider (`SOURCES_TEST_PROVIDER_ENABLED`, on in Compose), fed from
-in-process feeds (`aios.source_providers.test`). What a source brings in are **synced items**
+in-process feeds (`aios.source_providers.test`); it also serves pages at
+`https://test.invalid/pages/...` for URL sources to read, answered in the process (never
+resolved). In the full-stack test's stack (`SOURCES_TEST_FEEDS_SHARED`), its feeds and pages are
+kept in Redis, so the API, the run service and the workers share them, and a story changes them
+upstream through its testing routes (`/api/testing/...`, `aios.testing.feeds_api`: mounted only
+then, and the API refuses to start with it on without the test provider or with
+`COOKIE_SECURE`). What a source brings in are **synced items**
 (`aios.synced_items`, one per external id per source):
 
 - a **message item** keeps its text (cut at `SYNC_MESSAGE_TEXT_CAP_BYTES`, marked as cut), is

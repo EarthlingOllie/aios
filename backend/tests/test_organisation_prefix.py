@@ -110,10 +110,19 @@ UNSCOPED = {
     ("POST", "/api/inbound-mail"),
 }
 DEV = {("GET", "/api/dev/users"), ("POST", "/api/dev/session")}
+# The test provider's testing routes, mounted only in the full-stack test's stack
+# (`aios.testing.feeds_api`).
+TESTING = {
+    ("GET", "/api/testing/feeds/{name}"),
+    ("PUT", "/api/testing/feeds/{name}/messages/{external_id}"),
+    ("DELETE", "/api/testing/feeds/{name}/items/{external_id}"),
+    ("PUT", "/api/testing/pages/{path:path}"),
+    ("DELETE", "/api/testing/pages/{path:path}"),
+}
 
 
 def test_the_app_declares_exactly_these_routes_unscoped():
-    assert scoping.UNSCOPED == UNSCOPED | DEV
+    assert scoping.UNSCOPED == UNSCOPED | DEV | TESTING
 
 
 def test_an_api_route_without_an_organisation_that_isnt_declared_unscoped_is_refused():

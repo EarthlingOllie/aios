@@ -51,6 +51,9 @@ x-fullstack: &fullstack
     LLM_MODEL: scripted:core-loop
     EMBEDDING_MODEL: scripted:fake
     JEV_URL: fake
+    # The test provider's feeds and pages in Redis, shared by the API, the run service and the
+    # workers, and changed upstream through its testing routes (the inflow story's).
+    SOURCES_TEST_FEEDS_SHARED: "true"
     # Each test registers its own account, from the one address.
     REGISTER_RATE_LIMIT_PER_IP: 1000/hour
     LOGIN_RATE_LIMIT_PER_IP: 1000/hour

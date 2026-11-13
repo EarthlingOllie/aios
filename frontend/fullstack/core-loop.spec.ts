@@ -28,9 +28,9 @@ import { cardStatus, created, mention, messageList, NOTES_TOOLS, setUp } from ".
  * mention is another turn of the same run, on the new version, and the run's page shows each
  * turn's version.
  *
- * Phase 2's stories, of chats, are in chats.spec.ts; later steps add theirs here or in files of
- * their own (so CI's shards share them out), each a scenario of the scripted model, with what
- * they share in stack.ts.
+ * Phase 2's stories, of chats, are in chats.spec.ts, and the inflow loop's in inflow.spec.ts;
+ * later steps add theirs here or in files of their own (so CI's shards share them out), each a
+ * scenario of the scripted model, with what they share in stack.ts.
  */
 
 test("a mention asks for a table, waits for approval on the Data page, then saves and replies", async ({
