@@ -60,3 +60,40 @@ test("a run with no turns yet says so", async ({ page }) => {
   await page.getByRole("tab", { name: "Turns" }).click();
   await expect(page.getByText("No turns yet.")).toBeVisible();
 });
+
+test("the run page marks where earlier turns were summarised for the agent", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  const run = api.addAgentRun(agent, "Long chat", 6);
+  run.ui_messages = [
+    { id: "h1", role: "user", parts: [{ type: "text", text: "First question" }] },
+    { id: "a1", role: "assistant", parts: [{ type: "text", text: "First answer" }] },
+    { id: "h2", role: "user", parts: [{ type: "text", text: "Second question" }] },
+    { id: "a2", role: "assistant", parts: [{ type: "text", text: "Second answer" }] },
+    { id: "h3", role: "user", parts: [{ type: "text", text: "Third question" }] },
+    { id: "a3", role: "assistant", parts: [{ type: "text", text: "Third answer" }] },
+  ];
+  const first = api.addTurn(run);
+  api.addTurn(run);
+  api.addTurn(run);
+  api.addSummary(run, first, "h2");
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
+
+  // Every turn is still shown; the marker sits between what was summarised and what wasn't.
+  const log = page.getByRole("log", { name: "Conversation" });
+  await expect(log.getByText("First question")).toBeVisible();
+  const marker = log.getByRole("note", { name: "Summarised" });
+  await expect(marker).toHaveCount(1);
+  await expect(marker).toHaveText("Earlier turns were summarised for the agent from here back");
+  const order = await log
+    .locator("[data-message-id], [aria-label='Summarised']")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-message-id") ?? "marker"));
+  expect(order).toEqual(["h1", "a1", "marker", "h2", "a2", "h3", "a3"]);
+
+  await page.getByRole("tab", { name: "Turns" }).click();
+  const turnsAndMarkers = page.getByRole("listitem").filter({ hasText: /^Turns? / });
+  await expect(turnsAndMarkers).toHaveCount(4);
+  await expect(turnsAndMarkers.nth(0)).toContainText("Turn 1");
+  await expect(turnsAndMarkers.nth(1)).toHaveText("Turns up to here were summarised for the agent");
+  await expect(turnsAndMarkers.nth(2)).toContainText("Turn 2");
+});

@@ -11,7 +11,12 @@ from 1 to 36,500 days; null, the default, keeps everything indefinitely. Only ad
   its agent nodes' runs (and theirs). Never pruned: a run whose turn is running, that a turn
   holds, whose invocation is unfinished, or that waits on a schema change request; a workflow
   run queued, running or waiting. An agent node's run goes with its workflow run, not alone.
-  Phase 1 prunes whole runs: one used again lately is kept whole.
+  A run used again lately isn't pruned whole: a conversation run's (`chat_id` set) oldest
+  turns go turn by turn instead (`_prune_turns`), each with its messages in the run's history
+  and its search entries, while the run is idle (no turn running or holding it, no invocation
+  unfinished, not waiting on a schema change request). The cut is only made before a person's
+  message, so a tool call is never parted from its result. A compaction summary
+  (`aios.compaction`) goes once every turn it covers is gone.
 - **Messages** go once older than the setting, with their mentions (on the message), the
   invocations they started (with those invocations' cards, results, briefs and search entries)
   and their own search entries; their chat stays. Never pruned: a message whose invocation, or
@@ -29,7 +34,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import ColumnElement, delete, exists, false, func, or_, select
+from langchain_core.messages import HumanMessage
+from sqlalchemy import ColumnElement, and_, delete, exists, false, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from aios import audit, checkpoints
@@ -38,7 +44,9 @@ from aios.datastores.models import (
     AgentRun,
     ChatMessage,
     Invocation,
+    RunSummary,
     SchemaChangeRequest,
+    SearchItem,
     Turn,
     WorkflowRun,
     WorkflowRunStep,
@@ -73,10 +81,12 @@ class Settings:
 
 @dataclass(frozen=True)
 class Pruned:
-    """What one prune of a store took: None for a kind kept indefinitely."""
+    """What one prune of a store took: None for a kind kept indefinitely. `turns` are those
+    of conversation runs kept (with the runs' setting)."""
 
     runs: int | None
     messages: int | None
+    turns: int | None = None
 
 
 def prune_all(now: datetime | None = None) -> dict[uuid.UUID, Pruned | BaseException]:
@@ -113,16 +123,19 @@ def prune(store_id: uuid.UUID, settings: Settings, now: datetime | None = None) 
     """Prune the store's runs and messages older than `settings` say (as of `now`), recording
     one audit entry per kind with a setting."""
     now = now or datetime.now(UTC)
-    runs = messages = None
+    runs = messages = turns = None
     if settings.run_days is not None:
         cutoff = now - timedelta(days=settings.run_days)
         runs = _in_batches(store_id, lambda s: _prune_runs(s, cutoff))
         _record(store_id, "runs.pruned", runs, cutoff)
+        after = [0]
+        turns = _in_batches(store_id, lambda s: _prune_turns(s, cutoff, after))
+        _record(store_id, "turns.pruned", turns, cutoff)
     if settings.chat_days is not None:
         cutoff = now - timedelta(days=settings.chat_days)
         messages = _in_batches(store_id, lambda s: _prune_messages(s, cutoff))
         _record(store_id, "messages.pruned", messages, cutoff)
-    return Pruned(runs, messages)
+    return Pruned(runs, messages, turns)
 
 
 def _in_batches(store_id: uuid.UUID, prune_batch) -> int:
@@ -243,6 +256,124 @@ def _delete_runs(store: Session, run_ids: list[int]) -> list[SandboxHandle]:
     checkpoints.delete_threads(store, run_ids)
     store.execute(delete(AgentRun).where(AgentRun.id.in_(run_ids)))
     return sandboxes
+
+
+# --- Turns of conversation runs ----------------------------------------------------------------
+
+
+def _run_idle() -> ColumnElement[bool]:
+    """Whether an agent run is idle now: no turn running or holding it, no invocation
+    unfinished, not waiting on a schema change request."""
+    return ~or_(
+        func.coalesce(AgentRun.lease_until > func.now(), false()),
+        exists().where(Turn.agent_run_id == AgentRun.id, Turn.status == AgentRunStatus.running),
+        exists().where(Invocation.agent_run_id == AgentRun.id, Invocation.status.in_(LIVE)),
+        exists().where(SchemaChangeRequest.requested_by_run == AgentRun.id, *not_given()),
+    )
+
+
+def _turn_old(cutoff: datetime) -> ColumnElement[bool]:
+    return and_(
+        Turn.status != AgentRunStatus.running,
+        Turn.started_at < cutoff,
+        func.coalesce(Turn.finished_at < cutoff, false()),
+    )
+
+
+def _prune_turns(
+    store: Session, cutoff: datetime, after: list[int]
+) -> tuple[int, int, list[SandboxHandle]]:
+    """One batch of up to `BATCH` idle conversation runs, after the run `after[0]` (which it
+    moves on, so each run is visited once a prune and runs none can go from never hold up the
+    rest), whose oldest turn is older than the cutoff: from each, its oldest turns that are
+    (`_prune_run_turns`). Answers how many runs it chose, and how many turns went."""
+    oldest = (
+        select(Turn.id)
+        .where(Turn.agent_run_id == AgentRun.id)
+        .order_by(Turn.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    run_ids = store.scalars(
+        select(AgentRun.id)
+        .where(
+            AgentRun.id > after[0],
+            AgentRun.chat_id.is_not(None),
+            _run_idle(),
+            exists().where(Turn.id == oldest, _turn_old(cutoff)),
+        )
+        .order_by(AgentRun.id)
+        .limit(BATCH)
+        .with_for_update(skip_locked=True)
+    ).all()
+    if run_ids:
+        after[0] = run_ids[-1]
+    gone = sum(_prune_run_turns(store, run_id, cutoff) for run_id in run_ids)
+    return len(run_ids), gone, []
+
+
+def _prune_run_turns(store: Session, run_id: int, cutoff: datetime) -> int:
+    """Prune the store's run's oldest turns older than the cutoff, the run's row locked: the
+    turns (with their search entries), their messages from the run's history, and the
+    summaries that covered only them. The cut is made only before a person's message (or at the
+    end of the history). How many turns went."""
+    rows = store.execute(
+        select(Turn.id, Turn.message_end, _turn_old(cutoff).label("old"))
+        .where(Turn.agent_run_id == run_id)
+        .order_by(Turn.id)
+    ).all()
+    prefix = []
+    for row in rows:
+        if not row.old:
+            break
+        prefix.append(row)
+    if len(prefix) == len(rows):
+        # Every turn is old, but the run is in use lately (else it went whole): its latest stays.
+        prefix.pop()
+    messages, _ = checkpoints.stored_history(store, run_id)
+    cut = 0
+    while prefix:
+        ends = [r.message_end for r in prefix if r.message_end is not None]
+        cut = min(max(ends, default=0), len(messages))
+        if cut == len(messages) or isinstance(messages[cut], HumanMessage):
+            break
+        prefix.pop()
+    if not prefix:
+        return 0
+    turn_ids = [r.id for r in prefix]
+    store.execute(delete(Turn).where(Turn.id.in_(turn_ids)))  # and their search entries
+    if cut:
+        checkpoints.drop_oldest(store, run_id, cut)
+        store.execute(
+            update(Turn)
+            .where(Turn.agent_run_id == run_id, Turn.message_end.is_not(None))
+            .values(message_end=func.greatest(Turn.message_end - cut, 0))
+        )
+        store.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(message_count=func.greatest(AgentRun.message_count - cut, 0))
+        )
+        # Each run message's place, in two steps so no two ever share one on the way.
+        run_messages = (SearchItem.agent_run_id == run_id, SearchItem.turn_id.is_not(None))
+        store.execute(delete(SearchItem).where(*run_messages, SearchItem.position < cut))
+        store.execute(
+            update(SearchItem).where(*run_messages).values(position=-SearchItem.position - 1)
+        )
+        store.execute(
+            update(SearchItem).where(*run_messages).values(position=-SearchItem.position - 1 - cut)
+        )
+    # A summary goes once every turn it covers has.
+    store.execute(
+        delete(RunSummary).where(
+            RunSummary.agent_run_id == run_id,
+            ~exists().where(
+                Turn.agent_run_id == run_id,
+                or_(RunSummary.last_turn_id.is_(None), Turn.id <= RunSummary.last_turn_id),
+            ),
+        )
+    )
+    return len(turn_ids)
 
 
 # --- Messages ----------------------------------------------------------------------------------

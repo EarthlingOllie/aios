@@ -606,6 +606,12 @@ class Turn(StoreBase):
         server_default=sql_text("'[]'::jsonb"),
         comment="What the run was told about tools left out of the turn, in order.",
     )
+    # How many messages its run's conversation had once it ended: its messages are those from
+    # the previous turn's count up to this. Null until it ends with its run's history read
+    # (and for turns from before this was kept).
+    message_end: Mapped[int | None] = mapped_column(
+        Integer, comment="How many messages its run's conversation had once it ended."
+    )
 
     __table_args__ = (
         Index("ix_turns_agent_run_id_id", "agent_run_id", "id"),
@@ -2054,3 +2060,33 @@ class SpendTotal(StoreBase):
     warned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunSummary(StoreBase):
+    """A summary of an agent run's oldest turns, which its model sees in their place
+    (`aios.compaction`): written by the handoff model from those turns and the run's previous
+    summary, so the latest covers every turn before the ones kept verbatim. Derived text, always
+    wrapped as untrusted. The run's history itself is never altered.
+
+    It covers the run's turns up to `last_turn_id`, and its model sees the run's messages from
+    `kept_from_message_id` on after it. Retention deletes it once every turn it covers is gone."""
+
+    __tablename__ = "run_summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_run_id: Mapped[int] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    # The last turn it covers: not a foreign key, as retention prunes turns before summaries.
+    last_turn_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The last turn it covers; null if that couldn't be told."
+    )
+    kept_from_message_id: Mapped[str] = mapped_column(
+        Text, comment="The id of the first message of the run's history it doesn't cover."
+    )
+    text: Mapped[str] = mapped_column(Text)
+    verdict: Mapped[Verdict] = mapped_column(VERDICT, server_default=Verdict.derived.value)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_run_summaries_agent_run_id_id", "agent_run_id", "id"),
+        {"comment": "Summaries of agent runs' oldest turns, which their models see instead"},
+    )

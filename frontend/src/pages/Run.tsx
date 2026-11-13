@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import type { UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
@@ -26,6 +26,7 @@ import {
   type ContentBlock,
   type ModelMessage,
   type Run,
+  type RunCompaction,
   type SchemaChangeRequest,
   type Turn,
 } from "@/lib/api";
@@ -126,7 +127,7 @@ export function RunPage() {
       )}
       {tab === "turns" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <TurnList turns={run.data.turns} />
+          <TurnList turns={run.data.turns} summaries={run.data.summaries ?? []} />
         </div>
       )}
       {tab === "events" && (
@@ -144,6 +145,9 @@ export function RunPage() {
 function RunConversation({ run, onDecided }: { run: Run; onDecided: () => void }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const messages = run.ui_messages;
+  // Where the agent's model was given a summary in place of the turns before: the first
+  // message each summary doesn't cover.
+  const summarisedBefore = new Set((run.summaries ?? []).map((s) => s.kept_from_message_id));
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -157,12 +161,12 @@ function RunConversation({ run, onDecided }: { run: Run; onDecided: () => void }
             <p className="text-muted-foreground mt-24 text-center">Nothing has happened in this run yet.</p>
           )}
           {messages.map((message) => (
-            <MessageView
-              key={message.id}
-              message={message}
-              requests={run.schema_change_requests}
-              onDecided={onDecided}
-            />
+            <Fragment key={message.id}>
+              {summarisedBefore.has(message.id) && (
+                <SummaryMarker>Earlier turns were summarised for the agent from here back</SummaryMarker>
+              )}
+              <MessageView message={message} requests={run.schema_change_requests} onDecided={onDecided} />
+            </Fragment>
           ))}
           <div ref={bottomRef} />
         </div>
@@ -194,6 +198,7 @@ function MessageView({
 }) {
   return (
     <div
+      data-message-id={message.id}
       className={cn(
         "flex flex-col gap-2",
         message.role === "user" && "bg-secondary max-w-[80%] self-end rounded-2xl px-4 py-2",
@@ -304,32 +309,54 @@ function blocks(message: ModelMessage): ContentBlock[] {
   return message.content.map((b) => (typeof b === "string" ? { type: "text", text: b } : b));
 }
 
+/** Where the agent's model was given a summary in place of the turns before it (compaction):
+ * people still see every turn. */
+function SummaryMarker({ children }: { children: string }) {
+  return (
+    <div
+      role="note"
+      aria-label="Summarised"
+      className="text-muted-foreground before:bg-border after:bg-border flex items-center gap-2 text-xs before:h-px before:flex-1 after:h-px after:flex-1"
+    >
+      {children}
+    </div>
+  );
+}
+
 /** The run's turns, oldest first: each with the version it ran on, how it went, how long it
  * took and what it cost, and any tools it left out (a connector that was unavailable, a tool
- * that vanished upstream). */
-function TurnList({ turns }: { turns: Turn[] }) {
+ * that vanished upstream); and after the last turn each summary covers, a marker. */
+function TurnList({ turns, summaries }: { turns: Turn[]; summaries: RunCompaction[] }) {
   if (turns.length === 0) return <Placeholder>No turns yet.</Placeholder>;
+  const summarisedAfter = new Set(summaries.map((s) => s.last_turn_id));
   return (
     <ol className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-6">
       {turns.map((turn, i) => (
-        <li key={turn.id} className="rounded-md border px-3 py-2 text-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">Turn {i + 1}</span>
-            <RunStatusBadge status={turn.status} />
-            <span className="text-muted-foreground text-xs">
-              v{turn.agent_version} · {formatDate(turn.started_at)}
-            </span>
-          </div>
-          <div className="text-muted-foreground mt-1 text-xs tabular-nums">{turnCounters(turn)}</div>
-          {turn.error && <p className="text-destructive mt-1 text-xs">{turn.error}</p>}
-          {(turn.notices ?? []).length > 0 && (
-            <ul className="mt-1 list-disc pl-4 text-xs text-amber-700 dark:text-amber-400" data-testid="turn-notices">
-              {turn.notices.map((notice) => (
-                <li key={notice}>{notice}</li>
-              ))}
-            </ul>
+        <Fragment key={turn.id}>
+          <li className="rounded-md border px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">Turn {i + 1}</span>
+              <RunStatusBadge status={turn.status} />
+              <span className="text-muted-foreground text-xs">
+                v{turn.agent_version} · {formatDate(turn.started_at)}
+              </span>
+            </div>
+            <div className="text-muted-foreground mt-1 text-xs tabular-nums">{turnCounters(turn)}</div>
+            {turn.error && <p className="text-destructive mt-1 text-xs">{turn.error}</p>}
+            {(turn.notices ?? []).length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-xs text-amber-700 dark:text-amber-400" data-testid="turn-notices">
+                {turn.notices.map((notice) => (
+                  <li key={notice}>{notice}</li>
+                ))}
+              </ul>
+            )}
+          </li>
+          {summarisedAfter.has(turn.id) && i < turns.length - 1 && (
+            <li>
+              <SummaryMarker>Turns up to here were summarised for the agent</SummaryMarker>
+            </li>
           )}
-        </li>
+        </Fragment>
       ))}
     </ol>
   );

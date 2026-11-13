@@ -74,5 +74,6 @@ export const AUDIT_ACTIONS = [
   "memory.deleted",
   "memory.forgotten",
   "runs.pruned",
+  "turns.pruned",
   "messages.pruned",
 ];

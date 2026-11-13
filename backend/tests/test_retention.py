@@ -495,9 +495,11 @@ def test_documents_data_tables_usage_and_the_audit_log_are_never_pruned(
         assert store.scalar(text("SELECT count(*) FROM data.beans")) == 1
     audit_after = api.get("/api/audit-log").json()["entries"]
     assert {e["id"] for e in audit_before} <= {e["id"] for e in audit_after}
-    assert [e["action"] for e in audit_after[:4]] == [
+    assert [e["action"] for e in audit_after[:6]] == [
         "messages.pruned",
+        "turns.pruned",
         "runs.pruned",
         "messages.pruned",
+        "turns.pruned",
         "runs.pruned",
     ]

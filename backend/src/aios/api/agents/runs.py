@@ -27,6 +27,7 @@ from aios.datastores.models import (
     Turn,
     WorkflowRunStep,
 )
+from aios.datastores.models import RunSummary as StoredSummary
 from aios.db import DB, DbId
 from aios.models import AgentRunStatus, InvocationCause, InvocationStatus, TriggerTargetKind
 from aios.permissions import Action, allow
@@ -152,6 +153,27 @@ def run_turns(store: Session, run_id: int) -> list[TurnOut]:
     ]
 
 
+class SummaryOut(BaseModel):
+    """Where the run's earlier turns were summarised for its model (`aios.compaction`): the
+    last turn the summary covers, and the first message of the history it doesn't (which the
+    model read verbatim after it). The history itself is never altered."""
+
+    id: int
+    last_turn_id: int | None
+    kept_from_message_id: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+def run_summaries_of(store: Session, run_id: int) -> list[SummaryOut]:
+    """The store's agent run's summaries, oldest first."""
+    rows = store.scalars(
+        select(StoredSummary).where(StoredSummary.agent_run_id == run_id).order_by(StoredSummary.id)
+    ).all()
+    return [SummaryOut.model_validate(r) for r in rows]
+
+
 class RunOut(RunSummary):
     # The agent's name, so the page needn't read the agent as well.
     agent_name: str
@@ -168,6 +190,8 @@ class RunOut(RunSummary):
     # Why it ran; and its turns, oldest first.
     invocation: InvocationRecordOut | None
     turns: list[TurnOut]
+    # Where its earlier turns were summarised for its model, oldest first.
+    summaries: list[SummaryOut]
 
 
 def get_org_run(store: Session, agent_id: int, run_id: int) -> AgentRun:
@@ -360,6 +384,7 @@ def get_run(
         waiting=waiting_on(store, run.id),
         invocation=run_invocation(store, run.id),
         turns=run_turns(store, run.id),
+        summaries=run_summaries_of(store, run.id),
     )
 
 

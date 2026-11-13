@@ -190,6 +190,82 @@ def delete_threads(store: Session, run_ids: list[int]) -> None:
         )
 
 
+def _serde():
+    """How the checkpointer stores channel values (its default serializer)."""
+    return PostgresSaver(None).serde
+
+
+def stored_history(store: Session, run_id: int) -> tuple[list[BaseMessage], dict | None]:
+    """The store's run's conversation as of its latest checkpoint, read in the transaction of
+    `store` (a session on its store), and where it's kept: the latest checkpoint's id and its
+    messages' version (None before its first turn)."""
+    latest = store.execute(
+        text(
+            f"SELECT checkpoint_id, checkpoint -> 'channel_versions' ->> 'messages' AS version"
+            f" FROM {SCHEMA}.checkpoints WHERE thread_id = :thread AND checkpoint_ns = ''"
+            " ORDER BY checkpoint_id DESC LIMIT 1"
+        ),
+        {"thread": thread_id(run_id)},
+    ).one_or_none()
+    if latest is None or latest.version is None:
+        return [], None
+    blob = store.execute(
+        text(
+            f"SELECT type, blob FROM {SCHEMA}.checkpoint_blobs WHERE thread_id = :thread"
+            " AND checkpoint_ns = '' AND channel = 'messages' AND version = :version"
+        ),
+        {"thread": thread_id(run_id), "version": latest.version},
+    ).one_or_none()
+    if blob is None or blob.blob is None:
+        return [], None
+    messages = list(_serde().loads_typed((blob.type, bytes(blob.blob))) or [])
+    return messages, {"checkpoint_id": latest.checkpoint_id, "version": latest.version}
+
+
+def drop_oldest(store: Session, run_id: int, count: int) -> None:
+    """Remove the oldest `count` messages from the store's run's conversation, in the transaction
+    of `store` (a session on its store), for retention (`aios.retention`): its latest checkpoint
+    keeps the rest, and every earlier checkpoint, with what it held, goes. The caller holds the
+    run's row locked, with no turn holding the run, so no turn writes the thread meanwhile."""
+    messages, where = stored_history(store, run_id)
+    if where is None or count <= 0:
+        return
+    kind, blob = _serde().dumps_typed(messages[count:])
+    params = {"thread": thread_id(run_id), **where}
+    store.execute(
+        text(
+            f"UPDATE {SCHEMA}.checkpoint_blobs SET type = :type, blob = :blob"
+            " WHERE thread_id = :thread AND checkpoint_ns = '' AND channel = 'messages'"
+            " AND version = :version"
+        ),
+        params | {"type": kind, "blob": blob},
+    )
+    store.execute(
+        text(
+            f"DELETE FROM {SCHEMA}.checkpoints WHERE thread_id = :thread"
+            " AND NOT (checkpoint_ns = '' AND checkpoint_id = :checkpoint_id)"
+        ),
+        params,
+    )
+    store.execute(
+        text(
+            f"DELETE FROM {SCHEMA}.checkpoint_writes WHERE thread_id = :thread"
+            " AND NOT (checkpoint_ns = '' AND checkpoint_id = :checkpoint_id)"
+        ),
+        params,
+    )
+    # The blobs the latest checkpoint doesn't refer to: earlier versions of its channels.
+    store.execute(
+        text(
+            f"DELETE FROM {SCHEMA}.checkpoint_blobs b WHERE b.thread_id = :thread"
+            f" AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.checkpoints c"
+            " WHERE c.thread_id = b.thread_id AND c.checkpoint_ns = b.checkpoint_ns"
+            " AND c.checkpoint -> 'channel_versions' ->> b.channel = b.version)"
+        ),
+        params,
+    )
+
+
 def messages_out(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     """The messages as JSON: LangChain's own fields (type, content, tool calls, usage, ...)."""
     return [m.model_dump(mode="json") for m in messages]

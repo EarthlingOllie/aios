@@ -198,7 +198,9 @@ def _end_turn(
         if before is not None:
             store.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
         if turn_id is not None:
-            turns.end(store, turn_id, error)
+            turns.end(
+                store, turn_id, error, message_end=None if messages is None else len(messages)
+            )
             if before is not None:
                 invocations.finish_quietly(store, run_id, error)
                 if messages is not None:

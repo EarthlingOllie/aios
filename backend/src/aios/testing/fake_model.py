@@ -142,6 +142,16 @@ def use_handoff(fake: FakeChatModel) -> Iterator[FakeChatModel]:
         yield fake
 
 
+@contextmanager
+def use_compaction(fake: FakeChatModel) -> Iterator[FakeChatModel]:
+    """Runs compaction's summaries (`aios.compaction`) on `fake`: its reply's text is the
+    summary."""
+    from aios import compaction
+
+    with mock.patch.object(compaction, "model", lambda: fake):
+        yield fake
+
+
 # Where the output a handback summarises says it's from, in its untrusted block.
 HANDBACK_OUTPUT = "output"
 

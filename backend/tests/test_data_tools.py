@@ -117,6 +117,7 @@ STORE_TABLES = {
         "invocations",
         "memories",
         "people",
+        "run_summaries",
         "sandbox_sessions",
         "schema_change_requests",
         "schema_history",
