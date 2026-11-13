@@ -254,6 +254,37 @@ export type InsightsStorage = {
 
 export type InsightsSources = { shown: boolean; sources: Source[] };
 
+/** What asking the insights agent for a chart gave: the chart and its rows, or an error (the spec
+ * or query failed, after one try at fixing it) shown with the SQL, which the asker always sees. */
+export type AskedChart = {
+  question: string;
+  title: string | null;
+  sql: string | null;
+  /** Vega-Lite, without data: `data` is drawn inline. */
+  spec: Record<string, unknown> | null;
+  columns: string[] | null;
+  data: Record<string, unknown>[] | null;
+  /** Cut short at the row or byte cap: drawn, and marked as such. */
+  truncated: boolean;
+  error: string | null;
+};
+
+/** A chart saved to the organisation's Insights page: viewing it re-runs its SQL. */
+export type SavedChart = {
+  id: number;
+  title: string;
+  question: string;
+  sql: string;
+  spec: Record<string, unknown>;
+  created_by: User | null;
+  created_at: string;
+  updated_at: string;
+  /** Its creator, or an admin. */
+  can_change: boolean;
+};
+
+export type ChartData = { columns: string[]; data: Record<string, unknown>[]; truncated: boolean };
+
 /** Who may invoke an agent or workflow by mentioning it. */
 export type InvocableBy = "everyone" | "editors" | "admins";
 
@@ -1034,7 +1065,7 @@ export type NotificationList = {
   notifications: Notification[];
 };
 
-export type InvocationCause = "mention" | "schedule" | "manual" | "event" | "start_workflow";
+export type InvocationCause = "mention" | "schedule" | "manual" | "event" | "start_workflow" | "insight";
 
 /** Why a run ran: a mention, a schedule, an event trigger, a person starting it by hand, or an agent's
  * `start_workflow` call (chained to the calling turn's). A workflow agent node's is a child of its
@@ -1819,6 +1850,23 @@ export const api = {
     if (group) params.set("group", group);
     return request<T>(`${organisationApi()}/insights/${panel}?${params}`);
   },
+  /** Ask the insights agent for a chart in words: a 429 past the per-person rate, a 409 at the
+   * budget or the asker's allowance. */
+  askChart: (question: string) =>
+    request<AskedChart>(`${organisationApi()}/insights/ask`, json("POST", { question })),
+  /** The organisation's saved charts, newest first. */
+  listCharts: () => request<SavedChart[]>(`${organisationApi()}/insights/charts`),
+  /** Save a chart for the organisation (its spec and SQL are checked again: a 422 if not). */
+  saveChart: (chart: { title: string; question: string; sql: string; spec: Record<string, unknown> }) =>
+    request<SavedChart>(`${organisationApi()}/insights/charts`, json("POST", chart)),
+  /** A saved chart's rows, from re-running its SQL: a 409 if its query no longer works. */
+  chartData: (id: number) => request<ChartData>(`${organisationApi()}/insights/charts/${id}/data`),
+  /** Its creator or an admin only (a 403 otherwise). */
+  renameChart: (id: number, title: string) =>
+    request<SavedChart>(`${organisationApi()}/insights/charts/${id}`, json("PATCH", { title })),
+  /** Its creator or an admin only (a 403 otherwise). */
+  deleteChart: (id: number) =>
+    request<void>(`${organisationApi()}/insights/charts/${id}`, { method: "DELETE" }),
   /** Admins only: usage totals by agent, workflow, person or day, from `start` to `end`. */
   usage: (group: UsageGroup, start?: string, end?: string) => {
     const params = new URLSearchParams({ group });

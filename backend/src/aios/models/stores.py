@@ -65,13 +65,15 @@ class DataStore(Base):
     # for now, and NULL says so): kept so a store can later move to another instance.
     host: Mapped[str | None] = mapped_column(String(255))
     port: Mapped[int | None] = mapped_column(Integer)
-    # `ds_<id as hex>`, and its roles `<role_prefix>_owner`, `_rw` and `_ro`.
+    # `ds_<id as hex>`, and its roles `<role_prefix>_owner`, `_rw`, `_ro` and `_insights`.
     dbname: Mapped[str] = mapped_column(String(63), unique=True)
     role_prefix: Mapped[str] = mapped_column(String(56), unique=True)
     # The login roles' passwords, encrypted (`aios.datastores.credentials`). Never logged, and
     # never returned by the API.
     rw_password: Mapped[str | None] = mapped_column(Text)
     ro_password: Mapped[str | None] = mapped_column(Text)
+    # The insights role's, which prompted charts read as (`aios.charts`).
+    insights_password: Mapped[str | None] = mapped_column(Text)
     # The store tree's Alembic revision its database is at (`aios.datastores.migrations`).
     schema_revision: Mapped[str | None] = mapped_column(String(64))
     # The revision of the tree's `history` branch it's at: null unless its organisation once

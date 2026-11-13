@@ -40,6 +40,8 @@ class InvocationCause(enum.StrEnum):
     event = "event"
     # An agent's `start_workflow` call (`aios.tools.start_workflow`), chained to its turn's.
     start_workflow = "start_workflow"
+    # A member asking the built-in insights agent for a chart (`aios.charts`).
+    insight = "insight"
 
 
 class InvocationStatus(enum.StrEnum):

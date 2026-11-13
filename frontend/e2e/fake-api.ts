@@ -970,6 +970,24 @@ export class FakeApi {
    * for the grouped ones; and the path and query of each read. */
   insights: InsightsData = emptyInsights();
   insightsReads: string[] = [];
+  /** What the insights agent answers each question with (`POST /api/insights/ask`), in turn:
+   * the chart and its rows, or an error with the SQL; a status refuses the question instead (a
+   * 429 past the rate, a 409 at the budget). The questions asked, in order. */
+  chartAnswers: ({ title: string; sql: string; spec: Record<string, unknown>; data?: Record<string, unknown>[]; truncated?: boolean; error?: string } | { status: number; detail: string })[] = [];
+  chartQuestions: string[] = [];
+  /** The organisation's saved charts (`/api/insights/charts`), newest first, with their rows
+   * (or why their query no longer works) by id. */
+  savedCharts: {
+    id: number;
+    title: string;
+    question: string;
+    sql: string;
+    spec: Record<string, unknown>;
+    created_by: { id: number; name: string; former_member?: boolean } | null;
+    created_at: string;
+    updated_at: string;
+  }[] = [];
+  chartRows: Record<number, { data: Record<string, unknown>[]; truncated?: boolean } | { broken: string }> = {};
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
   deletionGraceDays = 14;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
@@ -3551,6 +3569,68 @@ export class FakeApi {
       if (typeof body?.visible !== "boolean") return fail(422, "Invalid visible");
       this.insightsPeopleVisible = body.visible;
       return reply(200, this.organisationOut());
+    }
+    if (path === "/api/insights/ask" && method === "POST") {
+      const question = typeof body?.question === "string" ? body.question.trim() : "";
+      if (!question) return fail(422, "Ask a question.");
+      this.chartQuestions.push(question);
+      const answer = this.chartAnswers.shift();
+      if (!answer) return fail(502, "The insights agent couldn't answer: no answer scripted");
+      if ("status" in answer) return fail(answer.status, answer.detail);
+      return reply(200, {
+        question,
+        title: answer.title,
+        sql: answer.sql,
+        spec: answer.spec,
+        columns: answer.data ? Object.keys(answer.data[0] ?? {}) : null,
+        data: answer.error ? null : (answer.data ?? []),
+        truncated: answer.truncated ?? false,
+        error: answer.error ?? null,
+      });
+    }
+    const chartOut = (c: FakeApi["savedCharts"][number]) => ({
+      ...c,
+      can_change: this.roleOf(this.me.id) === "admin" || c.created_by?.id === this.me.id,
+    });
+    if (path === "/api/insights/charts" && method === "GET") {
+      return reply(200, this.savedCharts.map(chartOut));
+    }
+    if (path === "/api/insights/charts" && method === "POST") {
+      if (!body?.title?.trim() || !body?.sql || typeof body?.spec !== "object") return fail(422, "Invalid chart");
+      const now = new Date().toISOString();
+      const chart = {
+        id: Math.max(0, ...this.savedCharts.map((c) => c.id)) + 1,
+        title: body.title.trim(),
+        question: body.question ?? "",
+        sql: body.sql,
+        spec: body.spec,
+        created_by: { id: this.me.id, name: fullName(this.me) },
+        created_at: now,
+        updated_at: now,
+      };
+      this.savedCharts.unshift(chart);
+      return reply(201, chartOut(chart));
+    }
+    if ((m = path.match(/^\/api\/insights\/charts\/(\d+)(\/data)?$/))) {
+      const id = Number(m[1]);
+      const chart = this.savedCharts.find((c) => c.id === id);
+      if (!chart) return fail(404, "No such chart.");
+      if (m[2] && method === "GET") {
+        const rows = this.chartRows[id] ?? { data: [] };
+        if ("broken" in rows) return fail(409, `This chart's query no longer works: ${rows.broken}`);
+        return reply(200, { columns: Object.keys(rows.data[0] ?? {}), data: rows.data, truncated: rows.truncated ?? false });
+      }
+      if (!chartOut(chart).can_change) return fail(403, "Only the chart's creator or an admin can change it.");
+      if (method === "PATCH") {
+        if (!body?.title?.trim()) return fail(422, "Give the chart a title.");
+        chart.title = body.title.trim();
+        chart.updated_at = new Date().toISOString();
+        return reply(200, chartOut(chart));
+      }
+      if (method === "DELETE") {
+        this.savedCharts = this.savedCharts.filter((c) => c.id !== id);
+        return reply(204);
+      }
     }
     if (path.startsWith("/api/insights/") && method === "GET") {
       const panel = path.slice("/api/insights/".length) as keyof InsightsData;

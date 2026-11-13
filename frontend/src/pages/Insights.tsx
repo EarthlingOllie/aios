@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import { Loader2 } from "lucide-react";
 
+import { ChartsPanel } from "@/components/Charts";
 import { ErrorBanner, Section, formatDate, selectClass, useLoad } from "@/components/crud";
 import {
   api,
@@ -96,6 +97,7 @@ export function InsightsPage() {
           </div>
         </header>
         <PeopleSetting />
+        <ChartsPanel />
         <ActivityPanel range={range} group={view.group} />
         <UsagePanel range={range} group={view.group} />
         <WorkflowsPanel range={range} />

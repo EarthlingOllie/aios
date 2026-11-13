@@ -100,6 +100,13 @@ ROUTES = {
     ("GET", "/insights/storage"): READ,
     ("GET", "/insights/usage"): READ,
     ("GET", "/insights/workflows"): READ,
+    # Asking and saving charts; renaming and deleting one also needs its creator or an admin.
+    ("POST", "/insights/ask"): POST,
+    ("GET", "/insights/charts"): READ,
+    ("POST", "/insights/charts"): POST,
+    ("GET", "/insights/charts/{chart_id}/data"): READ,
+    ("PATCH", "/insights/charts/{chart_id}"): READ,
+    ("DELETE", "/insights/charts/{chart_id}"): READ,
     ("GET", "/data/tables"): READ,
     ("GET", "/data/tables/{table:path}/rows"): READ,
     ("GET", "/data/tables/{table:path}/value"): READ,

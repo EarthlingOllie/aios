@@ -2054,3 +2054,25 @@ class SpendTotal(StoreBase):
     warned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InsightChart(StoreBase):
+    """A chart a member saved to the organisation's Insights page (`aios.charts`): the question
+    it answered, its one SQL statement and its Vega-Lite spec. Viewing it re-runs the SQL on
+    current data as the store's insights role, never the agent. Its creator or an admin renames
+    or deletes it."""
+
+    __tablename__ = "insight_charts"
+    __table_args__ = {"comment": "Charts saved to the Insights page"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    question: Mapped[str] = mapped_column(Text)
+    sql: Mapped[str] = mapped_column(Text)
+    spec: Mapped[dict] = mapped_column(JSONB)
+    # The member who saved it, by platform user id.
+    created_by: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

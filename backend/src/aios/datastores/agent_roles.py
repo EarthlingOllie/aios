@@ -306,7 +306,16 @@ def verify(data_store_id: uuid.UUID) -> list[str]:
                 " WHERE n.nspname = 'data' AND c.relkind IN ('r', 'p') ORDER BY c.relname"
             )
         ]
-        roles = [names.rw, names.ro, names.group, *(login.role for login in wanted)]
+        insights = conn.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname = %s", (names.insights,)
+        ).fetchall()
+        roles = [
+            names.rw,
+            names.ro,
+            names.group,
+            *(r for (r,) in insights),
+            *(login.role for login in wanted),
+        ]
         for table in tables:
             writers = (
                 set() if dropped.is_dropped(table) else set(dropped.writers_of(conn, names, table))
@@ -320,7 +329,7 @@ def verify(data_store_id: uuid.UUID) -> list[str]:
                 ).fetchone()
                 if role == names.rw:
                     expected = not dropped.is_dropped(table)
-                elif role in (names.ro, names.group):
+                elif role in (names.ro, names.group, names.insights):
                     expected = role in writers
                 else:
                     # A live login's own grants, and its group's; none for one that isn't.

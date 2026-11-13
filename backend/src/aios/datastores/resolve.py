@@ -108,6 +108,7 @@ def data_store_for(organisation_id: int, db: Session | None = None) -> uuid.UUID
                 role_prefix=role_prefix,
                 rw_password=credentials.encrypt(credentials.new_password()),
                 ro_password=credentials.encrypt(credentials.new_password()),
+                insights_password=credentials.encrypt(credentials.new_password()),
             )
             .on_conflict_do_nothing(index_elements=[DataStore.owner_organisation_id])
             .returning(DataStore.id)

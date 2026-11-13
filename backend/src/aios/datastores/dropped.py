@@ -170,12 +170,17 @@ def writers_of(conn: psycopg.Connection, names: "StoreNames", table: str) -> lis
     return [r for r in (names.agent(a) for a in (owner, *shared)) if r in present]
 
 
+def _role_exists(conn: psycopg.Connection, role: str) -> bool:
+    return conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is not None
+
+
 def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> None:
     """Give the store's roles the access to `data.<table>` its ownership and drops call for now
     (the one derivation every change goes through: applying a schema change, a drop, restore or
     purge, and applying agents' access after a share, transfer or archive):
 
-    - Reads: `rw`, `ro` and the agents' group (so every agent) read it.
+    - Reads: `rw`, `ro`, the agents' group (so every agent) and the insights role (prompted
+      charts, `aios.charts`) read it.
     - Writes: `writers_of` it, and `rw` (until it loses its writes to data tables, which only
       agents' logins will make).
     - None of it if it's dropped; only its other columns if it has dropped columns.
@@ -183,14 +188,17 @@ def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> N
     Run as the owner, in the transaction that changed it."""
     relation = sql.Identifier(SCHEMA, table)
     agents = sorted(agent_roles_present(conn, names))
+    insights = [names.insights] if _role_exists(conn, names.insights) else []
     everyone = sql.SQL(", ").join(
-        sql.Identifier(r) for r in (names.rw, names.ro, names.group, *agents)
+        sql.Identifier(r) for r in (names.rw, names.ro, names.group, *insights, *agents)
     )
     # Takes its column privileges too.
     conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(relation, everyone))
     if is_dropped(table):
         return
-    readers = sql.SQL(", ").join(sql.Identifier(r) for r in (names.rw, names.ro, names.group))
+    readers = sql.SQL(", ").join(
+        sql.Identifier(r) for r in (names.rw, names.ro, names.group, *insights)
+    )
     writers = [names.rw, *writers_of(conn, names, table)]
     can_write = sql.SQL(", ").join(sql.Identifier(r) for r in writers)
     qualified = sql.Identifier(SCHEMA, table).as_string(conn)
