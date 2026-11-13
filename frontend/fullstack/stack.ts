@@ -92,6 +92,8 @@ export async function setUp(page: Page) {
 /** Mentions the agent or workflow (the Notes agent unless `name` and `kind` say) in the open
  * chat, with `text` after the mention. */
 export async function mention(page: Page, text: string, name = "Notes", kind: "agent" | "workflow" = "agent") {
+  // The mention list offers the chat's members: typing before they've loaded offers nothing.
+  await expect(page.getByRole("tab", { name: /^Members [1-9]/ })).toBeVisible();
   await composer(page).pressSequentially(`@${name.slice(0, 3)}`);
   await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: `${name} ${kind}` }).click();
   await composer(page).pressSequentially(` ${text}`);
