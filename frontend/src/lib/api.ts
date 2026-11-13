@@ -451,8 +451,13 @@ export type SourceSync = {
   /** Its source's items still waiting for Jev after it. */
   awaiting_check: number;
   storage_full: boolean;
+  /** The files it left out (unsupported, or too big), each with why: the first 200. */
+  skipped_files?: SkippedFile[];
   error: string | null;
 };
+
+/** A file a sync left out, and why (an unsupported type, over the file cap). */
+export type SkippedFile = { name: string; reason: string };
 
 export type Source = {
   id: number;

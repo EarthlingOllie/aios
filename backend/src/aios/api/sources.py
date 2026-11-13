@@ -63,6 +63,11 @@ CONNECTORS_SOURCE = (
 )
 
 
+class SkippedFileOut(BaseModel):
+    name: str
+    reason: str
+
+
 class SyncOut(BaseModel):
     id: int
     kind: SyncKind
@@ -77,6 +82,8 @@ class SyncOut(BaseModel):
     # Its source's items still waiting for Jev after it.
     awaiting_check: int
     storage_full: bool
+    # The files it left out (unsupported, or too big), each with why: the first 200.
+    skipped_files: list[SkippedFileOut] = []
     error: str | None
 
 

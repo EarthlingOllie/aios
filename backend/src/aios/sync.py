@@ -23,6 +23,10 @@ through its kind's adapter (`aios.source_providers`). Then:
 unique index keeps one running per source: a second is skipped. One running longer than
 `sync_stale_seconds` is taken to have died.
 
+**Skipped files.** What an adapter leaves out (an unsupported or oversized file: listed in its
+changes, or refused as it's fetched) is counted as dropped and listed on the sync record
+(`SourceSync.skipped_files`, the first `SKIPPED_LISTED`), and any copy of it is removed.
+
 **At the storage cap** (`aios.datastores.quota.room_for`) a sync skips new items, counting them,
 records "storage full", and still applies updates and removals.
 
@@ -44,7 +48,7 @@ import contextlib
 import io
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select, update
@@ -71,6 +75,8 @@ from aios.source_providers import (
     Content,
     Item,
     NeedsReconnecting,
+    SkipItem,
+    Skipped,
     SourceView,
     adapter_for,
     why_unavailable,
@@ -81,6 +87,8 @@ log = logging.getLogger(__name__)
 # What a sync record says when its sync died part way (its process stopped).
 STOPPED = "The sync stopped part way; the next sync carries on from where it last committed."
 STORAGE_FULL = "Storage full: new items were skipped until there's room."
+# How many skipped files a sync record lists (it counts them all).
+SKIPPED_LISTED = 200
 
 HEALTHY = "healthy"
 DELAYED = "delayed"
@@ -181,6 +189,13 @@ class Counts:
     skipped: int = 0
     dropped: int = 0
     storage_full: bool = False
+    # Files left out, and why: {"name", "reason"}, the first `SKIPPED_LISTED`.
+    skipped_files: list[dict] = field(default_factory=list)
+
+    def skip(self, title: str, reason: str) -> None:
+        self.dropped += 1
+        if len(self.skipped_files) < SKIPPED_LISTED:
+            self.skipped_files.append({"name": title, "reason": reason})
 
 
 def _cap(text: str) -> tuple[str, bool]:
@@ -273,7 +288,14 @@ class _Sync:
             self.counts.skipped += 1
             self.counts.storage_full = True
             return
-        content = self.adapter.fetch(self.view, item)
+        try:
+            content = self.adapter.fetch(self.view, item)
+        except SkipItem as exc:
+            self.counts.skip(item.title, str(exc))
+            if existing is not None:
+                self._remove(existing)
+                self.counts.removed += 1
+            return
         if item.kind == SyncedItemKind.file:
             self._write_file(item, existing, content.data or b"", batch)
         else:
@@ -379,6 +401,12 @@ class _Sync:
                 self._remove(row)
                 self.counts.removed += 1
             self.store.commit()
+
+    def skip_all(self, skipped: list[Skipped]) -> set[str]:
+        """Note what the adapter left out; the external ids whose copies go."""
+        for s in skipped:
+            self.counts.skip(s.title, s.reason)
+        return {s.external_id for s in skipped}
 
     def missing_from(self, listed: list[Item]) -> set[str]:
         """The source's items a full listing no longer has."""
@@ -521,8 +549,8 @@ def run_sync(
                 adapter.listing(run.view) if full else adapter.changes(run.view, source.cursor)
             )
             run.write_all(changes.changed)
-            removed = set(changes.removed)
-            if full:
+            removed = set(changes.removed) | run.skip_all(changes.skipped)
+            if full or changes.complete:
                 removed |= run.missing_from(changes.changed)
             run.remove_all(removed)
             run.recheck()
@@ -552,6 +580,7 @@ def _counted(sync_id: int, counts: Counts, **values):
             skipped=counts.skipped,
             dropped=counts.dropped,
             storage_full=counts.storage_full,
+            skipped_files=counts.skipped_files,
             **values,
         )
     )
@@ -692,6 +721,7 @@ def record_push(
         dropped=counts.dropped,
         skipped=counts.skipped,
         storage_full=counts.storage_full,
+        skipped_files=counts.skipped_files,
         awaiting_check=awaiting,
         error=error or (STORAGE_FULL if counts.storage_full else None),
     )

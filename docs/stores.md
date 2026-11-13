@@ -332,7 +332,10 @@ indexes again only items whose content hash changed, and moves the source's curs
 commits, so one failing part way is resumed by the next without duplicates or re-embedding. A
 full sync (a source's first, daily reconciliation, or Full resync) removes what the listing no
 longer has, with its document, chunks and search entries. At the storage cap new items are
-skipped (counted, "storage full") while updates and removals still apply. Each sync is recorded
+skipped (counted, "storage full") while updates and removals still apply. Files a provider can't
+sync (an unsupported type, or over its file cap) are counted as dropped and listed, each with why,
+on the sync record (`source_syncs.skipped_files`, store revision `0041`, the first 200), and the
+source's page shows them; any copy synced earlier is removed. Each sync is recorded
 (`aios.source_syncs`, pruned after `SYNC_HISTORY_DAYS`); a partial unique index keeps one
 running per source. Syncs run on the run service's `sources` lane: each process enqueues the
 sources due every `SYNC_POLL_SECONDS`, and Sync now (admins) enqueues one at once, or answers
@@ -386,6 +389,22 @@ once, and leaves their content searchable), and one without its app settings is 
   GitHub's will be one per issue or pull request with its comments). A
   removal that stopped part way is finished by the run service's sync sweep. A connector's source
   is removed only with its connector (409).
+
+**Google Drive** (`aios.source_providers.google_drive`) needs an OAuth client with read-only
+Drive access (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`). That's a restricted scope: until Google
+has verified the client (`GOOGLE_DRIVE_VERIFIED`), a production-like deployment (`COOKIE_SECURE`)
+lists Drive as unavailable, with the reason, and doesn't offer connecting. Only the refresh token
+is kept; access tokens are minted from it when needed and never stored, and a refresh token
+Google no longer honours makes the connector need reconnecting. Admins pick folders in My Drive
+(one shared with no one is restricted) and shared drives, or folders in them; everything under
+them syncs as documents. Docs, Sheets and Slides are exported to Word, Excel and PowerPoint;
+PDFs, Office files, Markdown, text, CSV and HTML are downloaded as they are; anything else, and
+files over `DRIVE_FILE_MAX_BYTES` (50 MiB), are listed as skipped. Incremental syncs read Drive's
+change feed from the stored page token, keeping changes for files that are, or were, under a
+chosen folder (ancestry looked up once per sync): moved in, added; moved out, trashed, deleted or
+no longer visible, removed; a changed checksum or modified time, re-exported and re-ingested. A
+folder moved into or out of scope, trashed or deleted makes the sync list the chosen folders
+afresh. Reconciliation lists the chosen folders. Drive has no tools.
 
 Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
 Agents act in connected systems with [connector tools](tools.md#connector-tools).

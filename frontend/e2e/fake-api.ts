@@ -377,6 +377,8 @@ export type SyncRow = {
   dropped: number;
   awaiting_check: number;
   storage_full: boolean;
+  /** The files it left out, and why. */
+  skipped_files: { name: string; reason: string }[];
   error: string | null;
 };
 
@@ -1609,6 +1611,7 @@ export class FakeApi {
       dropped: 0,
       awaiting_check: 0,
       storage_full: false,
+      skipped_files: [],
       error: null,
       ...fields,
     };

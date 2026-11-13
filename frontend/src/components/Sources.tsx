@@ -179,7 +179,12 @@ function ConnectorsSection() {
                   </p>
                 </div>
                 {connector ? (
-                  <ConnectorBadge connector={connector} />
+                  <>
+                    {connector.source && !connectorState(connector).attention && (
+                      <SourceBadge source={connector.source} />
+                    )}
+                    <ConnectorBadge connector={connector} />
+                  </>
                 ) : (
                   <Button
                     size="sm"

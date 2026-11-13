@@ -30,6 +30,12 @@ from the app security group. Without `certificate_arn` the site is served over p
 the ALB hostname and session cookies aren't marked `Secure`. Set a domain and certificate for
 anything real.
 
+Google Drive needs an OAuth client with read-only Drive access (`GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, with `<origin>/api/connectors/callback` as its redirect URI). Read-only
+Drive access is a restricted scope, so with `COOKIE_SECURE` on, Drive is listed as unavailable,
+with the reason, until Google has verified the client and `GOOGLE_DRIVE_VERIFIED` is set (see
+[Stores](stores.md#sources)).
+
 Database credentials are in three secrets (see [Stores](stores.md#database-roles)):
 `<name>/app`'s `DATABASE_URL` is `aios_app`'s, given to the api, the workers and migrations;
 `<name>/provisioner` is `aios_provisioner`'s, for the `urgent-worker` and `routine-worker`
