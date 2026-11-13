@@ -370,6 +370,12 @@ class Settings(BaseSettings):
     slack_client_secret: SecretStr = SecretStr("")
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
+    # Google Drive (`aios.source_providers.google_drive`): read-only Drive access is a restricted
+    # scope, so until Google has verified the OAuth client (`google_drive_verified`), a
+    # production-like deployment (`cookie_secure`) lists Drive as unavailable, with the reason,
+    # rather than send admins to a consent error. Files over `drive_file_max_bytes` are skipped.
+    google_drive_verified: bool = False
+    drive_file_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
     github_app_id: str = ""
     github_app_private_key: SecretStr = SecretStr("")
     github_app_slug: str = ""

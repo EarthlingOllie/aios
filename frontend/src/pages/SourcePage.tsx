@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { api, describeError, type SourceDetail, type SourceSync } from "@/lib/api";
+import { api, describeError, type SkippedFile, type SourceDetail, type SourceSync } from "@/lib/api";
 import { useRefusal } from "@/lib/current-user";
 import { canChangeSource, intervalLabel, isPushed, parseSenders, sourceKindLabel, syncSummary } from "@/lib/sources";
 
@@ -242,6 +242,26 @@ function Subtitle({ source }: { source: SourceDetail }) {
   );
 }
 
+/** The files a sync left out, each with why, folded away under how many. */
+function SkippedFiles({ files }: { files: SkippedFile[] }) {
+  if (files.length === 0) return null;
+  return (
+    <details className="mt-0.5 text-xs">
+      <summary className="text-muted-foreground cursor-pointer">
+        {files.length === 1 ? "1 file skipped" : `${files.length} files skipped`}
+      </summary>
+      <ul className="mt-1 flex flex-col gap-0.5" aria-label="Skipped files">
+        {files.map((file, i) => (
+          <li key={i} className="break-words">
+            <span className="font-medium">{file.name}</span>
+            <span className="text-muted-foreground">: {file.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function Syncs({ source }: { source: SourceDetail }) {
   return (
     <Section title="Recent syncs" label="Recent syncs">
@@ -259,6 +279,7 @@ function Syncs({ source }: { source: SourceDetail }) {
                   {isPushed(source.kind) ? "Received" : SYNC_KIND[sync.kind]} · {formatDate(sync.started_at)}
                 </p>
                 <p className="text-muted-foreground text-xs">{syncSummary(sync)}</p>
+                <SkippedFiles files={sync.skipped_files ?? []} />
                 {sync.error && (
                   <p
                     className={

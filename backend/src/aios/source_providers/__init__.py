@@ -10,8 +10,14 @@ An item (`Item`) is named by its external id, and carries a content hash that ch
 its content does, so the loop fetches and indexes again only what changed. A provider raises
 `NeedsReconnecting` on a final authorisation failure, and anything else when a sync can't go on.
 
-**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive, GitHub and the
-development-only test provider (`aios.source_providers.test`). Each says why it's unavailable here,
+An adapter can leave a file out (unsupported, or too big): it lists it as skipped (`Skipped`, in
+`Changes.skipped`), or, finding out only as it fetches it, raises `SkipItem`. The sync records it on
+its sync record and removes any copy it had. A change feed that can't say exactly what changed
+(a folder moved) can answer a full listing instead (`Changes.complete`).
+
+**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive
+(`aios.source_providers.google_drive`), GitHub and the development-only test provider
+(`aios.source_providers.test`). Each says why it's unavailable here,
 if it is (`why_unavailable`): switched off in this deployment (`connector_enabled_providers`, which
 stops its syncs at once and leaves its content), missing its app settings, or not built yet. A
 connector's provider also runs its connect flow (`Provider.authorise_url`, `exchange`, `revoke`)
@@ -44,6 +50,11 @@ class ProviderUnavailable(Exception):
     """The source's provider isn't offered in this deployment."""
 
 
+class SkipItem(Exception):
+    """An item can't be synced (unsupported, or too big), found out as it's fetched: the sync
+    leaves it out, listing it as skipped with this reason."""
+
+
 @dataclass(frozen=True)
 class Item:
     """An item at its source, as a listing or change feed gives it."""
@@ -71,13 +82,26 @@ class Content:
 
 
 @dataclass(frozen=True)
+class Skipped:
+    """An item at its source that isn't synced (an unsupported or oversized file), and why."""
+
+    external_id: str
+    title: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class Changes:
     """What changed since a cursor: items added or changed, external ids removed, and the
-    cursor to resume from once these are written."""
+    cursor to resume from once these are written; items left out (`skipped`), whose copies
+    are removed; and whether it's everything in scope after all (`complete`: what it lacks is
+    removed, as a full listing's is)."""
 
     changed: list[Item] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     cursor: str | None = None
+    skipped: list[Skipped] = field(default_factory=list)
+    complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,13 +187,22 @@ class Provider:
     tools: Tools | None = None
 
 
-def _app_settings(title: str, *values: Any) -> str | None:
+def needs_app_settings(title: str, *values: Any) -> str | None:
+    """Why a provider is unavailable for want of its app settings (None if it has them all)."""
+
     def present(v: Any) -> bool:
         return bool(v.get_secret_value() if hasattr(v, "get_secret_value") else v)
 
     if all(present(v) for v in values):
-        return f"{title} isn't available in this version of aios yet."
+        return None
     return f"{title} isn't set up in this deployment: it needs its app settings."
+
+
+def _app_settings(title: str, *values: Any) -> str | None:
+    """A provider not built yet: unavailable whatever its settings."""
+    return needs_app_settings(title, *values) or (
+        f"{title} isn't available in this version of aios yet."
+    )
 
 
 def _test_unavailable() -> str | None:
@@ -184,6 +217,12 @@ def _test_provider() -> Provider:
     return test.PROVIDER
 
 
+def _google_drive_provider() -> Provider:
+    from aios.source_providers import google_drive
+
+    return google_drive.PROVIDER
+
+
 TEST = "test"
 
 
@@ -195,11 +234,7 @@ def _providers() -> dict[str, Provider]:
             "Slack",
             lambda: _app_settings("Slack", s.slack_client_id, s.slack_client_secret),
         ),
-        "google_drive": Provider(
-            "google_drive",
-            "Google Drive",
-            lambda: _app_settings("Google Drive", s.google_client_id, s.google_client_secret),
-        ),
+        "google_drive": _google_drive_provider(),
         "github": Provider(
             "github",
             "GitHub",

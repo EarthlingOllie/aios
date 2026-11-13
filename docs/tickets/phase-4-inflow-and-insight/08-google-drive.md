@@ -6,11 +6,11 @@
 
 **Blocked by:** [04: Connectors: credentials, allowlist, choosing what syncs, removal](04-connectors.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Recorded responses cover the change feed, moves in and out of chosen folders, trashing, deletion, and an edited Doc being re-exported and re-ingested.
-- [ ] Native Google formats are exported and ingested; unsupported and oversized files are listed as skipped on the sync record.
-- [ ] Reconciliation removes files no longer under the chosen folders.
-- [ ] Shared drives can be chosen and synced.
-- [ ] An unverified production deployment lists Drive as unavailable, with the reason, and connecting is not offered.
-- [ ] The connector shows its health on the Data page.
+- [x] Recorded responses cover the change feed, moves in and out of chosen folders, trashing, deletion, and an edited Doc being re-exported and re-ingested.
+- [x] Native Google formats are exported and ingested; unsupported and oversized files are listed as skipped on the sync record.
+- [x] Reconciliation removes files no longer under the chosen folders.
+- [x] Shared drives can be chosen and synced.
+- [x] An unverified production deployment lists Drive as unavailable, with the reason, and connecting is not offered.
+- [x] The connector shows its health on the Data page.

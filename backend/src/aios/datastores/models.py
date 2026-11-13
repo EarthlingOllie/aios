@@ -1781,6 +1781,12 @@ class SourceSync(StoreBase):
     storage_full: Mapped[bool] = mapped_column(
         Boolean, server_default=false(), comment="Whether it met the store's storage cap."
     )
+    skipped_files: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=sql_text("'[]'::jsonb"),
+        comment="The files it left out (unsupported, or too big), with why: the first 200.",
+    )
     error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (

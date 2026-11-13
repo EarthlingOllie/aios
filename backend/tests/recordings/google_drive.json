@@ -1,0 +1,35 @@
+{
+  "_note": "Google Drive API v3 responses as recorded for the aios test client (identifiers and contents replaced). Replayed by tests/fake_google_drive.py; no live calls.",
+  "token": {
+    "access_token": "ya29.recorded-access-token",
+    "expires_in": 3599,
+    "refresh_token": "1//recorded-refresh-token",
+    "scope": "https://www.googleapis.com/auth/drive.readonly",
+    "token_type": "Bearer"
+  },
+  "about": {"user": {"displayName": "Ada Admin", "emailAddress": "ada@acme.example"}},
+  "drives": [
+    {"kind": "drive#drive", "id": "0AengDrive00PVA", "name": "Engineering"}
+  ],
+  "files": [
+    {"id": "0AmyDriveRoot0PVA", "name": "My Drive", "mimeType": "application/vnd.google-apps.folder", "parents": [], "shared": false, "modifiedTime": "2026-01-05T09:00:00.000Z", "version": "1"},
+    {"id": "0AengDrive00PVA", "name": "Engineering", "mimeType": "application/vnd.google-apps.folder", "parents": [], "driveId": "0AengDrive00PVA", "shared": true, "modifiedTime": "2026-01-05T09:00:00.000Z", "version": "1"},
+    {"id": "1PoliciesFolder", "name": "Policies", "mimeType": "application/vnd.google-apps.folder", "parents": ["0AmyDriveRoot0PVA"], "shared": true, "modifiedTime": "2026-02-01T10:00:00.000Z", "version": "3"},
+    {"id": "1HrFolder", "name": "HR", "mimeType": "application/vnd.google-apps.folder", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-02-01T10:05:00.000Z", "version": "2"},
+    {"id": "1PrivateFolder", "name": "Private notes", "mimeType": "application/vnd.google-apps.folder", "parents": ["0AmyDriveRoot0PVA"], "shared": false, "modifiedTime": "2026-02-02T10:00:00.000Z", "version": "2"},
+    {"id": "1ArchiveFolder", "name": "Archive", "mimeType": "application/vnd.google-apps.folder", "parents": ["0AmyDriveRoot0PVA"], "shared": true, "modifiedTime": "2026-02-03T10:00:00.000Z", "version": "2"},
+    {"id": "1RunbooksFolder", "name": "Runbooks", "mimeType": "application/vnd.google-apps.folder", "parents": ["0AengDrive00PVA"], "driveId": "0AengDrive00PVA", "shared": true, "modifiedTime": "2026-02-04T10:00:00.000Z", "version": "2"},
+
+    {"id": "1LeaveDoc", "name": "Leave policy", "mimeType": "application/vnd.google-apps.document", "parents": ["1HrFolder"], "shared": true, "modifiedTime": "2026-03-01T09:30:00.000Z", "version": "14", "lastModifyingUser": {"displayName": "Hana HR"}, "content": "Leave policy. Staff get thirty days of annual leave, booked through the rota."},
+    {"id": "1BudgetSheet", "name": "Budget 2026", "mimeType": "application/vnd.google-apps.spreadsheet", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-02T09:30:00.000Z", "version": "40", "lastModifyingUser": {"displayName": "Felix Finance"}, "content": "Budget 2026. Travel line: twelve thousand pounds for the offsite."},
+    {"id": "1AllHandsSlides", "name": "All hands", "mimeType": "application/vnd.google-apps.presentation", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-03T09:30:00.000Z", "version": "9", "lastModifyingUser": {"displayName": "Cleo CEO"}, "content": "All hands. Our mission: make every lighthouse keeper's log searchable."},
+    {"id": "1ExpensesPdf", "name": "Expenses.pdf", "mimeType": "application/pdf", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-04T09:30:00.000Z", "version": "2", "md5Checksum": "5d41402abc4b2a76b9719d911017c592", "size": "86", "lastModifyingUser": {"displayName": "Felix Finance"}, "content": "Expenses policy. Receipts are needed for any claim above twenty pounds."},
+    {"id": "1LogoPng", "name": "logo.png", "mimeType": "image/png", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-05T09:30:00.000Z", "version": "1", "md5Checksum": "7d793037a0760186574b0282f2f435e7", "size": "20480", "content": "PNG"},
+    {"id": "1ScansPdf", "name": "Handbook scans.pdf", "mimeType": "application/pdf", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-06T09:30:00.000Z", "version": "1", "md5Checksum": "e4d909c290d0fb1ca068ffaddf22cbd0", "size": "62914560", "content": "SCANS"},
+    {"id": "1FeedbackForm", "name": "Offsite feedback", "mimeType": "application/vnd.google-apps.form", "parents": ["1PoliciesFolder"], "shared": true, "modifiedTime": "2026-03-07T09:30:00.000Z", "version": "4"},
+    {"id": "1DiaryDoc", "name": "Diary", "mimeType": "application/vnd.google-apps.document", "parents": ["1PrivateFolder"], "shared": false, "modifiedTime": "2026-03-08T09:30:00.000Z", "version": "3", "content": "Dear diary, the narwhal sketches are coming along."},
+    {"id": "1OldPlanDoc", "name": "Old plan", "mimeType": "application/vnd.google-apps.document", "parents": ["1ArchiveFolder"], "shared": true, "modifiedTime": "2025-11-01T09:30:00.000Z", "version": "7", "lastModifyingUser": {"displayName": "Cleo CEO"}, "content": "Old plan. We once meant to open a branch on the Orkney islands."},
+    {"id": "1DeployDoc", "name": "Deploying", "mimeType": "application/vnd.google-apps.document", "parents": ["1RunbooksFolder"], "driveId": "0AengDrive00PVA", "shared": true, "modifiedTime": "2026-03-09T09:30:00.000Z", "version": "21", "lastModifyingUser": {"displayName": "Omar Ops"}, "content": "Deploying. Blue-green deploys roll out to the cormorant cluster first."},
+    {"id": "1OncallMd", "name": "oncall.md", "mimeType": "text/markdown", "parents": ["0AengDrive00PVA"], "driveId": "0AengDrive00PVA", "shared": true, "modifiedTime": "2026-03-10T09:30:00.000Z", "version": "5", "md5Checksum": "8277e0910d750195b448797616e091ad", "size": "61", "lastModifyingUser": {"displayName": "Omar Ops"}, "content": "# On call\n\nThe pager rotates every Tuesday at the albatross standup."}
+  ]
+}
