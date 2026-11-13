@@ -85,4 +85,23 @@ describe("pinConnectorTools", () => {
     const pins = [{ connector_id: 2, provider: "slack", tools: ["send"] }];
     expect(pinConnectorTools(pins, slack, [])).toEqual([]);
   });
+
+  it("sets a limited tool's allowed channels", () => {
+    const pins = [{ connector_id: 2, provider: "slack", tools: ["post_to_slack"] }];
+    expect(pinConnectorTools(pins, slack, ["post_to_slack"], { post_to_slack: ["C1", "C2"] })).toEqual([
+      { connector_id: 2, provider: "slack", tools: ["post_to_slack"], allowed: { post_to_slack: ["C1", "C2"] } },
+    ]);
+  });
+
+  it("keeps the allowed channels when the tools change, but not for a tool unpinned", () => {
+    const pins = [
+      { connector_id: 2, provider: "slack", tools: ["post_to_slack"], allowed: { post_to_slack: ["C1"] } },
+    ];
+    expect(pinConnectorTools(pins, slack, ["post_to_slack", "read"])).toEqual([
+      { connector_id: 2, provider: "slack", tools: ["post_to_slack", "read"], allowed: { post_to_slack: ["C1"] } },
+    ]);
+    expect(pinConnectorTools(pins, slack, ["read"])).toEqual([
+      { connector_id: 2, provider: "slack", tools: ["read"] },
+    ]);
+  });
 });

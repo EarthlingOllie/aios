@@ -382,13 +382,29 @@ once, and leaves their content searchable), and one without its app settings is 
 - **Removing** a connector stops it at once, deletes its credentials (revoked at the provider
   where it can), and then deletes its content or keeps it: file items' documents move to Uploads,
   and message items become Markdown documents in Uploads, grouped as the provider says
-  (`Provider.keep_groups`: the test provider's are one per channel per month, as Slack's will be;
+  (`Provider.keep_groups`: the test provider's and Slack's are one per channel per month;
   GitHub's will be one per issue or pull request with its comments). A
   removal that stopped part way is finished by the run service's sync sweep. A connector's source
   is removed only with its connector (409).
 
 Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
 Agents act in connected systems with [connector tools](tools.md#connector-tools).
+
+**Slack** (`aios.source_providers.slack`) is a Slack app with a bot token, got through OAuth
+(`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`; without them Slack is unavailable). Its scope is the
+channels the bot can see: every public channel (joined when first synced) and private channels it
+has been invited to, which are restricted; the picker says a private channel must invite the app
+first (`scope_hint` on the connector). Each message syncs as a message item with its channel,
+author name, time and permalink; a thread reply is a child of the thread's first message.
+Each sync re-reads the last `SLACK_REREAD_DAYS` (7) of each channel, the daily reconciliation the
+last `SLACK_RECONCILE_DAYS` (90), and a full resync, or a channel's first sync, everything: an
+edit in what was re-read updates the item, and a message gone from it is removed (the adapter
+says what a read covers, `Changes.covers`); older ones stay until a full resync. A channel taken
+out of the scope, archived, or left by the app has its items removed while the others carry on,
+and is listed as needing attention on the connector's page and the Sources tab (the source's
+`settings.attention`, from `Changes.attention`). A rate-limited call (429) waits its Retry-After,
+up to `SLACK_RATE_LIMIT_RETRIES` times in a row, instead of failing the sync. Tests replay
+recorded Web API responses (`backend/tests/recordings/slack/`); nothing calls Slack.
 
 **URL, webhook and email sources** (`aios.url_sources`, `aios.push_sources`, store revision
 `0036`, platform revision `0082`). Admins add them on the Sources tab (`GET .../source-kinds` says

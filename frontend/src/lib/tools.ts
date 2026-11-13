@@ -74,14 +74,21 @@ export function connectorToolOptions(
   ];
 }
 
-/** The `connector` tool's settings with `connector`'s group set to `tools`: added if it's new,
- * dropped if it's left with none. */
+/** The `connector` tool's settings with `connector`'s group set to `tools` (and its limited
+ * tools' `allowed` targets, kept only for tools still pinned): added if it's new, dropped if it's
+ * left with none. */
 export function pinConnectorTools(
   pins: ConnectorPin[],
   connector: { id: number; provider: string },
   tools: string[],
+  allowed?: Record<string, string[]>,
 ): ConnectorPin[] {
-  const group = { connector_id: connector.id, provider: connector.provider, tools };
+  const before = pins.find((p) => p.connector_id === connector.id)?.allowed ?? {};
+  const kept = Object.fromEntries(
+    Object.entries(allowed ?? before).filter(([name, targets]) => tools.includes(name) && targets.length),
+  );
+  const group: ConnectorPin = { connector_id: connector.id, provider: connector.provider, tools };
+  if (Object.keys(kept).length) group.allowed = kept;
   const at = pins.findIndex((p) => p.connector_id === connector.id);
   if (at < 0) return tools.length ? [...pins, group] : pins;
   return tools.length

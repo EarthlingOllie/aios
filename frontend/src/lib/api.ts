@@ -531,6 +531,11 @@ export type Connector = {
   /** Why its provider can't be used here now (switched off, say); null if it can. */
   unavailable: string | null;
   scope: ScopeItem[];
+  /** What an admin picking its scope should know (why a private channel isn't listed, say). */
+  scope_hint?: string | null;
+  /** Parts of its scope its last sync couldn't read (archived, or left by the app): their items
+   * were removed. */
+  attention?: { id: string; name: string; reason: string }[];
   /** Its source, once its scope is first saved. */
   source_id: number | null;
   source: Source | null;
@@ -544,10 +549,21 @@ export type ConnectorTool = {
   input_schema: Record<string, unknown>;
   /** Marked read-only by the provider: calling it changes nothing. */
   read_only: boolean;
+  /** The argument naming what it acts on (a channel), if it may act only on targets an editor
+   * allows; null if it isn't limited. */
+  limited_by?: string | null;
+  /** What a limited tool can be allowed to act on. */
+  targets?: ScopeItem[];
 };
 
-/** A connector's tools an agent version may use (the `connector` tool's settings). */
-export type ConnectorPin = { connector_id: number; provider: string; tools: string[] };
+/** A connector's tools an agent version may use (the `connector` tool's settings), and a limited
+ * tool's allowed targets, by tool name. */
+export type ConnectorPin = {
+  connector_id: number;
+  provider: string;
+  tools: string[];
+  allowed?: Record<string, string[]>;
+};
 
 /** The source a document belongs to: Uploads for an upload. */
 export type DocumentSource = Pick<Source, "id" | "kind" | "name">;

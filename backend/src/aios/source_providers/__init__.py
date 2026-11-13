@@ -10,10 +10,11 @@ An item (`Item`) is named by its external id, and carries a content hash that ch
 its content does, so the loop fetches and indexes again only what changed. A provider raises
 `NeedsReconnecting` on a final authorisation failure, and anything else when a sync can't go on.
 
-**Providers** (`PROVIDERS`) are found by name: Slack, Google Drive, GitHub and the
-development-only test provider (`aios.source_providers.test`). Each says why it's unavailable here,
-if it is (`why_unavailable`): switched off in this deployment (`connector_enabled_providers`, which
-stops its syncs at once and leaves its content), missing its app settings, or not built yet. A
+**Providers** (`PROVIDERS`) are found by name: Slack (`aios.source_providers.slack`), Google
+Drive, GitHub and the development-only test provider (`aios.source_providers.test`). Each
+says why it's unavailable here, if it is (`why_unavailable`): switched off in this deployment
+(`connector_enabled_providers`, which stops its syncs at once and leaves its content), missing
+its app settings, or not built yet. A
 connector's provider also runs its connect flow (`Provider.authorise_url`, `exchange`, `revoke`)
 and says how its message items are kept as documents when its connector is removed
 (`Provider.keep_groups`). Its calls go through `aios.outbound`, which reaches only its hosts.
@@ -78,6 +79,15 @@ class Changes:
     changed: list[Item] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     cursor: str | None = None
+    # What this read went over, if not everything (a listing) or only what changed (a change
+    # feed): the stored items (by external id) it covers. A stored item it covers that it didn't
+    # return is gone at the source, and is removed. A provider that re-reads a window of its
+    # history (Slack) says which items that window holds; a full listing that covers everything
+    # needn't say.
+    covers: Callable[[str], bool] | None = field(default=None, compare=False)
+    # Parts of the scope that need an admin's attention (a channel archived, or left by the app),
+    # by scope option id, each with why; None leaves what the source last recorded.
+    attention: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,11 @@ class SourceView:
     name: str
     settings: dict[str, Any]
     credential: str | None = field(default=None, repr=False)
+    # An admin asked for a full resync: re-read everything, however old.
+    resync: bool = False
+    # Where its last sync left off (what `Adapter.changes` is also given), for a listing that
+    # re-reads only part of the source's history.
+    cursor: str | None = None
 
 
 class Adapter(Protocol):
@@ -136,9 +151,16 @@ class Tools:
     call acts on (a channel, a repository), for the audit log."""
 
     url: str
-    # Hands requests to a server inside the process (the test provider's); None for the network.
+    # Hands requests to a server inside the process (the test provider's, and the tools aios
+    # serves itself for a provider); None for the network.
     transport: Callable[[], httpx.AsyncBaseTransport] | None = None
     target_args: tuple[str, ...] = ("channel", "repository", "repo", "folder")
+    # Tools that may act only on targets an editor allowed (`ConnectorPin.allowed`), each with the
+    # argument naming its target: a call on any other target is refused, and the model told.
+    limited: dict[str, str] = field(default_factory=dict)
+    # Tools whose text is signed with the agent's name ("— <agent name> via aios"), each with the
+    # argument holding the text.
+    signed: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -161,6 +183,8 @@ class Provider:
     keep_groups: Callable[[Iterable["SyncedItem"]], list[KeptDocument]] | None = None
     # Its tools, for agents; None if it has none (yet).
     tools: Tools | None = None
+    # What an admin picking its scope should know (why something isn't listed, say).
+    scope_hint: str | None = None
 
 
 def _app_settings(title: str, *values: Any) -> str | None:
@@ -187,14 +211,16 @@ def _test_provider() -> Provider:
 TEST = "test"
 
 
+def _slack_provider() -> Provider:
+    from aios.source_providers import slack
+
+    return slack.PROVIDER
+
+
 def _providers() -> dict[str, Provider]:
     s = get_settings()
     return {
-        "slack": Provider(
-            "slack",
-            "Slack",
-            lambda: _app_settings("Slack", s.slack_client_id, s.slack_client_secret),
-        ),
+        "slack": _slack_provider(),
         "google_drive": Provider(
             "google_drive",
             "Google Drive",

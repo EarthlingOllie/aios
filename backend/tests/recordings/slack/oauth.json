@@ -1,0 +1,29 @@
+[
+ {
+  "method": "POST",
+  "path": "/api/oauth.v2.access",
+  "json": {
+   "ok": true,
+   "access_token": "xoxb-recorded-bot-token",
+   "token_type": "bot",
+   "scope": "channels:read,channels:history,channels:join,groups:read,groups:history,users:read,chat:write",
+   "team": {
+    "id": "T0ACME",
+    "name": "Acme"
+   },
+   "bot_user_id": "U0BOT"
+  },
+  "query": {
+   "code": "slack-code"
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/api/auth.revoke",
+  "json": {
+   "ok": true,
+   "revoked": true
+  },
+  "repeat": true
+ }
+]

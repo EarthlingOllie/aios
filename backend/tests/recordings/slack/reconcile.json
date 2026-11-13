@@ -1,0 +1,196 @@
+[
+ {
+  "method": "GET",
+  "path": "/api/auth.test",
+  "json": {
+   "ok": true,
+   "url": "https://acme.slack.com/",
+   "team": "Acme",
+   "user_id": "U0BOT"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/users.info",
+  "json": {
+   "ok": true,
+   "user": {
+    "id": "U0ANN",
+    "name": "ann",
+    "real_name": "Ann Archer",
+    "profile": {
+     "display_name": "Ann",
+     "real_name": "Ann Archer"
+    }
+   }
+  },
+  "query": {
+   "user": "U0ANN"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/users.info",
+  "json": {
+   "ok": true,
+   "user": {
+    "id": "U0BOB",
+    "name": "bob",
+    "real_name": "Bob Baker",
+    "profile": {
+     "display_name": "",
+     "real_name": "Bob Baker"
+    }
+   }
+  },
+  "query": {
+   "user": "U0BOB"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/conversations.info",
+  "json": {
+   "ok": true,
+   "channel": {
+    "id": "C0GENERAL",
+    "name": "general",
+    "is_private": false,
+    "is_member": true,
+    "is_archived": false
+   }
+  },
+  "query": {
+   "channel": "C0GENERAL"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/conversations.info",
+  "json": {
+   "ok": true,
+   "channel": {
+    "id": "G0PLANS",
+    "name": "plans",
+    "is_private": true,
+    "is_member": true,
+    "is_archived": false
+   }
+  },
+  "query": {
+   "channel": "G0PLANS"
+  },
+  "repeat": true
+ },
+ {
+  "method": "GET",
+  "path": "/api/conversations.history",
+  "json": {
+   "ok": true,
+   "messages": [
+    {
+     "type": "message",
+     "user": "U0BOB",
+     "text": "Orrery demo at noon.",
+     "ts": "1799956800.000004"
+    },
+    {
+     "type": "message",
+     "user": "U0ANN",
+     "text": "The orrery's Saturn has rings and moons now.",
+     "ts": "1799913600.000030",
+     "edited": {
+      "user": "U0ANN",
+      "ts": "1799982720.000001"
+     }
+    },
+    {
+     "type": "message",
+     "user": "U0ANN",
+     "text": "Which metal for the orrery's planets and moons?",
+     "ts": "1797408000.000002",
+     "thread_ts": "1797408000.000002",
+     "reply_count": 1,
+     "latest_reply": "1799827200.000003",
+     "edited": {
+      "user": "U0ANN",
+      "ts": "1799991360.000002"
+     }
+    }
+   ],
+   "has_more": false,
+   "response_metadata": {
+    "next_cursor": ""
+   }
+  },
+  "query": {
+   "channel": "C0GENERAL",
+   "oldest": "1792224000.000000"
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/api/conversations.replies",
+  "json": {
+   "ok": true,
+   "messages": [
+    {
+     "type": "message",
+     "user": "U0ANN",
+     "text": "Which metal for the orrery's planets and moons?",
+     "ts": "1797408000.000002",
+     "thread_ts": "1797408000.000002",
+     "reply_count": 1,
+     "latest_reply": "1799827200.000003",
+     "edited": {
+      "user": "U0ANN",
+      "ts": "1799991360.000002"
+     }
+    },
+    {
+     "type": "message",
+     "user": "U0BOB",
+     "text": "Brass, polished.",
+     "ts": "1799827200.000003",
+     "thread_ts": "1797408000.000002",
+     "parent_user_id": "U0ANN"
+    }
+   ],
+   "has_more": false,
+   "response_metadata": {
+    "next_cursor": ""
+   }
+  },
+  "query": {
+   "channel": "C0GENERAL",
+   "ts": "1797408000.000002"
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/api/conversations.history",
+  "json": {
+   "ok": true,
+   "messages": [
+    {
+     "type": "message",
+     "user": "U0ANN",
+     "text": "Plan: show the orrery at the fair.",
+     "ts": "1799740800.000007"
+    }
+   ],
+   "has_more": false,
+   "response_metadata": {
+    "next_cursor": ""
+   }
+  },
+  "query": {
+   "channel": "G0PLANS",
+   "oldest": "1792224000.000000"
+  }
+ }
+]

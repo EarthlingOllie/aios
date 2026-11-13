@@ -368,6 +368,15 @@ class Settings(BaseSettings):
     connector_tool_result_cap_bytes: int = Field(default=64 * 1024, ge=1)
     slack_client_id: str = ""
     slack_client_secret: SecretStr = SecretStr("")
+    # Slack (`aios.source_providers.slack`): each sync re-reads the last `slack_reread_days` of
+    # each channel (catching edits and deletions), the daily reconciliation the last
+    # `slack_reconcile_days`; a full resync re-reads everything. A rate-limited call waits its
+    # Retry-After (at most `slack_rate_limit_max_wait_seconds`) and tries again, up to
+    # `slack_rate_limit_retries` times in a row, before the sync fails.
+    slack_reread_days: float = Field(default=7, gt=0)
+    slack_reconcile_days: float = Field(default=90, gt=0)
+    slack_rate_limit_retries: int = Field(default=10, ge=0)
+    slack_rate_limit_max_wait_seconds: float = Field(default=120, ge=0)
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
     github_app_id: str = ""

@@ -82,6 +82,10 @@ log = logging.getLogger(__name__)
 STOPPED = "The sync stopped part way; the next sync carries on from where it last committed."
 STORAGE_FULL = "Storage full: new items were skipped until there's room."
 
+# Where a source's settings keep the parts of its scope needing an admin's attention, by scope
+# option id, each with why (`Changes.attention`), as its last sync found them.
+ATTENTION = "attention"
+
 HEALTHY = "healthy"
 DELAYED = "delayed"
 FAILING = "failing"
@@ -95,8 +99,10 @@ DOCUMENT_IDS = func.pg_get_serial_sequence(Document.__table__.fullname, "id")
 PUSHED = (SourceKind.webhook, SourceKind.email)
 
 
-def view(source: Source, credential: str | None = None) -> SourceView:
-    return SourceView(source.id, source.name, dict(source.settings or {}), credential)
+def view(source: Source, credential: str | None = None, resync: bool = False) -> SourceView:
+    return SourceView(
+        source.id, source.name, dict(source.settings or {}), credential, resync, source.cursor
+    )
 
 
 def _provider_on(source: Source | None) -> bool:
@@ -213,12 +219,13 @@ class _Sync:
         source: Source,
         adapter: Adapter,
         credential: str | None = None,
+        resync: bool = False,
     ):
         self.store = store
         self.store_id = store_id
         self.source_id = source.id
         self.label = f"source:{source.name}"
-        self.view = view(source, credential)
+        self.view = view(source, credential, resync)
         self.adapter = adapter
         self.counts = Counts()
 
@@ -380,13 +387,16 @@ class _Sync:
                 self.counts.removed += 1
             self.store.commit()
 
-    def missing_from(self, listed: list[Item]) -> set[str]:
-        """The source's items a full listing no longer has."""
+    def missing_from(self, listed: list[Item], covers=None) -> set[str]:
+        """The source's items a read covering them (all of them, unless `covers` says which)
+        no longer has."""
         have = set(
             self.store.scalars(
                 select(SyncedItem.external_id).where(SyncedItem.source_id == self.source_id)
             )
         )
+        if covers is not None:
+            have = {e for e in have if covers(e)}
         return have - {i.external_id for i in listed}
 
     # --- Checking again ---
@@ -515,22 +525,33 @@ def run_sync(
                 from aios import connectors
 
                 credential = connectors.credential(data_store_id, source.connector_id)
-            run = _Sync(store, data_store_id, source, adapter, credential)
+            run = _Sync(
+                store, data_store_id, source, adapter, credential, resync=kind == SyncKind.full
+            )
             adapter = run.adapter
             changes = (
                 adapter.listing(run.view) if full else adapter.changes(run.view, source.cursor)
             )
             run.write_all(changes.changed)
             removed = set(changes.removed)
-            if full:
-                removed |= run.missing_from(changes.changed)
+            if changes.covers is not None or full:
+                removed |= run.missing_from(changes.changed, changes.covers)
             run.remove_all(removed)
             run.recheck()
         except Exception as exc:
             counts = run.counts if run is not None else Counts()
             _failed(store, data_store_id, source_id, sync_id, counts, exc)
         else:
-            _succeeded(store, source_id, sync_id, run.counts, changes.cursor, full, run.awaiting())
+            _succeeded(
+                store,
+                source_id,
+                sync_id,
+                run.counts,
+                changes.cursor,
+                full,
+                run.awaiting(),
+                changes.attention,
+            )
             with contextlib.suppress(Exception):
                 quota.record_files(data_store_id, store)
         prune(store, source_id)
@@ -565,9 +586,13 @@ def _succeeded(
     cursor: str | None,
     full: bool,
     awaiting: int,
+    attention: dict[str, str] | None = None,
 ) -> None:
     source = store.scalar(select(Source).where(Source.id == source_id).with_for_update())
     source.cursor = cursor
+    if attention is not None:
+        settings = {k: v for k, v in (source.settings or {}).items() if k != ATTENTION}
+        source.settings = {**settings, ATTENTION: attention} if attention else settings
     if full:
         source.last_reconciled_at = func.now()
     source.failure_count = 0

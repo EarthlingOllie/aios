@@ -214,7 +214,8 @@ function ConnectorToolPicker({
           key={connector.id}
           connector={connector}
           pinned={value.find((p) => p.connector_id === connector.id)?.tools ?? []}
-          onChange={(tools) => onChange(pinConnectorTools(value, connector, tools))}
+          allowed={value.find((p) => p.connector_id === connector.id)?.allowed ?? {}}
+          onChange={(tools, allowed) => onChange(pinConnectorTools(value, connector, tools, allowed))}
         />
       ))}
       {removed.map((pin) => (
@@ -237,15 +238,18 @@ function ConnectorToolPicker({
   );
 }
 
-/** One connector's tools, as checkboxes. */
+/** One connector's tools, as checkboxes; a limited tool, once picked, with the targets (channels)
+ * it may act on. */
 function ConnectorGroup({
   connector,
   pinned,
+  allowed,
   onChange,
 }: {
   connector: Connector;
   pinned: string[];
-  onChange: (tools: string[]) => void;
+  allowed: Record<string, string[]>;
+  onChange: (tools: string[], allowed?: Record<string, string[]>) => void;
 }) {
   const [offered, setOffered] = useState<ConnectorTool[]>();
   const [error, setError] = useState<string>();
@@ -266,6 +270,14 @@ function ConnectorGroup({
   const options = connectorToolOptions(error ? undefined : offered, pinned);
   const toggle = (name: string, on: boolean) =>
     onChange(on ? [...pinned.filter((n) => n !== name), name] : pinned.filter((n) => n !== name));
+  const allow = (name: string, target: string, on: boolean) => {
+    const now = allowed[name] ?? [];
+    onChange(pinned, {
+      ...allowed,
+      [name]: on ? [...now.filter((t) => t !== target), target] : now.filter((t) => t !== target),
+    });
+  };
+  const limits = new Map((offered ?? []).filter((t) => t.limited_by).map((t) => [t.name, t]));
   return (
     <div className="flex flex-col gap-1" data-testid="connector-group">
       <span className="text-sm font-medium">{connector.name}</span>
@@ -294,6 +306,43 @@ function ConnectorGroup({
           </span>
         </label>
       ))}
+      {options
+        .filter((option) => option.checked && limits.has(option.name))
+        .map((option) => {
+          const tool = limits.get(option.name)!;
+          const chosen = allowed[option.name] ?? [];
+          const targets = [
+            ...(tool.targets ?? []),
+            ...chosen
+              .filter((id) => !(tool.targets ?? []).some((t) => t.id === id))
+              .map((id) => ({ id, name: id, restricted: false })),
+          ];
+          return (
+            <fieldset
+              key={`${option.name}-allowed`}
+              className="ml-6 flex flex-col gap-1"
+              aria-label={`${option.name}: allowed ${tool.limited_by}s`}
+            >
+              <legend className="text-xs font-medium">
+                The {tool.limited_by}s {option.name} may use
+              </legend>
+              {chosen.length === 0 && (
+                <p className="text-destructive text-xs">Pick at least one {tool.limited_by}.</p>
+              )}
+              {targets.map((target) => (
+                <label key={target.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={chosen.includes(target.id)}
+                    onChange={(e) => allow(option.name, target.id, e.target.checked)}
+                  />
+                  {target.name}
+                  {target.restricted && <Badge variant="outline">private</Badge>}
+                </label>
+              ))}
+            </fieldset>
+          );
+        })}
     </div>
   );
 }
@@ -301,7 +350,11 @@ function ConnectorGroup({
 function formatSetting(value: unknown): string | undefined {
   if (Array.isArray(value) && value.some((v) => v && typeof v === "object" && "tools" in v)) {
     const pins = value as ConnectorPin[];
-    return pins.map((p) => `${p.provider}: ${p.tools.join(", ")}`).join("; ") || undefined;
+    const allowedOf = (p: ConnectorPin) =>
+      Object.entries(p.allowed ?? {})
+        .map(([tool, targets]) => ` (${tool} to ${targets.join(", ")})`)
+        .join("");
+    return pins.map((p) => `${p.provider}: ${p.tools.join(", ")}${allowedOf(p)}`).join("; ") || undefined;
   }
   if (Array.isArray(value)) return value.length ? value.join(", ") : undefined;
   if (value === null || value === undefined || value === "") return undefined;

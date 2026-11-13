@@ -6,6 +6,7 @@ The connect flow's callback is the one route outside the organisation's path, be
 send the browser back to a fixed address; the signed state names the organisation.
 """
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
@@ -33,8 +34,10 @@ from aios.db import DB, DbId, SessionLocal
 from aios.permissions import Action, allow, can
 from aios.run_service.work import enqueue_sync
 from aios.source_providers import NeedsReconnecting, ProviderUnavailable, SourceView
+from aios.sync import ATTENTION
 from aios.tools import connector as tool_kind
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 CALLBACK = "/api/connectors/callback"
@@ -59,6 +62,15 @@ class ScopeItemOut(BaseModel):
     restricted: bool
 
 
+class AttentionOut(BaseModel):
+    """A part of the connector's scope its last sync couldn't read (a channel archived, or left
+    by the app): its items were removed."""
+
+    id: str
+    name: str
+    reason: str
+
+
 class ConnectorOut(BaseModel):
     id: int
     provider: str
@@ -69,6 +81,10 @@ class ConnectorOut(BaseModel):
     # can't, the connector doesn't sync, and its content stays searchable.
     unavailable: str | None
     scope: list[ScopeItemOut]
+    # What an admin picking its scope should know (why a private channel isn't listed, say).
+    scope_hint: str | None = None
+    # Parts of its scope needing an admin's attention, as its last sync found them.
+    attention: list[AttentionOut] = []
     # Its source (made when its scope is first saved), with its health and last sync.
     source_id: int | None
     source: SourceOut | None
@@ -83,6 +99,11 @@ class ToolOut(BaseModel):
     input_schema: dict
     # Marked read-only by the provider: calling it changes nothing (and isn't audited).
     read_only: bool
+    # The argument naming what it acts on, if it may act only on targets an editor allows (a
+    # channel); null if it isn't limited.
+    limited_by: str | None = None
+    # What it can be allowed to act on (for a limited tool), as far as the connector can tell.
+    targets: list[ScopeItemOut] = []
 
 
 class StartIn(BaseModel):
@@ -108,14 +129,20 @@ def _title(provider: str) -> str:
 
 def _outs(store: Session, rows: list[Connector]) -> list[ConnectorOut]:
     sources = {s.id: s for s in sources_out(store)}
-    by_connector = dict(
-        store.execute(
-            select(Source.connector_id, Source.id).where(Source.connector_id.is_not(None))
+    by_connector = {
+        connector_id: (source_id, settings)
+        for connector_id, source_id, settings in store.execute(
+            select(Source.connector_id, Source.id, Source.settings).where(
+                Source.connector_id.is_not(None)
+            )
         ).all()
-    )
+    }
     outs = []
     for c in rows:
-        source_id = by_connector.get(c.id)
+        source_id, settings = by_connector.get(c.id, (None, None))
+        names = {i["id"]: i["name"] for i in c.scope or []}
+        flagged = (settings or {}).get(ATTENTION) or {}
+        found = source_providers.provider(c.provider)
         outs.append(
             ConnectorOut(
                 id=c.id,
@@ -124,6 +151,11 @@ def _outs(store: Session, rows: list[Connector]) -> list[ConnectorOut]:
                 status=c.status,
                 unavailable=source_providers.why_unavailable(c.provider),
                 scope=[ScopeItemOut(**i) for i in c.scope or []],
+                scope_hint=found.scope_hint if found else None,
+                attention=[
+                    AttentionOut(id=i, name=names.get(i, i), reason=why)
+                    for i, why in flagged.items()
+                ],
                 source_id=source_id,
                 source=sources.get(source_id),
                 created_at=c.created_at,
@@ -358,15 +390,30 @@ def connector_tools(connector_id: DbId, store_id: CurrentDataStore):
             raise HTTPException(
                 status.HTTP_409_CONFLICT, f"This connector's tools can't be listed: {exc}"
             ) from exc
+        found = source_providers.provider(connector.provider)
+        limited = dict(found.tools.limited) if found and found.tools else {}
+        targets = _targets(store_id, connector) if limited else []
     return [
         ToolOut(
             name=t.name,
             description=t.description,
             input_schema=t.input_schema,
             read_only=t.read_only,
+            limited_by=limited.get(t.name),
+            targets=targets if t.name in limited else [],
         )
         for t in offered
     ]
+
+
+def _targets(store_id, connector: Connector) -> list[ScopeItemOut]:
+    """What a limited tool of the connector can be allowed: its provider's scope options (the
+    channels the app can see), or, if they can't be asked now, its scope."""
+    try:
+        options = _options(store_id, connector)
+    except HTTPException:
+        return [ScopeItemOut(**i) for i in connector.scope or []]
+    return [ScopeItemOut(id=o.id, name=o.name, restricted=o.restricted) for o in options]
 
 
 def _options(store_id, connector: Connector) -> list[source_providers.ScopeOption]:
@@ -382,6 +429,12 @@ def _options(store_id, connector: Connector) -> list[source_providers.ScopeOptio
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except NeedsReconnecting as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, NEEDS_RECONNECTING) from exc
+    except Exception as exc:
+        log.warning("couldn't ask connector %s's provider for its scope options", connector.id)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"{_title(connector.provider)} couldn't be asked what it can sync just now.",
+        ) from exc
 
 
 @router.get(
