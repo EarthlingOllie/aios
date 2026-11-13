@@ -387,7 +387,7 @@ def test_a_person_in_no_organisation_joins_by_accepting(api, db, user):
 def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, provisioning):
     from test_chats import make_chat
 
-    # Making a chat makes its documents assistant, in the organisation's store.
+    # Chats in each organisation's store, with its assistant.
     elsewhere = provisioned_user(db, "elsewhere")
     try:
         ours = make_chat(api, "ours")

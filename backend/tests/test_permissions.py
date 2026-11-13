@@ -146,6 +146,8 @@ ROUTES = {
     ("PUT", "/organisation/members/{user_id}/allowance"): RUN_ORGANISATION,
     ("GET", "/organisation/budget"): READ,
     ("PUT", "/organisation/budget"): RUN_ORGANISATION,
+    ("GET", "/organisation/default-chat-agents"): READ,
+    ("PUT", "/organisation/default-chat-agents"): RUN_ORGANISATION,
     ("PUT", "/organisation/in-flight-cap"): RUN_ORGANISATION,
     ("POST", "/organisation/leave"): LEAVE,
     ("GET", "/approvals"): READ,

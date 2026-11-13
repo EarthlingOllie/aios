@@ -50,9 +50,9 @@ def test_create_makes_the_creator_its_first_member(api, user):
     assert chat["description"] == "Where design happens"
     assert "visibility" not in chat and "is_owner" not in chat
     assert chat["is_member"] is True
-    # The creator, and their documents assistant (see test_chat_documents_assistant.py).
+    # The creator, and the organisation assistant (see test_organisation_assistant.py).
     assert chat["member_count"] == 2
-    assert [a["name"] for a in chat["members"]["agents"]] == ["Documents assistant"]
+    assert [a["name"] for a in chat["members"]["agents"]] == ["Organisation assistant"]
     assert chat["members"]["workflows"] == []
     [member] = chat["members"]["users"]
     assert member["kind"] == "user"
@@ -317,7 +317,7 @@ def test_a_member_adds_the_organisations_agents_and_workflows(api, other, outsid
     chat = add(api, chat, "workflow", workflow)
     assert chat["member_count"] == 4
     [assistant, a] = chat["members"]["agents"]
-    assert assistant["name"] == "Documents assistant"
+    assert assistant["name"] == "Organisation assistant"
     assert (a["kind"], a["target_id"], a["name"]) == ("agent", agent["id"], "Review")
     [w] = chat["members"]["workflows"]
     assert (w["kind"], w["target_id"], w["name"]) == ("workflow", workflow["id"], "Review")
@@ -375,7 +375,7 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
             {
                 "kind": "agent",
                 "id": assistant["target_id"],
-                "name": "Documents assistant",
+                "name": "Organisation assistant",
                 "first_name": None,
                 "last_name": None,
             },
@@ -412,11 +412,11 @@ def test_an_archived_agent_or_workflow_stays_a_member_shown_archived(api):
     assert api.post(f"/api/agents/{agent['id']}/archive").status_code == 200
     assert api.post(f"/api/workflows/{workflow['id']}/archive").status_code == 200
     mentionable = api.get(f"/api/chats/{chat['id']}/mentionable").json()
-    assert [a["name"] for a in mentionable["agents"]] == ["Documents assistant"]
+    assert [a["name"] for a in mentionable["agents"]] == ["Organisation assistant"]
     assert mentionable["workflows"] == []
     got = api.get(f"/api/chats/{chat['id']}").json()
     assert [(a["name"], a["archived"]) for a in got["members"]["agents"]] == [
-        ("Documents assistant", False),
+        ("Organisation assistant", False),
         ("Review", True),
     ]
     assert [(w["name"], w["archived"]) for w in got["members"]["workflows"]] == [("Digest", True)]

@@ -59,14 +59,15 @@ messages are still found by search. Runs already under way in it when it's archi
 post their results there. Renames (`chat.renamed`), archiving (`chat.archived`) and unarchiving
 (`chat.unarchived`) are in the [audit log](stores.md#the-audit-log).
 
-Each new chat has the organisation's documents assistant as its first agent (see
-[Agents and skills](agents-and-skills.md#the-documents-assistant)).
+Each new chat gets the organisation's default chat agents, in order: its organisation assistant
+unless admins chose others, archived ones skipped (see
+[Agents and skills](agents-and-skills.md#default-chat-agents)).
 
 ## Chat with this agent
 
 Talking to one agent happens in an open chat like any other. **Chat with this agent**, on an
 agent's page, creates a chat with that agent and no name (`POST /api/o/{org}/chats` with
-`{agent_id}`): a new chat that includes only that agent (not the documents assistant), with the
+`{agent_id}`): a new chat that includes only that agent (not the default chat agents), with the
 person as its first chat member, named "<Agent> – <person> – <date>" (the date in UTC, as
 `2026-11-12`). A clash with any chat's name, archived ones too, adds " (2)", " (3)" and so on, so
 each click makes a new chat. It needs permission to invoke the agent: someone its **invocable by**

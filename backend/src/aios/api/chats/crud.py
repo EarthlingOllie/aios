@@ -115,18 +115,20 @@ def create_chat(
     store: CurrentStore,
 ):
     """Make a chat of the organisation's, open to all of it, with the user as its first member,
-    and the organisation's documents assistant (`aios.assistant`) as its first agent. A 404 for a
-    user who left the organisation as they made it (`organisations.holds_member`, held until the
-    store has committed the chat): they'd be left in a chat of an organisation they're not in.
+    and the organisation's default chat agents (`aios.assistant.default_chat_agents`: the live
+    ones on its list, in order, whether or not the user may invoke them) as its agents. A 404
+    for a user who left the organisation as they made it (`organisations.holds_member`, held
+    until the store has committed the chat): they'd be left in a chat of an organisation
+    they're not in.
 
-    **Chat with this agent** (`agent_id`): the chat includes that agent only, not the documents
-    assistant, and without a name is named for it (`agent_chat_name`). It needs permission to
+    **Chat with this agent** (`agent_id`): the chat includes that agent only, not the default
+    agents, and without a name is named for it (`agent_chat_name`). It needs permission to
     invoke the agent (its **invocable by**: a 403 saying who may), and the agent not archived
     (a 409); an agent the organisation hasn't got is a 404."""
     if not organisations.holds_member(db, org, user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if body.agent_id is None:
-        agent = assistant.documents_assistant(store, user.id)
+        agents = assistant.default_chat_agents(store)
     else:
         agent = store.get(Agent, body.agent_id)
         if agent is None:
@@ -136,9 +138,10 @@ def create_chat(
             raise HTTPException(status.HTTP_403_FORBIDDEN, next(iter(refused.values())))
         # Share-locked until the chat commits, so archiving it meanwhile waits or wins.
         lock_live_agent(store, agent, read=True)
+        agents = [agent]
     chat = Chat(
         **built_by(user.id),
-        name=body.name or agent_chat_name(store, agent.name, user.full_name),
+        name=body.name or agent_chat_name(store, agents[0].name, user.full_name),
         description=body.description,
     )
     chat.members.append(
@@ -148,13 +151,14 @@ def create_chat(
             added_by=user.id,
         )
     )
-    chat.members.append(
-        ChatMember(
-            kind=ChatMemberKind.agent,
-            agent_id=agent.id,
-            added_by=user.id,
+    for agent in agents:
+        chat.members.append(
+            ChatMember(
+                kind=ChatMemberKind.agent,
+                agent_id=agent.id,
+                added_by=user.id,
+            )
         )
-    )
     store.add(chat)
     with unique_name(store, "a chat", CHAT_NAME_INDEX):
         store.flush()

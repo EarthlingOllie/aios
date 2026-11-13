@@ -206,8 +206,8 @@ an agent, skill or workflow writes only the store. Archiving one commits the sto
 its schedules on the platform. Starting a run, adding one to a chat or saving a schedule for it
 share-locks it in the store (so an archive waits), commits the platform's rows, and only then
 ends the store's transaction, so an archive racing it either waits and then sees what it made,
-or wins and is seen by it. The documents assistant (`aios.assistant`) is made in the store under
-a lock for its transaction only, and the chat that gets it is committed after.
+or wins and is seen by it. The organisation assistant (`aios.assistant`) is made in the store as
+it's provisioned, by the organisation's creator, before the store is ready.
 
 The platform's tables for them went in the same change (platform revision `0060`); nothing was
 copied across, and development data is rebuilt with `make seed`.

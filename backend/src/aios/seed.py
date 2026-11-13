@@ -7,11 +7,12 @@ organisation through the app's own writers (the API's handlers, called as a requ
 them), so what it makes is what the app would have made:
 
 - the dev user, `dev@example.com`, whose password is `SEED_PASSWORD`, in their organisation, with
-  its store provisioned;
+  its store provisioned, which makes its organisation assistant (`aios.assistant`) as creating
+  any organisation does;
 - in the store, a skill, agents that use it, and a workflow that runs one of them inside another
   workflow; and a schedule;
-- a chat with the documents assistant and an agent in it, and a first message, which posting
-  indexes for search as it does any (`aios.search_index`);
+- a chat with the organisation assistant (its default chat agent) and an agent in it, and a
+  first message, which posting indexes for search as it does any (`aios.search_index`);
 - data tables made by approved schema changes, as an agent's run asks for them: `notes`, which
   the writer owns and shares with the reviewer, and `reading_list`, owned by an agent that's
   then archived, so it's read-only (`aios.datastores.ownership`);

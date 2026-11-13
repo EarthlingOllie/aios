@@ -21,7 +21,9 @@ import type { Page, Route } from "@playwright/test";
  * (`handoffs`, by member id) and its run, until the run ends and the result is posted back. An
  * agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a read
  * adding a tool call and tokens to its run's counters. A chat made through the API has the
- * documents assistant (`documentsAssistant`) as its first agent; one added with `addChat` hasn't.
+ * default chat agents (`defaultChatAgentIds`, the organisation assistant `organisationAssistant`
+ * unless set; archived ones skipped) as its agents, but **Chat with this agent**'s, which has
+ * only that agent; one added with `addChat` has none.
  *
  * Streams: a chat's stream and the person's are answered a batch at a time, then end, so the
  * browser opens them again after `streamRetryMs`, resuming after the last event id it has, as it
@@ -851,8 +853,12 @@ export const WEBHOOK_URL = "http://localhost:5173/api/webhooks/";
 export class FakeApi {
   private nextId = 100;
   agents = new Map<number, AgentRow>();
-  /** The agent that's `me`'s documents assistant, once a new chat has made it. */
+  /** The organisation assistant, once something has needed it. A real organisation has it from
+   * the start; here it's made on first need, so the agent lists other specs set up stay theirs. */
   assistantId: number | null = null;
+  /** The default chat agents' ids, in order (`GET` and `PUT /api/organisation/default-chat-agents`);
+   * null: just the organisation assistant, as a new organisation's are. */
+  defaultChatAgentIds: number[] | null = null;
   // Agent version id -> [agent id, version number].
   agentVersions = new Map<number, [number, number]>();
   // Agent version id -> note, for the versions that have one.
@@ -1893,17 +1899,26 @@ export class FakeApi {
       : null;
   }
 
-  /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
-  documentsAssistant(): AgentRow {
+  /** The organisation's assistant, made the first time something needs it (or again once deleted). */
+  organisationAssistant(): AgentRow {
     const live = this.assistantId === null ? undefined : this.agents.get(this.assistantId);
     if (live) return live;
     const agent = this.addAgent(
-      "Documents assistant",
+      "Organisation assistant",
       1,
-      "Answers from the organisation's documents. Built in: it joins each new chat.",
+      "Answers from everything the organisation knows: its documents, chats, past runs, synced content and data tables. Built in.",
     );
     this.assistantId = agent.id;
     return agent;
+  }
+
+  /** The default chat agents, in order, archived ones too. */
+  defaultChatAgents(): AgentRow[] {
+    if (this.defaultChatAgentIds === null) return [this.organisationAssistant()];
+    return this.defaultChatAgentIds.flatMap((id) => {
+      const agent = this.agents.get(id);
+      return agent ? [agent] : [];
+    });
   }
 
   /** Adds a schema change request, pending unless `fields` say otherwise. */
@@ -3579,6 +3594,21 @@ export class FakeApi {
       this.approvalExpiryDays = days;
       return reply(200, this.organisationOut());
     }
+    if (path === "/api/organisation/default-chat-agents") {
+      const out = () =>
+        this.defaultChatAgents().map((a) => ({ id: a.id, name: a.name, archived: a.archived_at !== null }));
+      if (method === "GET") return reply(200, out());
+      if (method === "PUT") {
+        const refused = this.refuseUnlessAdmin();
+        if (refused) return fail(403, refused);
+        const ids: number[] = body?.agent_ids ?? [];
+        if (new Set(ids).size !== ids.length) return fail(422, "An agent is named twice.");
+        const unknown = ids.find((id) => !this.agents.has(id));
+        if (unknown !== undefined) return fail(422, `Unknown agent: ${unknown}`);
+        this.defaultChatAgentIds = [...ids];
+        return reply(200, out());
+      }
+    }
     if (path === "/api/organisation/retention" && method === "PUT") {
       const refused = this.refuseUnlessAdmin();
       if (refused) return fail(403, refused);
@@ -4701,8 +4731,10 @@ export class FakeApi {
         return fail(409, CHAT_NAME_TAKEN);
       }
       const chat = this.addChat(body.name, { description: body.description ?? "" });
-      // A new chat's first agent is the organisation's documents assistant.
-      this.addChatTarget(chat, "agent", this.documentsAssistant());
+      // A new chat's agents are the organisation's default chat agents, but archived ones.
+      for (const agent of this.defaultChatAgents()) {
+        if (!agent.archived_at) this.addChatTarget(chat, "agent", agent);
+      }
       return reply(201, this.chatOut(chat));
     }
     if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {

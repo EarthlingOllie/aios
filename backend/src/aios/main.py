@@ -16,6 +16,7 @@ from aios.api import (
     agents,
     chats,
     data,
+    default_chat_agents,
     documents,
     dropped,
     exports,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(search_api.router)
     app.include_router(organisation.router)
+    app.include_router(default_chat_agents.router)
     app.include_router(chats.router)
     app.include_router(streams.router)
     app.include_router(webhooks.router)

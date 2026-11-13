@@ -18,6 +18,7 @@ from aios import checkpoints
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
+from aios.assistant import NAME as ASSISTANT
 from aios.auth import current_user
 from aios.datastores.models import Agent
 from aios.main import app
@@ -161,7 +162,7 @@ def test_agent_versions_pin_skill_versions(api):
     assert restored["version"] == 3
     assert restored["instructions"] == v1["instructions"]
 
-    listed = api.get("/api/agents").json()
+    listed = [a for a in api.get("/api/agents").json() if a["name"] != ASSISTANT]
     assert [(a["name"], a["version"], a["skill_count"]) for a in listed] == [("Helper 2", 3, 1)]
 
     assert api.put(url, json=agent_body(agent, skill_version_ids=[-1])).status_code == 422
@@ -185,6 +186,7 @@ def test_agent_list_names_the_current_versions_skills_and_tools(api):
     assert listed == {
         "Poet": ([terse["id"], haiku["id"]], ["web_search", "hybrid_search"]),
         "Plain": ([], []),
+        ASSISTANT: ([], ["search", "describe_data", "query_data"]),
     }
 
     # Only the current version counts: what an older version had is gone from the list.
@@ -318,7 +320,7 @@ def test_starting_a_run_waits_for_an_in_flight_agent_archive(api, user):
 
 def test_other_users_cannot_see_agents(api, client, db):
     agent = make_agent(api, "Mine")
-    # Another organisation, with a store of its own, which has no agents: ids are each store's
+    # Another organisation, with a store of its own, with none of ours: ids are each store's
     # own, so the same id names nothing there.
     other = provisioned_user(db, "other")
     try:
@@ -326,7 +328,8 @@ def test_other_users_cannot_see_agents(api, client, db):
         assert client.get(f"/api/agents/{agent['id']}").status_code == 404
         assert client.get(f"/api/agents/{agent['id']}/versions").status_code == 404
         assert client.post(f"/api/agents/{agent['id']}/runs").status_code == 404
-        assert client.get("/api/agents").json() == []
+        # Only its own organisation assistant.
+        assert [a["name"] for a in client.get("/api/agents").json()] == [ASSISTANT]
     finally:
         delete_user(db, other)
 

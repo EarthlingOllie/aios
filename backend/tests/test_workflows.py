@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from aios.api import workflows as workflows_api
 from aios.api.provenance import built_by
 from aios.api.skills import lock_live, unique_name
+from aios.assistant import NAME as ASSISTANT
 from aios.datastores.models import Agent, Workflow
 from aios.models import WorkflowNodeKind
 from aios.versioning import NodeSpec, save_workflow_version
@@ -392,7 +393,9 @@ def test_archived_targets_cant_be_saved_or_restored_into_a_workflow(api):
         ("Researcher", 1, 1),
         ("Research report", 1, 1),
     ]
-    assert [a["name"] for a in api.get("/api/agents").json()] == ["Writer"]
+    assert [a["name"] for a in api.get("/api/agents").json() if a["name"] != ASSISTANT] == [
+        "Writer"
+    ]
     assert [w["name"] for w in api.get("/api/workflows").json()] == ["Outer"]
 
     # But it can't be restored, nor can an archived agent's or workflow's versions be saved.

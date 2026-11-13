@@ -11,6 +11,7 @@ import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DefaultChatAgentsSection } from "@/components/DefaultChatAgents";
 import { DeleteSection } from "@/components/DeleteOrganisation";
 import { LeaveSection } from "@/components/LeaveOrganisation";
 import { InvitesSection } from "@/components/OrganisationInvites";
@@ -30,7 +31,7 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
  * page: its creator and members with their roles, which admins change, and each one's allowance
  * and spend this month where the viewer may see it, which admins override (`/organisation`), its
  * invitation links (`/organisation/invitations`, admins' only), its settings: the flagged list
- * (admins' only), the approval rules, retention, limits, the budget, leaving it and deleting it
+ * (admins' only), the default chat agents, the approval rules, retention, limits, the budget, leaving it and deleting it
  * (`/organisation/settings`), its audit log (`/organisation/audit-log`, admins' only) and its
  * usage totals (`/organisation/usage`, admins' only).
  */
@@ -72,6 +73,7 @@ export function OrganisationPage() {
         <>
           {/* Only admins see flagged content and release it. */}
           {org.role === "admin" && <FlaggedSection key={`flagged-${org.id}`} />}
+          <DefaultChatAgentsSection key={`default-agents-${org.id}`} org={org} />
           <ApprovalRulesSection key={`rules-${org.id}`} />
           <ApprovalExpirySection key={`expiry-${org.id}`} org={org} onChanged={reload} />
           <RetentionSection key={`retention-${org.id}`} org={org} onChanged={reload} />

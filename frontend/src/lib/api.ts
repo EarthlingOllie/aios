@@ -317,6 +317,15 @@ export type Retention = {
   chat_days: number | null;
 };
 
+/** One of the default chat agents: the organisation's ordered list of agents that join every
+ * new chat (but those made by **Chat with this agent**). An archived one stays on the list, and
+ * is skipped. */
+export type DefaultChatAgent = {
+  id: number;
+  name: string;
+  archived: boolean;
+};
+
 /** An organisation's scheduled deletion: it's deleted at `deletes_at` unless an admin cancels. */
 export type OrganisationDeletion = {
   scheduled_at: string;
@@ -1792,6 +1801,14 @@ export const api = {
   /** Admins only: how long runs and chat history are kept (null: indefinitely). */
   setRetention: (retention: Retention) =>
     request<Organisation>(`${organisationApi()}/organisation/retention`, json("PUT", retention)),
+  /** The default chat agents, in order (every member reads them). */
+  getDefaultChatAgents: () => request<DefaultChatAgent[]>(`${organisationApi()}/organisation/default-chat-agents`),
+  /** Admins only: replace the default chat agents with these agents, in this order. */
+  setDefaultChatAgents: (agentIds: number[]) =>
+    request<DefaultChatAgent[]>(
+      `${organisationApi()}/organisation/default-chat-agents`,
+      json("PUT", { agent_ids: agentIds }),
+    ),
   /** Admins only: how many days an approval waits undecided before it expires. */
   setApprovalExpiry: (days: number) =>
     request<Organisation>(`${organisationApi()}/organisation/approval-expiry`, json("PUT", { days })),

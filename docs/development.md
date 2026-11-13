@@ -100,7 +100,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
                     runner and the egress proxy
     agent.py        the run context (`ChatDeps`) agents' tools read
-    assistant.py    the documents assistant: the built-in agent each new chat gets
+    assistant.py    the organisation assistant, made with the organisation, and the default chat agents
     datastores/     stores: data_store_for(organisation), the one place an organisation
                     becomes a store, store_session(id, role), the only way to open a session on
                     an organisation's data,

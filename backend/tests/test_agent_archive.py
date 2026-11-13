@@ -20,6 +20,7 @@ from test_triggers import make_trigger, schedule
 from test_workflow_runs import echo, queued, start, steps  # noqa: F401 (a fixture)
 from test_workflows import agent_node, make_agent, make_workflow, workflow_node
 
+from aios import assistant
 from aios.models import TriggerStatus
 from aios.testing.fake_model import model, replies, use_handoff, use_model
 
@@ -68,19 +69,24 @@ def test_archiving_and_unarchiving_an_agent(api, user):
 
 
 def test_the_agents_list_hides_archived_agents_unless_asked_for_them(api):
-    kept = make_agent(api, "Kept")
+    make_agent(api, "Kept")
     put_away = make_agent(api, "Put away")
     archive(api, put_away)
 
     default = api.get("/api/agents").json()
     archived = api.get("/api/agents", params={"archived": "true"}).json()
 
-    assert [a["name"] for a in default] == ["Kept"]
+    # Besides the organisation assistant every organisation starts with.
+    assert [a["name"] for a in default] == ["Kept", assistant.NAME]
     assert default[0]["archived_at"] is None
     assert [a["name"] for a in archived] == ["Put away"]
     assert archived[0]["archived_at"] is not None
     unarchive(api, put_away)
-    assert [a["id"] for a in api.get("/api/agents").json()] == [kept["id"], put_away["id"]]
+    assert [a["name"] for a in api.get("/api/agents").json()] == [
+        "Kept",
+        assistant.NAME,
+        "Put away",
+    ]
 
 
 def test_an_archived_agents_name_stays_reserved(api):
@@ -218,7 +224,7 @@ def test_it_shows_as_archived_among_chat_members_and_isnt_mentionable(api):
     add(api, chat, "agent", agent)
     add(api, chat, "agent", other)
 
-    # Besides the documents assistant every chat starts with.
+    # Besides the organisation assistant every chat starts with.
     def members() -> list[tuple[str, bool]]:
         found = api.get(f"/api/chats/{chat['id']}").json()["members"]["agents"]
         return [(m["name"], m["archived"]) for m in found if m["id"] != found[0]["id"]]

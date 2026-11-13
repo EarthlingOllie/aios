@@ -24,12 +24,12 @@ test("creates a chat and opens it", async ({ page }) => {
   await expect(page.getByLabel("Visibility")).toHaveCount(0);
   await expect(heading.locator("..")).toContainText("Where design happens");
   await expect(heading.locator("..")).toContainText("2 members");
-  // The creator is its only user; the organisation's documents assistant is its first agent.
+  // The creator is its only user; the organisation assistant, its default chat agent, is its agent.
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("Terry Tester", { exact: true })).toBeVisible();
   await expect(members.getByText("owner", { exact: true })).toHaveCount(0);
-  await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Documents assistant");
+  await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Organisation assistant");
   await expect(members.getByText("No workflows yet")).toBeVisible();
   // And it's in the list.
   await expect(page.getByRole("list").filter({ hasText: "Design" }).getByText("2 members")).toBeVisible();

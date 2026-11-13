@@ -16,6 +16,7 @@ from test_chats import signed_in_as
 from test_permissions import participant  # noqa: F401 (fixture)
 from test_workflows import agent_node, make_workflow, workflow_node
 
+from aios import assistant
 from aios.config import get_settings
 from aios.datastores.models import Agent
 
@@ -54,7 +55,9 @@ def take(api, file: dict, **kwargs) -> dict:
 
 
 def names(api, kind: str) -> list[str]:
-    return sorted(x["name"] for x in api.get(f"/api/{kind}").json())
+    """The organisation's agents, skills or workflows by name, but the organisation assistant
+    every organisation starts with (`aios.assistant`)."""
+    return sorted(x["name"] for x in api.get(f"/api/{kind}").json() if x["name"] != assistant.NAME)
 
 
 def tool_agent(api, name: str, skills=(), tools=(WEB,), **body) -> dict:
@@ -272,7 +275,7 @@ def test_an_exported_organisation_assistant_imports_as_an_ordinary_agent(api, ot
     assert result["root"]["imported_name"] == f"{assistant['name']} (imported)"
     with user_store(other) as store:
         builtins = store.query(Agent.name, Agent.builtin).order_by(Agent.id).all()
-    assert [b for _, b in builtins] == ["documents", None]
+    assert [b for _, b in builtins] == ["assistant", None]
 
 
 def test_a_missing_tool_leaves_the_version_unrunnable_with_the_reason(api):

@@ -39,7 +39,7 @@ class ChatCreateIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255, pattern=r"\S")
     description: str = ""
-    # The one agent to include instead of the documents assistant.
+    # The one agent to include instead of the default chat agents.
     agent_id: DbId | None = None
 
     @model_validator(mode="after")

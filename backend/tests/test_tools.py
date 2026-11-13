@@ -10,6 +10,7 @@ from test_search import add_chunks, unit
 from aios import llm, search
 from aios.agent import ChatDeps
 from aios.api.provenance import built_by
+from aios.assistant import NAME as ASSISTANT
 from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import Agent
@@ -101,7 +102,8 @@ def test_tools_are_versioned_with_the_agent(api):
         == 2
     )
     assert [(a["name"], a["tool_count"]) for a in api.get("/api/agents").json()] == [
-        ("Researcher", 1)
+        (ASSISTANT, 3),
+        ("Researcher", 1),
     ]
 
     # Changing a tool's settings, or removing it, creates a version.

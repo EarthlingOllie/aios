@@ -2,9 +2,9 @@ import { expect, test } from "@playwright/test";
 
 import { fakeApi, inOrg, orgApi } from "./fake-api";
 
-/** The documents assistant joins each new chat, and `/` opens the Chats section. */
+/** The organisation assistant joins each new chat as its default chat agent, and `/` opens the Chats section. */
 
-test("a new chat has the documents assistant as a member, to mention like any agent", async ({ page }) => {
+test("a new chat has the organisation assistant as a member, to mention like any agent", async ({ page }) => {
   const api = await fakeApi(page);
   await page.goto(inOrg("/chats/new"));
   await page.getByLabel("Name").fill("Design");
@@ -12,20 +12,20 @@ test("a new chat has the documents assistant as a member, to mention like any ag
 
   const [chat] = [...api.chats.values()];
   await expect(page).toHaveURL(inOrg(`/chats/${chat.id}`));
-  const assistant = api.documentsAssistant();
+  const assistant = api.organisationAssistant();
   api.agentTurns.set(assistant.id, { steps: 1, tokensPerStep: 100, reply: "Your notes are about fish." });
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByRole("list", { name: "Agents" }).getByRole("listitem")).toHaveText([
-    "Documents assistant",
+    "Organisation assistant",
   ]);
   await expect(page.getByRole("heading", { name: "Design", level: 2 }).locator("..")).toContainText("2 members");
   await page.getByRole("tab", { name: "Chat" }).click();
 
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
-  await composer.pressSequentially("@doc");
+  await composer.pressSequentially("@org");
   const suggestions = page.getByRole("listbox", { name: "Mention" });
-  await expect(suggestions.getByRole("group")).toHaveText([/Agents.*Documents assistant/]);
+  await expect(suggestions.getByRole("group")).toHaveText([/Agents.*Organisation assistant/]);
   await composer.press("Enter");
   await composer.pressSequentially("what's in my notes?");
   await composer.press("Enter");
@@ -35,7 +35,7 @@ test("a new chat has the documents assistant as a member, to mention like any ag
     "POST",
     orgApi(`/chats/${chat.id}/messages`),
     {
-      body: `@[Documents assistant](agent:${assistant.id}) what's in my notes?`,
+      body: `@[Organisation assistant](agent:${assistant.id}) what's in my notes?`,
       mentions: [{ kind: "agent", id: assistant.id }],
     },
   ]);
@@ -43,7 +43,7 @@ test("a new chat has the documents assistant as a member, to mention like any ag
   await expect(log.getByTestId("run-card")).toBeVisible();
   await expect(log).toContainText("On it.");
   const reply = log.getByRole("article").filter({ hasText: "Your notes are about fish." });
-  await expect(reply.getByText("Documents assistant", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(reply.getByText("Organisation assistant", { exact: true })).toBeVisible({ timeout: 10_000 });
 });
 
 test("/ opens the most recent chat I'm in", async ({ page }) => {

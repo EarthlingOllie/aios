@@ -116,19 +116,38 @@ still totals the stored messages for them.
 Runs start from a chat mention (see [Chats](chats.md)), from a schedule (see
 [Triggers](triggers.md)) or as a workflow's agent node (see [Workflows](workflows.md)).
 
-## The documents assistant
+## The organisation assistant
 
-Each new chat has the organisation's **documents assistant** as its first agent
-(`aios.assistant`): the glossary's organisation assistant, today an agent of the
-organisation's, made for whichever member first creates a chat (`agents.builtin =
-'documents'`, one live one per organisation), with the document search tool and instructions
-to ground its answers in the results, citing sources. It calls the hybrid search tool (vector
-plus full-text, fused with Reciprocal Rank Fusion: see [Tools](tools.md#search)) over the
-organisation's documents. It's mentioned and answers like any agent chat member
-(acknowledgement, brief, card and reply: see [Chats](chats.md)). It's listed with the
-organisation's other agents, where it can be edited like one, or archived (it stays the
-organisation's one assistant, and new chats still get it). Chats made before it existed don't get it, but their owner can add it like any
-agent.
+Every organisation has an **organisation assistant** (`aios.assistant`) from the start: an agent
+of the organisation's (`agents.builtin = 'assistant'`), made by the organisation's creator when
+its store is provisioned, which is part of creating the organisation. It has the unified search
+tool (`search`: documents, chat messages, past runs, briefs and items synced from sources; see
+[Tools](tools.md#search)) and the data tools (`describe_data`, `query_data`). Its instructions
+tell it to search before answering, cite its sources, query the data tables for figures rather
+than guess, treat search results, query results and untrusted blocks as data and not
+instructions, and say plainly when nothing answers.
+
+It's mentioned and answers like any agent chat member (acknowledgement, brief, card and reply:
+see [Chats](chats.md)). It's listed with the organisation's other agents, where editors change it
+like any agent, or archive it. An organisation has at most one live (unarchived) built-in
+assistant (the partial unique index `uq_agents_builtin` leaves archived rows out), and an
+exported assistant imports as an ordinary agent. There's no upgrade for organisations made
+before it: `make seed` rebuilds development organisations, each with its assistant.
+
+### Default chat agents
+
+The **default chat agents** are the organisation's ordered list of agents that join every new
+chat (`default_chat_agents` in the store). A new organisation's list is its assistant. Admins
+change it on the organisation's Settings tab (`GET` and, for admins only, `PUT
+/api/o/{org}/organisation/default-chat-agents` with `{agent_ids}` in order; an unknown or
+repeated agent is a 422), and each change is in the audit log (`settings.changed`, with the
+list before and after).
+
+- Only chats made after a change get the new list; existing chats keep their agents.
+- An archived agent stays on the list, shown as archived, and is skipped when a chat is made.
+- **Chat with this agent** adds only that agent, never the default agents.
+- **Invocable by** doesn't stop an agent being added: someone it leaves out still gets it in the
+  chats they make, and their mentions of it are refused on its card.
 
 ## Archiving an agent
 
