@@ -8,12 +8,20 @@ Members can save a chart to the organisation's Insights page, where it re-runs i
 
 **Blocked by:** [09: Insights page and every panel](09-insights.md), [Phase 3 · 10: Budgets and allowances in GBP](../phase-3-agents-and-automation/10-budgets-and-allowances.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The insights-role adversarial test passes: no access to conversation content, memory, synced text, base tables or another store.
-- [ ] Every refused spec feature (external data, links, images, signal parameters, expression strings) is rejected; a failing spec is sent back to the agent once, then the error is shown with the SQL.
-- [ ] Row, byte and time caps apply, and truncated results are drawn and marked as truncated.
-- [ ] Asking past the per-person rate limit answers 429; budget or allowance refusals follow phase 3's contract; each question appears in the usage ledger against the asker.
-- [ ] A saved chart re-runs its SQL (not the agent) on current data, under the same role and caps.
-- [ ] Renaming or deleting a saved chart is refused (403) for anyone but its creator or an admin; saves and deletes are audited.
-- [ ] A saved chart whose query no longer runs shows "this chart's query no longer works" with the SQL.
+- [x] The insights-role adversarial test passes: no access to conversation content, memory, synced text, base tables or another store.
+- [x] Every refused spec feature (external data, links, images, signal parameters, expression strings) is rejected; a failing spec is sent back to the agent once, then the error is shown with the SQL.
+- [x] Row, byte and time caps apply, and truncated results are drawn and marked as truncated.
+- [x] Asking past the per-person rate limit answers 429; budget or allowance refusals follow phase 3's contract; each question appears in the usage ledger against the asker.
+- [x] A saved chart re-runs its SQL (not the agent) on current data, under the same role and caps.
+- [x] Renaming or deleting a saved chart is refused (403) for anyone but its creator or an admin; saves and deletes are audited.
+- [x] A saved chart whose query no longer runs shows "this chart's query no longer works" with the SQL.
+
+Notes: charts read as each store's new `_insights` role (platform `0083` keeps its password;
+store `0039` (renumbered from `0037` at merge) adds `insight_charts` and the `insight` invocation cause), through
+`aios.charts`; the web app draws them with vega-lite 6.5.0 / vega-embed 7.3.0 and
+vega-interpreter. Not done here: an admin override of the questions-per-hour setting per
+organisation (the deployment setting `CHART_QUESTIONS_PER_HOUR` applies), and hiding person ids
+from charts for members who can't see per-person breakdowns (the `insights` views carry
+`person_id`; the panels' person grouping stays admin-gated).

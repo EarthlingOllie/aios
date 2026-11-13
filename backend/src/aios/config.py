@@ -380,6 +380,18 @@ class Settings(BaseSettings):
     # (`aios.datastores.quota`), pruned after `storage_history_days`.
     insights_cache_seconds: float = Field(default=5 * 60, ge=0)
     storage_history_days: float = Field(default=400, gt=0)
+    # Prompted charts (`aios.charts`): the most rows, and bytes of them as JSON, a chart's
+    # query returns (past either it's drawn cut short, marked truncated), and how long it may
+    # run (milliseconds, at most the role's own `data_store_statement_timeout`). Each member
+    # may ask `chart_questions_per_hour` questions an hour in an organisation (a 429 past it).
+    # The insights agent runs on `insights_model` (empty: `llm_model`), each call within
+    # `chart_model_timeout_seconds`.
+    chart_max_rows: int = Field(default=5_000, ge=1)
+    chart_max_bytes: int = Field(default=1024 * 1024, ge=1)
+    chart_statement_timeout: int = Field(default=30_000, ge=1)
+    chart_questions_per_hour: int = Field(default=30, ge=1)
+    insights_model: str = ""
+    chart_model_timeout_seconds: float = Field(default=120, gt=0)
 
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.

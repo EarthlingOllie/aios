@@ -99,6 +99,7 @@ STORE_TABLES = {
     ("aios", name)
     for name in (
         "agent_runs",
+        "insight_charts",
         "agent_version_skills",
         "agent_version_tools",
         "agent_versions",

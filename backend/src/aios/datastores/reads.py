@@ -27,7 +27,7 @@ from psycopg import adapt, pq
 from psycopg.types.json import set_json_loads
 from psycopg.types.string import TextLoader
 
-from aios.datastores.connections import store_session
+from aios.datastores.connections import Role, store_session
 
 # Types read as Postgres writes them, not as Python values: Python's can't hold some legal ones
 # (infinities, years past 9999 or BC, 24:00, huge intervals), and one such value would fail the
@@ -49,10 +49,11 @@ TEXT_TYPES = (
 
 
 @contextmanager
-def read_only(data_store_id: uuid.UUID) -> Iterator[psycopg.Connection]:
-    """A connection on the store's database, as its `ro` role, in a `READ ONLY` transaction
-    that's rolled back on exit. Raises as `store_session` does."""
-    with store_session(data_store_id, "ro") as session:
+def read_only(data_store_id: uuid.UUID, role: Role = "ro") -> Iterator[psycopg.Connection]:
+    """A connection on the store's database, as its `ro` role (or `insights`, for prompted
+    charts), in a `READ ONLY` transaction that's rolled back on exit. Raises as
+    `store_session` does."""
+    with store_session(data_store_id, role) as session:
         # Autocommit at the driver, so the transaction below is the only one, and is ours.
         conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
         # Read-only connections never prepare statements, which `DISCARD ALL` below would drop

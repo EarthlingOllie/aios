@@ -81,9 +81,12 @@ reads. That task, as `aios_provisioner`:
   timeout (`DATA_STORE_STATEMENT_TIMEOUT`, `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in
   milliseconds): role defaults, which a session may `SET` otherwise, so code running queries it
   doesn't control sets its own;
+- creates `ds_<id>_insights`, the login role prompted charts read as (`aios.charts`), with
+  `_ro`'s limits and its own encrypted password (`data_stores.insights_password`, platform
+  revision `0083`); a store made before it gets it the next time it's migrated;
 - creates the database `ds_<id>` from the template, owned by `_owner` and taking no
-  connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw` and
-  `_ro`, and only then lets them connect;
+  connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw`,
+  `_ro` and `_insights`, and only then lets them connect;
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
   `_owner` creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
@@ -263,6 +266,23 @@ times, statuses and costs only: no message text, brief, tool input or output, me
 text or error. The panels read them as `_ro` in a read-only transaction, each panel cached per
 store, range and grouping for `INSIGHTS_CACHE_SECONDS` (5 minutes). Any migration changing a
 table they read updates them in the same migration.
+
+Prompted charts read as `_insights`, which may use only the `insights` and `data` schemas and
+read only the `insights` views and the `data` tables that aren't dropped
+(`provision.grant_insights`, with each data table's grant from `dropped.grant_access`): no
+platform table, no reporting view, no writes. So a chart showing only metrics is the database's
+guarantee, whatever SQL the insights agent writes. A chart's one statement runs through the
+data tools' read-only path (`aios.datastores.reads`) under `CHART_STATEMENT_TIMEOUT`, capped at
+`CHART_MAX_ROWS` (5,000) and `CHART_MAX_BYTES` (1 MiB); its spec is checked against the pinned
+Vega-Lite schema (`aios/schemas/`) and an allowlist of marks and transforms, refusing data of its
+own, links, URLs, images, signal parameters and expression strings (`charts.check_spec`). A
+member asking is an invocation (cause `insight`, store revision `0039`) of the built-in insights
+agent, charged to them, rate-limited per person (`CHART_QUESTIONS_PER_HOUR`, 30) and refused at
+the budget or their allowance (a 409). A failing spec or query goes back to the agent once,
+then the error is shown with the SQL. Saved charts (`aios.insight_charts`, revision `0039`, renumbered from `0037` behind P2-06 and P3-02)
+belong to the organisation and re-run their SQL, never the agent, when viewed (a 409 saying the
+query no longer works if it fails); their creator or an admin renames or deletes them, audited
+as `insight_chart.saved`, `insight_chart.renamed` and `insight_chart.deleted`.
 
 - **Named by store and id.** Ids repeat across stores, so everything outside the store that
   names a row of it carries the store too: worker task arguments (`apply_schema_change_task`),

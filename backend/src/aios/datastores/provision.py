@@ -17,6 +17,11 @@ three roles named after it (never after a user):
   inherits it but may not `SET ROLE` to it. It reads the store (`grant_group`), writes the
   `data` tables nobody owns, and inserts into an explicit list of platform tables
   (`AGENT_WRITES`); nothing else.
+- `<prefix>_insights` (login, with its own encrypted password), which prompted charts read as
+  (`aios.charts`): it may connect, use the `insights` and `data` schemas, and read the
+  `insights` views (metrics only) and the `data` tables that aren't dropped, and nothing else:
+  no platform table, no reporting view, no writes (`grant_insights`). It has `ro`'s limits.
+  Stores made before it get it, and its password, the next time they're migrated.
 - The deny list (`DENIED_COLUMNS`): columns neither `ro` nor the agents may read (people's
   emails in the people mirror, the audit log's details), applied each time the store is
   migrated. The audit log is append-only to `rw` too (`APPEND_ONLY`), and the `reporting`
@@ -108,6 +113,11 @@ class StoreNames:
         return cls(store.dbname, f"{p}_owner", f"{p}_rw", f"{p}_ro")
 
     @property
+    def insights(self) -> str:
+        """The role prompted charts read as (`INSIGHTS_SUFFIX`)."""
+        return self.prefix + INSIGHTS_SUFFIX
+
+    @property
     def prefix(self) -> str:
         return self.owner.removesuffix("_owner")
 
@@ -137,6 +147,8 @@ class StoreNames:
 WRITER_SUFFIX = "_writer"
 # The agents' group (no login): what every agent's login role inherits, but can't switch to.
 GROUP_SUFFIX = "_agents"
+# The insights role (login): what prompted charts' queries run as (`aios.charts`).
+INSIGHTS_SUFFIX = "_insights"
 # Each agent's own login role: `<prefix>_agent_<the agent's id in the store>`.
 AGENT_INFIX = "_agent_"
 
@@ -153,6 +165,7 @@ class _Run:
     names: StoreNames
     rw_password: str
     ro_password: str
+    insights_password: str
     server: psycopg.Connection  # the provisioner, on the platform database
     revisions: "Revisions | None" = None
     ready: bool = False  # `_mark_ready` marked it
@@ -166,7 +179,7 @@ def _set_limits(conn: psycopg.Connection, names: StoreNames) -> None:
     """Give the store's login roles the limits configured now (`data_store_*` settings): when
     they're made, and on every migration, so a changed setting reaches existing stores."""
     settings = get_settings()
-    for role in (names.rw, names.ro):
+    for role in (names.rw, names.ro, names.insights):
         conn.execute(
             sql.SQL("ALTER ROLE {} WITH CONNECTION LIMIT {}").format(
                 sql.Identifier(role), sql.Literal(settings.data_store_connection_limit)
@@ -186,19 +199,29 @@ def _set_limits(conn: psycopg.Connection, names: StoreNames) -> None:
             )
 
 
+def _create_role(conn: psycopg.Connection, role: str, password: str | None) -> None:
+    """The role, if it isn't there; with LOGIN and `password` unless that's None."""
+    if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+        conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+    if password is None:
+        return
+    # The verifier, not the password, so no statement log ever holds it.
+    conn.execute(
+        sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+            sql.Identifier(role), sql.Literal(credentials.scram_verifier(password))
+        )
+    )
+
+
 def _create_roles(run: _Run) -> None:
     conn, n = run.server, run.names
-    for role, password in ((n.owner, None), (n.rw, run.rw_password), (n.ro, run.ro_password)):
-        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
-            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
-        if password is None:
-            continue
-        # The verifier, not the password, so no statement log ever holds it.
-        conn.execute(
-            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
-                sql.Identifier(role), sql.Literal(credentials.scram_verifier(password))
-            )
-        )
+    for role, password in (
+        (n.owner, None),
+        (n.rw, run.rw_password),
+        (n.ro, run.ro_password),
+        (n.insights, run.insights_password),
+    ):
+        _create_role(conn, role, password)
     _set_limits(conn, n)
     _create_group(conn, n)
     # To create the database owned by it, and to act as it inside.
@@ -263,8 +286,25 @@ def _restrict_connect(run: _Run) -> None:
     db = sql.Identifier(n.dbname)
     # ALL: CONNECT, and TEMPORARY, which would let any role create temporary tables.
     conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(db))
-    conn.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(db, _ident(n.rw, n.ro)))
+    conn.execute(
+        sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(db, _ident(n.rw, n.ro, n.insights))
+    )
     conn.execute(sql.SQL("ALTER DATABASE {} ALLOW_CONNECTIONS true").format(db))
+
+
+def _ensure_insights_role(conn: psycopg.Connection, store_id: uuid.UUID, n: StoreNames) -> None:
+    """The insights role, with its password and leave to connect, for a store made before it:
+    on every migration, as the provisioner on the platform database."""
+    passwords = _passwords(store_id)
+    if passwords is None:
+        return
+    # Its password set again each time, so the role and the stored password always agree.
+    _create_role(conn, n.insights, passwords[2])
+    conn.execute(
+        sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+            sql.Identifier(n.dbname), sql.Identifier(n.insights)
+        )
+    )
 
 
 @contextmanager
@@ -454,6 +494,35 @@ def grant_group(conn: psycopg.Connection, names: StoreNames) -> None:
         dropped.grant_access(conn, names, table)
 
 
+def grant_insights(conn: psycopg.Connection, names: StoreNames) -> None:
+    """Give the insights role (`INSIGHTS_SUFFIX`) what prompted charts read, and nothing more:
+    to use the `insights` and `data` schemas, and to read the `insights` views; each `data`
+    table's reads are `dropped.grant_access`'s (from `grant_group`). Whatever else it was
+    granted (drift) goes. Every time the store is migrated, as the owner."""
+    if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (names.insights,)).fetchone():
+        return
+    role = sql.Identifier(names.insights)
+    for schema in _schemas(conn, (*PLATFORM_SCHEMAS, REPORTING, "extensions")):
+        ident = sql.Identifier(schema)
+        conn.execute(sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM {}").format(ident, role))
+        conn.execute(sql.SQL("REVOKE ALL ON SCHEMA {} FROM {}").format(ident, role))
+    present = _schemas(conn, (INSIGHTS, "data"))
+    if present:
+        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(_ident(*present), role))
+    if "data" in present:
+        # A new data table is readable at once, as by `ro`; `dropped.grant_access` then
+        # carries its drops.
+        conn.execute(
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA data GRANT SELECT ON TABLES TO {}"
+            ).format(sql.Identifier(names.owner), role)
+        )
+    if INSIGHTS in present:
+        ident = sql.Identifier(INSIGHTS)
+        conn.execute(sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM {}").format(ident, role))
+        conn.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(ident, role))
+
+
 @dataclass(frozen=True)
 class Revisions:
     """Where a store is on each line of the store tree (`aios.datastores.migrations`)."""
@@ -512,6 +581,7 @@ def upgrade_store(names: StoreNames) -> Revisions:
                         f" FROM {quote(names.rw)}, {quote(names.ro)}"
                     )
             grant_group(pg, names)
+            grant_insights(pg, names)
             _apply_deny_list(pg, names)
             conn.commit()
             on_history = [r for r in at if migrations.is_history_revision(r)]
@@ -643,15 +713,16 @@ def provisioner_locked(
         yield conn
 
 
-def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
+def _passwords(store_id: uuid.UUID) -> tuple[str, str, str] | None:
     """The store's login roles' passwords, generating any it lacks (stores made before they
     were generated with the row); None if the store is gone."""
     with SessionLocal() as db:
         store = db.get(DataStore, store_id)
         if store is None:
             return None
-        if store.rw_password is not None and store.ro_password is not None:
-            return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
+        held = (store.rw_password, store.ro_password, store.insights_password)
+        if all(p is not None for p in held):
+            return tuple(credentials.decrypt(p) for p in held)  # type: ignore[return-value]
         # Concurrent runs wait for each other, but the row could be changed by others. Reloaded
         # (populate_existing): the session would otherwise keep what it read before the lock.
         store = db.scalar(
@@ -666,8 +737,14 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
             store.rw_password = credentials.encrypt(credentials.new_password())
         if store.ro_password is None:
             store.ro_password = credentials.encrypt(credentials.new_password())
+        if store.insights_password is None:
+            store.insights_password = credentials.encrypt(credentials.new_password())
         db.commit()
-        return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
+        return (
+            credentials.decrypt(store.rw_password),
+            credentials.decrypt(store.ro_password),
+            credentials.decrypt(store.insights_password),
+        )
 
 
 def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
@@ -714,7 +791,7 @@ def drop(names: StoreNames) -> None:
             conn.execute(sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS false").format(db))
             # End its sessions. Ending the login roles' takes their privileges: the provisioner
             # only has ADMIN on them, from creating them.
-            for role in (names.rw, names.ro, *agents):
+            for role in (names.rw, names.ro, names.insights, *agents):
                 if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
                     conn.execute(
                         sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET FALSE").format(
@@ -730,7 +807,15 @@ def drop(names: StoreNames) -> None:
             # has no role, so only a superuser may end it). A plain drop stops the worker
             # itself, and waits a few seconds for the sessions ended above to exit.
             conn.execute(sql.SQL("DROP DATABASE {}").format(db))
-        for role in (*agents, names.rw, names.ro, names.writer, names.group, names.owner):
+        for role in (
+            *agents,
+            names.rw,
+            names.ro,
+            names.insights,
+            names.writer,
+            names.group,
+            names.owner,
+        ):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
 
@@ -854,6 +939,7 @@ def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
+        _ensure_insights_role(server, store_id, names)
         _set_limits(server, names)
         _create_group(server, names)
         revisions = upgrade_store(names)

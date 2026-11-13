@@ -1,11 +1,11 @@
 """Opening sessions on a data store.
 
 `store_session(data_store_id, role)` opens a session on the store's own database, as its
-read-write (`rw`) or read-only (`ro`) role, once the store is ready. Engines are cached per
-(store, role), each with a small pool, and the least recently used are disposed of beyond
-`MAX_ENGINES`, so hold an engine (or session) no longer than the work on it: one disposed of
-while held starts a new pool nothing here tracks. A caller that wants to know the store is
-ready before something costly (search, before it pays to embed the query) checks
+read-write (`rw`), read-only (`ro`) or insights (`insights`) role, once the store is ready.
+Engines are cached per (store, role), each with a small pool, and the least recently used are
+disposed of beyond `MAX_ENGINES`, so hold an engine (or session) no longer than the work on it:
+one disposed of while held starts a new pool nothing here tracks. A caller that wants to know
+the store is ready before something costly (search, before it pays to embed the query) checks
 `store_status` first, then opens its session.
 
 Store sessions go through the connection pooler when one is configured
@@ -37,8 +37,9 @@ from aios.datastores import credentials, migrations
 from aios.db import SessionLocal
 from aios.models import DataStore, DataStoreStatus
 
-# Read-write, or read-only (search, and queries agents write).
-Role = Literal["rw", "ro"]
+# Read-write, read-only (search, and queries agents write), or insights (prompted charts'
+# queries, `aios.charts`: the `insights` views and `data` tables only).
+Role = Literal["rw", "ro", "insights"]
 
 # Engines kept open at once (each up to 5 connections); past it the least recently used goes.
 MAX_ENGINES = 64
@@ -117,10 +118,12 @@ def store_url(store: DataStore, role: Role, login: tuple[str, str] | None = None
         url = url.set(host=host, port=int(port))
     elif store.host is not None:
         url = url.set(host=store.host, port=store.port)
-    username, password = login or (
-        f"{store.role_prefix}_{role}",
-        store.rw_password if role == "rw" else store.ro_password,
-    )
+    passwords = {
+        "rw": store.rw_password,
+        "ro": store.ro_password,
+        "insights": store.insights_password,
+    }
+    username, password = login or (f"{store.role_prefix}_{role}", passwords[role])
     return url.set(
         username=username,
         password=credentials.decrypt(password),

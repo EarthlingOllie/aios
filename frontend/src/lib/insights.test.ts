@@ -49,6 +49,7 @@ describe("numbers", () => {
   it("name groups, and what having none means", () => {
     expect(groupName("agent", 3, "Helper")).toBe("Helper");
     expect(groupName("cause", "mention", null)).toBe("Mentions");
+    expect(groupName("cause", "insight", null)).toBe("Chart questions");
     expect(groupName("cause", null, null)).toBe("No cause recorded");
     expect(groupName("person", null, null)).toBe("No one (schedules and events)");
     expect(groupName("workflow", null, null)).toBe("Not in a workflow");

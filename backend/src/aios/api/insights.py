@@ -8,19 +8,34 @@ person grouping gets a 403 saying so.
 
 Costs are estimates in GBP from the price table, never a bill. Turns from before counts were
 kept are counted as "not tracked", with null counters.
+
+Charts (`aios.charts`): any member asks for one in words (`POST .../ask`: rate-limited per
+person, a 429 past it; a 409 with why at the budget or their allowance, as starting a run by
+hand), and may save one for the organisation (`.../charts`), its spec and SQL checked again.
+Viewing a saved chart re-runs its SQL (a 409 saying its query no longer works if it fails).
+Only its creator or an admin renames or deletes it (a 403 for anyone else); saves, renames and
+deletions are audited.
 """
 
+import hashlib
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from aios import insights
-from aios.api.provenance import people
+from aios import audit, charts, guards, insights, ratelimits
+from aios.api.provenance import UserOut, people
 from aios.api.sources import SourceOut
-from aios.auth import CurrentDataStore, CurrentOrganisation
-from aios.db import DB
+from aios.auth import CurrentDataStore, CurrentOrganisation, CurrentStore, CurrentUser
+from aios.config import get_settings
+from aios.datastores import store_id_of, store_session
+from aios.datastores.models import InsightChart
+from aios.db import DB, DbId
 from aios.models import Role
 from aios.permissions import Action, CurrentRole, allow
 
@@ -310,3 +325,262 @@ def read_sources(store_id: CurrentDataStore):
     """Each source's health, as the Sources tab shows it; not shown with only Uploads."""
     today = datetime.now(UTC).date()
     return insights.panel(store_id, "sources", today, today)
+
+
+# --- Charts --------------------------------------------------------------------------------------
+
+NO_LONGER_WORKS = "This chart's query no longer works: {reason}"
+TOO_MANY_QUESTIONS = (
+    "You've asked for too many charts. Try again in {retry} seconds; nothing was asked."
+)
+
+
+class AskIn(BaseModel):
+    question: str = Field(max_length=charts.MAX_QUESTION)
+
+    @field_validator("question")
+    @classmethod
+    def _words(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Ask a question.")
+        return value
+
+
+class AskOut(BaseModel):
+    question: str
+    title: str | None
+    # Always shown to the asker, with or without a chart.
+    sql: str | None
+    # Vega-Lite, without data: `data` is drawn inline.
+    spec: dict | None
+    columns: list[str] | None
+    data: list[dict] | None
+    # Cut short at the row or byte cap: drawn, and marked as such.
+    truncated: bool
+    # Why there's no chart (the spec or query failed, after one retry); null if there is one.
+    error: str | None
+
+
+def _charge_checks(store_id: uuid.UUID, organisation_id: int, user_id: int) -> None:
+    """The rate, then the budget: a 429 past the person's questions an hour, a 409 at the
+    budget or their allowance; before any model call."""
+    ratelimits.throttle(
+        "chart-questions",
+        f"{get_settings().chart_questions_per_hour}/hour",
+        f"{organisation_id}:{user_id}",
+        detail=TOO_MANY_QUESTIONS,
+    )
+    with store_session(store_id) as store:
+        guards.refuse_at_budget(store, organisation_id, user_id)
+
+
+@router.post("/ask", response_model=AskOut, dependencies=[allow(Action.post)])
+async def ask_for_chart(
+    body: AskIn, user: CurrentUser, org: CurrentOrganisation, store_id: CurrentDataStore
+):
+    """Ask the insights agent for a chart: its title, SQL, spec and data (marked if
+    truncated), or an error with the SQL. A 429 past the rate limit; a 409 at the budget. No
+    store connection is held while the agent thinks."""
+    await run_in_threadpool(_charge_checks, store_id, org.id, user.id)
+    try:
+        asked = await charts.ask(store_id, org.id, user.id, body.question)
+    except charts.AgentFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return AskOut.model_validate(asked, from_attributes=True)
+
+
+def _a_title(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Give the chart a title.")
+    return value
+
+
+class ChartRename(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    _title = field_validator("title")(_a_title)
+
+
+class ChartIn(ChartRename):
+    question: str = Field(default="", max_length=charts.MAX_QUESTION)
+    sql: str = Field(min_length=1, max_length=20_000)
+    spec: dict
+
+
+class ChartOut(BaseModel):
+    id: int
+    title: str
+    question: str
+    sql: str
+    spec: dict
+    created_by: UserOut | None
+    created_at: datetime
+    updated_at: datetime
+    # Whether the caller may rename or delete it: its creator, or an admin.
+    can_change: bool
+
+
+class ChartDataOut(BaseModel):
+    columns: list[str]
+    data: list[dict]
+    truncated: bool
+
+
+def _may_change(chart: InsightChart, user_id: int, role: Role) -> bool:
+    return role == Role.admin or chart.created_by == user_id
+
+
+def _charts_out(db, org_id: int, user_id: int, role: Role, rows: list[InsightChart]) -> list:
+    names = people(db, org_id, [c.created_by for c in rows])
+    return [
+        ChartOut(
+            id=c.id,
+            title=c.title,
+            question=c.question,
+            sql=c.sql,
+            spec=c.spec,
+            created_by=names.get(c.created_by),
+            created_at=c.created_at,
+            updated_at=c.updated_at,
+            can_change=_may_change(c, user_id, role),
+        )
+        for c in rows
+    ]
+
+
+def _chart(store: Session, chart_id: int) -> InsightChart:
+    chart = store.get(InsightChart, chart_id)
+    if chart is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such chart.")
+    return chart
+
+
+@router.get("/charts", response_model=list[ChartOut], dependencies=[allow(Action.read)])
+def list_charts(
+    db: DB, user: CurrentUser, org: CurrentOrganisation, role: CurrentRole, store: CurrentStore
+):
+    """The organisation's saved charts, newest first."""
+    rows = list(store.scalars(select(InsightChart).order_by(InsightChart.id.desc())))
+    return _charts_out(db, org.id, user.id, role, rows)
+
+
+@router.post(
+    "/charts",
+    response_model=ChartOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
+)
+def save_chart(
+    body: ChartIn,
+    db: DB,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    role: CurrentRole,
+    store: CurrentStore,
+):
+    """Save a chart for the organisation: a 422 if its spec or SQL doesn't pass again."""
+    if problem := charts.check_spec(body.spec):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, problem)
+    try:
+        charts.run_query(store_id_of(store), body.sql)
+    except charts.ChartQueryError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"The query failed: {exc}"
+        ) from exc
+    chart = InsightChart(
+        title=body.title,
+        question=body.question.strip(),
+        sql=body.sql,
+        spec=charts.drawable(body.spec),
+        created_by=user.id,
+    )
+    store.add(chart)
+    store.flush()
+    audit.record(
+        store,
+        audit.person(user.id),
+        "insight_chart.saved",
+        "insight_chart",
+        chart.id,
+        {"title": chart.title},
+    )
+    store.commit()
+    store.refresh(chart)
+    return _charts_out(db, org.id, user.id, role, [chart])[0]
+
+
+@router.get(
+    "/charts/{chart_id}/data", response_model=ChartDataOut, dependencies=[allow(Action.read)]
+)
+def chart_data(chart_id: DbId, store: CurrentStore):
+    """The chart's rows, from re-running its SQL on current data (cached for a few minutes): a
+    409 if its query no longer works."""
+    chart = _chart(store, chart_id)
+    store_id = store_id_of(store)
+    sql = chart.sql
+    store.rollback()
+    key = (store_id, "chart", chart_id, hashlib.sha256(sql.encode()).hexdigest())
+    try:
+        rows = insights.cached(key, lambda: charts.run_query(store_id, sql))
+    except charts.ChartQueryError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NO_LONGER_WORKS.format(reason=exc)) from exc
+    return ChartDataOut(columns=rows.columns, data=charts.records(rows), truncated=rows.truncated)
+
+
+def _changeable(store: Session, chart_id: int, user_id: int, role: Role) -> InsightChart:
+    chart = _chart(store, chart_id)
+    if not _may_change(chart, user_id, role):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the chart's creator or an admin can change it."
+        )
+    return chart
+
+
+@router.patch("/charts/{chart_id}", response_model=ChartOut, dependencies=[allow(Action.read)])
+def rename_chart(
+    chart_id: DbId,
+    body: ChartRename,
+    db: DB,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    role: CurrentRole,
+    store: CurrentStore,
+):
+    """Rename a saved chart: its creator or an admin only (a 403 for anyone else)."""
+    chart = _changeable(store, chart_id, user.id, role)
+    before = chart.title
+    chart.title = body.title
+    audit.record(
+        store,
+        audit.person(user.id),
+        "insight_chart.renamed",
+        "insight_chart",
+        chart.id,
+        {"from": before, "to": chart.title},
+    )
+    store.commit()
+    store.refresh(chart)
+    return _charts_out(db, org.id, user.id, role, [chart])[0]
+
+
+@router.delete(
+    "/charts/{chart_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.read)],
+)
+def delete_chart(chart_id: DbId, user: CurrentUser, role: CurrentRole, store: CurrentStore):
+    """Delete a saved chart: its creator or an admin only (a 403 for anyone else)."""
+    chart = _changeable(store, chart_id, user.id, role)
+    audit.record(
+        store,
+        audit.person(user.id),
+        "insight_chart.deleted",
+        "insight_chart",
+        chart.id,
+        {"title": chart.title},
+    )
+    store.delete(chart)
+    store.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

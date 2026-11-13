@@ -595,7 +595,9 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
     """Stores made before migration 0014 have no passwords yet."""
     store_id = store_of(new_user())
     db.execute(
-        update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
+        update(DataStore)
+        .where(DataStore.id == store_id)
+        .values(rw_password=None, ro_password=None, insights_password=None)
     )
     db.commit()
 
@@ -633,7 +635,9 @@ def test_passwords_another_run_gave_a_store_meanwhile_are_kept(db, new_user, mon
     first look and taking the row's lock: those win, not new ones."""
     store_id = store_of(new_user())
     db.execute(
-        update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
+        update(DataStore)
+        .where(DataStore.id == store_id)
+        .values(rw_password=None, ro_password=None, insights_password=None)
     )
     db.commit()
     theirs = credentials.encrypt("theirs")
@@ -644,16 +648,16 @@ def test_passwords_another_run_gave_a_store_meanwhile_are_kept(db, new_user, mon
             other.execute(
                 update(DataStore)
                 .where(DataStore.id == store_id)
-                .values(rw_password=theirs, ro_password=theirs)
+                .values(rw_password=theirs, ro_password=theirs, insights_password=theirs)
             )
             other.commit()
         return real_select(*args)
 
     monkeypatch.setattr(provision, "select", meanwhile)
 
-    assert provision._passwords(store_id) == ("theirs", "theirs")
+    assert provision._passwords(store_id) == ("theirs", "theirs", "theirs")
     row = store_row(db, store_id)
-    assert (row.rw_password, row.ro_password) == (theirs, theirs)
+    assert (row.rw_password, row.ro_password, row.insights_password) == (theirs, theirs, theirs)
 
 
 def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(

@@ -89,6 +89,7 @@ const CAUSES: Record<string, string> = {
   manual: "Started by hand",
   event: "Events",
   start_workflow: "Started by agents",
+  insight: "Chart questions",
 };
 
 /** A group's row name: its name, or what the key is, or what having none means. */
