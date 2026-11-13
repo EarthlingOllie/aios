@@ -10,7 +10,6 @@ from aios.models.agents import (
 from aios.models.approvals import (
     ApprovalKind,
     ApprovalStatus,
-    SchemaChangeStatus,
 )
 from aios.models.audit import (
     AuditActorKind,
@@ -102,7 +101,6 @@ __all__ = [
     "WorkItem",
     "WorkKind",
     "WorkLane",
-    "SchemaChangeStatus",
     "ApprovalKind",
     "ApprovalStatus",
     "Notification",

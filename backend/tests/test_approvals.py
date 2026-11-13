@@ -23,7 +23,7 @@ from test_workflows import agent_node, make_agent
 
 from aios import worker
 from aios.datastores import schema_changes, store_session
-from aios.datastores.models import SchemaChangeRequest
+from aios.datastores.models import Approval
 from aios.datastores.schema_changes import SchemaChange
 from aios.models import DataStore, Notification, Role
 from aios.testing.fake_model import ToolCall, instructions, model, use_model
@@ -345,8 +345,8 @@ def test_an_expired_approval_counts_as_not_approved(api, db, user, store, run_se
     approval = the_approval(api)
     with store_session(store.id) as session:
         session.execute(
-            update(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == approval["id"])
+            update(Approval)
+            .where(Approval.id == approval["id"])
             .values(expires_at=func.now() - timedelta(minutes=1))
         )
         session.commit()
@@ -379,8 +379,8 @@ def test_an_approval_expires_after_its_nodes_days_or_else_the_organisations(api,
         approval = api.get(f"/api/approvals/{steps(run)['approve']['approval_id']}").json()
         with store_session(store.id) as session:
             left = session.scalar(
-                select(func.extract("epoch", SchemaChangeRequest.expires_at - func.now())).where(
-                    SchemaChangeRequest.id == approval["id"]
+                select(func.extract("epoch", Approval.expires_at - func.now())).where(
+                    Approval.id == approval["id"]
                 )
             )
         return float(left) / 86400

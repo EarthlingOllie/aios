@@ -6,9 +6,9 @@
 
 **Blocked by:** [05: Per-agent database logins, with the escape test](05-per-agent-database-logins.md), [07: Approvals as one concept, and the approval node](07-approvals-and-approval-node.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The read-write role can't insert, update or delete data tables, and has no default privilege to.
-- [ ] Platform writes (documents, chunks) are unaffected.
-- [ ] The underlying table is renamed to approvals, with no view under the old name. The old step reference and the old expiry setting are gone.
-- [ ] `make seed` rebuilds development data on the new schema, and the full suite passes.
+- [x] The read-write role can't insert, update or delete data tables, and has no default privilege to.
+- [x] Platform writes (documents, chunks) are unaffected.
+- [x] The underlying table is renamed to approvals, with no view under the old name. The old step reference and the old expiry setting are gone.
+- [x] `make seed` rebuilds development data on the new schema, and the full suite passes.

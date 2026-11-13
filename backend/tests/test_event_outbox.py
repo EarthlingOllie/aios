@@ -16,7 +16,7 @@ from aios import ingest
 from aios.datastores import store_session
 from aios.datastores.models import AgentRun, Event, Invocation
 from aios.db import SessionLocal
-from aios.models import DataStore, EventType, SchemaChangeStatus
+from aios.models import ApprovalStatus, DataStore, EventType
 from aios.testing.fake_model import replies, use_model
 
 MARKDOWN = b"# Field guide\n\nZebrafish embryos are transparent.\n"
@@ -147,7 +147,7 @@ def test_an_applied_schema_change_writes_its_event(db, apply_store):
 
     approved = approve(db, request)
 
-    assert approved.status == SchemaChangeStatus.applied
+    assert approved.status == ApprovalStatus.applied
     (event,) = events(apply_store.id)
     assert event.type == EventType.schema_change_applied
     assert event.payload == {"request_id": str(request.id), "tables": ["contacts", "fish"]}
@@ -163,7 +163,7 @@ def test_a_schema_change_that_fails_writes_no_event(db, apply_store):
 
     approved = approve(db, request)
 
-    assert approved.status != SchemaChangeStatus.applied
+    assert approved.status != ApprovalStatus.applied
     assert events(apply_store.id) == []
 
 

@@ -243,6 +243,109 @@ def test_a_stores_roles_cant_change_its_migration_version_or_schema_history(two_
     assert_cant_change_bookkeeping(two_stores[0], role)
 
 
+# Writes to `data` tables: only agents' own logins make them (`aios.datastores.agent_roles`).
+DATA_WRITES = [
+    "INSERT INTO data.notes VALUES (2)",
+    "UPDATE data.notes SET n = 3",
+    "DELETE FROM data.notes",
+    "TRUNCATE data.notes",
+]
+
+
+def make_data_table(store: DataStore) -> None:
+    """`data.notes`, as applying a schema change makes one: by the owner, with the access its
+    ownership calls for (`dropped.grant_access`), and a row."""
+    from aios.datastores import dropped
+
+    names = provision.StoreNames.of(store)
+    with provision.as_owner(names) as conn:
+        conn.execute("CREATE TABLE data.notes (n int)")
+        conn.execute("INSERT INTO data.notes VALUES (1)")
+        dropped.grant_access(conn, names, "notes")
+
+
+def assert_rw_cant_write_data(store: DataStore) -> None:
+    with psycopg.connect(login_url(store, "rw"), autocommit=True) as conn:
+        assert conn.execute("SELECT n FROM data.notes").fetchall() == [(1,)]
+        for write in DATA_WRITES:
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(write)
+        # Nor may it take the table's sequence values.
+        (privileges,) = conn.execute(
+            "SELECT count(*) FROM information_schema.role_table_grants"
+            " WHERE table_schema = 'data' AND grantee = current_user"
+            " AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')"
+        ).fetchone()
+        assert privileges == 0
+
+
+def rw_default_writes(store: DataStore) -> list[tuple[str | None, str]]:
+    """The default privileges giving `rw` writes on new tables: (schema, or None for every
+    schema; the privileges)."""
+    rw = f"{store.role_prefix}_rw"
+    with admin_connect(store.dbname) as conn:
+        return [
+            (schema, privileges)
+            for schema, privileges in conn.execute(
+                "SELECT n.nspname, array_to_string(array_agg(a.privilege_type ORDER BY"
+                " a.privilege_type), ',') FROM pg_default_acl d"
+                " LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace,"
+                " aclexplode(d.defaclacl) a"
+                " WHERE d.defaclobjtype = 'r' AND a.grantee = %s::regrole"
+                " AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE')"
+                " GROUP BY n.nspname ORDER BY n.nspname NULLS FIRST",
+                (rw,),
+            )
+        ]
+
+
+def test_the_read_write_role_cant_write_data_tables_and_has_no_default_privilege_to(two_stores):
+    a = two_stores[0]
+    make_data_table(a)
+
+    assert_rw_cant_write_data(a)
+    # Only the platform's own schemas give it writes on new tables.
+    assert {schema for schema, _ in rw_default_writes(a)} == {"aios", "langgraph"}
+
+
+def test_the_read_write_role_still_writes_the_platforms_tables(store_with_a_table):
+    a = store_with_a_table
+    rw = f"{a.role_prefix}_rw"
+    with admin_connect(a.dbname) as conn:
+        for table in ("aios.documents", "aios.chunks", "aios.marker", "langgraph.checkpoints"):
+            (may,) = conn.execute(
+                "SELECT has_table_privilege(%s, %s, 'INSERT, UPDATE, DELETE')"
+                " AND has_table_privilege(%s, %s, 'INSERT')"
+                " AND has_table_privilege(%s, %s, 'UPDATE')"
+                " AND has_table_privilege(%s, %s, 'DELETE')",
+                (rw, table) * 4,
+            ).fetchone()
+            assert may, table
+
+
+def test_migrate_all_takes_data_writes_back_from_existing_stores(db, new_user):
+    """Stores provisioned while the read-write role wrote data tables: a default privilege for
+    every schema, and writes on each data table."""
+    store_id = store_of(new_user())
+    provision.provision(store_id)
+    row = store_row(db, store_id)
+    make_data_table(row)
+    rw = sql.Identifier(f"{row.role_prefix}_rw")
+    with admin_connect(row.dbname) as conn:
+        conn.execute(
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT INSERT, UPDATE, DELETE ON TABLES TO {}"
+            ).format(sql.Identifier(f"{row.role_prefix}_owner"), rw)
+        )
+        conn.execute(sql.SQL("GRANT INSERT, UPDATE, DELETE ON data.notes TO {}").format(rw))
+    assert None in {schema for schema, _ in rw_default_writes(row)}
+
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+
+    assert_rw_cant_write_data(row)
+    assert {schema for schema, _ in rw_default_writes(row)} == {"aios", "langgraph"}
+
+
 def test_migrate_all_takes_writes_on_the_bookkeeping_back_from_existing_stores(db, new_user):
     """Stores provisioned before `_rw` was kept off the bookkeeping."""
     store_id = store_of(new_user())
@@ -1049,3 +1152,54 @@ def test_the_history_drop_can_be_undone_to_empty_tables(db, new_user):
         "workflow_runs",
         "workflow_run_steps",
     }
+
+
+def test_the_rename_to_approvals_keeps_them_and_drops_the_old_forms(db, new_user):
+    """0040: `schema_change_requests` becomes `approvals`, with no view under the old name; the
+    old step reference (`workflow_run_steps.waiting_on_request_id`) goes, and an approval made
+    before expiry times were recorded gets one, a week after it was made, as the old setting
+    gave it."""
+    store_id = store_of(new_user())
+    provision.provision(store_id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
+    engine = create_engine(url, poolclass=pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            command.downgrade(migrations.config(conn), "0039")
+            conn.exec_driver_sql(
+                "INSERT INTO aios.schema_change_requests (kind, reason, approver_role, created_at)"
+                " VALUES ('workflow_step', 'Ship it?', 'editor', '2026-01-01T00:00:00Z')"
+            )
+            conn.commit()
+    finally:
+        engine.dispose()
+
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+
+    with admin_connect(names.dbname) as conn:
+        assert conn.execute(
+            "SELECT to_regclass('aios.approvals') IS NOT NULL,"
+            " to_regclass('aios.schema_change_requests') IS NULL"
+        ).fetchone() == (True, True)
+        assert conn.execute(
+            "SELECT reason, expires_at = '2026-01-08T00:00:00Z' FROM aios.approvals"
+        ).fetchall() == [("Ship it?", True)]
+        columns = {
+            c
+            for (c,) in conn.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_schema = 'aios' AND table_name = 'workflow_run_steps'"
+            )
+        }
+        assert "approval_id" in columns
+        assert "waiting_on_request_id" not in columns
+        assert conn.execute("SELECT count(*) FROM insights.approvals").fetchone() == (1,)
+        definitions = " ".join(
+            d
+            for (d,) in conn.execute(
+                "SELECT definition FROM pg_views WHERE schemaname = 'insights'"
+            )
+        )
+        assert "schema_change_requests" not in definitions

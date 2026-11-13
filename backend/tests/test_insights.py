@@ -22,8 +22,8 @@ from aios.config import get_settings
 from aios.datastores import quota
 from aios.datastores.models import (
     AgentRun,
+    Approval,
     Invocation,
-    SchemaChangeRequest,
     Source,
     Turn,
     WorkflowRun,
@@ -200,13 +200,14 @@ def seeded_approval(
     in_store, status: str, created: datetime, decided: datetime | None
 ) -> uuid.UUID:
     approval = in_store.add(
-        SchemaChangeRequest(
+        Approval(
             kind="workflow_step",
             reason="Go ahead?",
             approver_role="editor",
             status=status,
             created_at=created,
             decided_at=decided,
+            expires_at=created + timedelta(days=7),
         )
     )
     return approval.id

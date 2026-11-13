@@ -120,7 +120,7 @@ celery_app.conf.beat_schedule = {
         "schedule": PURGE_DROPPED_EVERY,
         "options": {"expires": PURGE_DROPPED_EVERY},
     },
-    # Schema change requests nobody decided in time (`SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`).
+    # Approvals nobody decided before their expiry time (`aios.approvals.expire`).
     "expire-schema-change-requests": {
         "task": "aios.expire_schema_change_requests",
         "schedule": settings.schema_change_expiry_check_seconds,

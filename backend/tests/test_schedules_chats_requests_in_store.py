@@ -64,7 +64,7 @@ MOVED = (
     "chat_members",
     "chat_messages",
     "invocations",
-    "schema_change_requests",
+    "approvals",
 )
 
 

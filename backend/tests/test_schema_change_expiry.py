@@ -1,13 +1,14 @@
 """Schema change requests can't wait for ever, and those from runs that are gone don't linger.
 
-- A scheduled task expires requests still pending after `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`.
+- A scheduled task expires requests still pending past their expiry time (the organisation's
+  approval expiry setting, 7 days by default).
   That counts as a rejection: the run that asked resumes with "expired", and the model is told.
 - Deleting a chat run, a workflow run, or an agent whose run waits cancels its pending request.
   Nothing resumes: the run is gone.
 - Either way the request's notifications are cleared, and no change is ever applied."""
 
 import threading
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import signed_in_store
@@ -26,8 +27,8 @@ from test_schema_change_requests import (  # noqa: F401
 from aios import worker
 from aios.config import get_settings
 from aios.datastores import schema_changes, store_session
-from aios.datastores.models import AgentRun, SchemaChangeRequest
-from aios.models import SchemaChangeStatus
+from aios.datastores.models import AgentRun, Approval
+from aios.models import ApprovalStatus
 from aios.testing.fake_model import model, use_model
 
 
@@ -35,11 +36,11 @@ def asked_ago(request: dict, age: timedelta) -> None:
     """Make the request as old as `age`."""
     with store_session(signed_in_store()) as db:
         db.execute(
-            update(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == request["id"])
+            update(Approval)
+            .where(Approval.id == request["id"])
             .values(
-                created_at=SchemaChangeRequest.created_at - age,
-                expires_at=SchemaChangeRequest.expires_at - age,
+                created_at=Approval.created_at - age,
+                expires_at=Approval.expires_at - age,
             )
         )
         db.commit()
@@ -140,11 +141,9 @@ def test_an_approval_made_as_it_expires_wins_and_is_applied_once(
     with store_session(signed_in_store()) as deciding:
         # As `_decide` does: lock it, and decide it, but not yet committed.
         row = deciding.scalar(
-            select(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == request["id"])
-            .with_for_update()
+            select(Approval).where(Approval.id == request["id"]).with_for_update()
         )
-        row.status = SchemaChangeStatus.approved
+        row.status = ApprovalStatus.approved
         deciding.flush()
         expiring = threading.Thread(target=lambda: expired.extend(schema_changes.expire()))
         expiring.start()
@@ -192,18 +191,14 @@ def test_a_cancel_made_as_its_approved_leaves_the_approval(
     cancelled: list = []
     with store_session(signed_in_store()) as deciding:
         row = deciding.scalar(
-            select(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == request["id"])
-            .with_for_update()
+            select(Approval).where(Approval.id == request["id"]).with_for_update()
         )
-        row.status = SchemaChangeStatus.approved
+        row.status = ApprovalStatus.approved
         deciding.flush()
 
         def cancel() -> None:
             with store_session(signed_in_store()) as db:
-                cancelled.extend(
-                    schema_changes.cancel(db, SchemaChangeRequest.requested_by_run == run["id"])
-                )
+                cancelled.extend(schema_changes.cancel(db, Approval.requested_by_run == run["id"]))
                 db.commit()
 
         cancelling = threading.Thread(target=cancel)
@@ -228,9 +223,7 @@ def test_an_expired_request_nothing_can_resume_isnt_queued_again_and_again(
     asked_ago(request, expiry() + timedelta(minutes=1))
     with store_session(signed_in_store()) as db:
         db.execute(
-            update(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == request["id"])
-            .values(requested_by_run=None)
+            update(Approval).where(Approval.id == request["id"]).values(requested_by_run=None)
         )
         db.commit()
     looked_at: list = []
@@ -265,7 +258,7 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
             .with_for_update(read=True, key_share=True)
         )
         asking.add(
-            SchemaChangeRequest(
+            Approval(
                 ops=[CONTACTS],
                 sql="SELECT 1",
                 summary="Create table data.contacts",
@@ -273,6 +266,7 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
                 requested_by_run=run["id"],
                 tool_call_id="call_1",
                 base_revision=0,
+                expires_at=datetime.now(UTC) + timedelta(days=7),
             )
         )
         asking.flush()

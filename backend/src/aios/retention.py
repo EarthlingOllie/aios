@@ -42,10 +42,10 @@ from aios import audit, checkpoints
 from aios.datastores import store_session
 from aios.datastores.models import (
     AgentRun,
+    Approval,
     ChatMessage,
     Invocation,
     RunSummary,
-    SchemaChangeRequest,
     SearchItem,
     Turn,
     WorkflowRun,
@@ -60,6 +60,7 @@ from aios.models import (
     DataStoreStatus,
     Organisation,
     WorkflowRunStatus,
+    WorkflowStepStatus,
 )
 from aios.sandbox.sessions import SandboxHandle, run_sandboxes, stop_sandboxes
 
@@ -183,7 +184,7 @@ def _agent_run_in_flight(cutoff: datetime) -> ColumnElement[bool]:
             Invocation.agent_run_id == AgentRun.id,
             or_(Invocation.status.in_(LIVE), Invocation.finished_at >= cutoff),
         ),
-        exists().where(SchemaChangeRequest.requested_by_run == AgentRun.id, *not_given()),
+        exists().where(Approval.requested_by_run == AgentRun.id, *not_given()),
     )
 
 
@@ -203,7 +204,7 @@ def _prune_runs(store: Session, cutoff: datetime) -> tuple[int, int, list[Sandbo
             .where(WorkflowRunStep.run_id == WorkflowRun.id)
             .where(
                 or_(
-                    WorkflowRunStep.waiting_on_request_id.is_not(None),
+                    WorkflowRunStep.status == WorkflowStepStatus.waiting,
                     exists().where(
                         AgentRun.id == WorkflowRunStep.agent_run_id, _agent_run_in_flight(cutoff)
                     ),
@@ -263,12 +264,12 @@ def _delete_runs(store: Session, run_ids: list[int]) -> list[SandboxHandle]:
 
 def _run_idle() -> ColumnElement[bool]:
     """Whether an agent run is idle now: no turn running or holding it, no invocation
-    unfinished, not waiting on a schema change request."""
+    unfinished, not waiting on an approval."""
     return ~or_(
         func.coalesce(AgentRun.lease_until > func.now(), false()),
         exists().where(Turn.agent_run_id == AgentRun.id, Turn.status == AgentRunStatus.running),
         exists().where(Invocation.agent_run_id == AgentRun.id, Invocation.status.in_(LIVE)),
-        exists().where(SchemaChangeRequest.requested_by_run == AgentRun.id, *not_given()),
+        exists().where(Approval.requested_by_run == AgentRun.id, *not_given()),
     )
 
 

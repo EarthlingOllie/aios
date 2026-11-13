@@ -189,7 +189,7 @@ model sends a spec, never SQL: `create_table`, `add_column`, `create_index`, `dr
 and `drop_column` operations, with types from an allowlist (including `embedding`, a vector
 of a text column that `write_data` fills) and names that match `^[a-z][a-z0-9_]{0,62}$` and
 aren't reserved words. The tool checks it against the store's schema, compiles it to SQL with
-every identifier quoted (descriptions become `COMMENT ON`), records a `schema_change_requests`
+every identifier quoted (descriptions become `COMMENT ON`), records an `approvals`
 row, and pauses the run with LangGraph's `interrupt()`: the turn ends with a card of the
 agent's reason and the exact SQL, and the run takes no new messages until it's decided.
 
@@ -226,9 +226,9 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
   versions the run pinned (a pin that can no longer run fails its step with the reason). The
   run page shows the waiting node with the request's card, and the pins that are no longer
   current.
-- A request nobody decides within `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` (7) expires: the
-  urgent worker's beat (`aios.expire_schema_change_requests`, every
-  `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour) marks it `expired`, which counts as a
+- A request nobody decides before its expiry time (the organisation's approval expiry setting,
+  7 days by default) expires: the routine worker's beat
+  (`aios.expire_schema_change_requests`, every `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour) marks it `expired`, which counts as a
   rejection, and the chat or workflow run that asked resumes with it.
 - Deleting a chat run, or a workflow run that waits, marks its pending request `cancelled`
   instead, and nothing resumes (`schema_changes.cancel`; see

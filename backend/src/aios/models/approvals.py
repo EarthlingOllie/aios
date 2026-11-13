@@ -1,9 +1,8 @@
 """What approvals can be (`aios.approvals`): schema changes an agent asked for, and workflow
 approval steps.
 
-Approvals are in each organisation's store (`aios.datastores.models.SchemaChangeRequest`, still
-named for its first kind until the rename to approvals); the platform's `approval_needed`
-notifications name them by id, from the store's organisation.
+Approvals are in each organisation's store (`aios.datastores.models.Approval`); the platform's
+`approval_needed` notifications name them by id, from the store's organisation.
 """
 
 import enum
@@ -16,7 +15,7 @@ class ApprovalKind(enum.StrEnum):
     workflow_step = "workflow_step"
 
 
-class SchemaChangeStatus(enum.StrEnum):
+class ApprovalStatus(enum.StrEnum):
     """An approval's status. Shared: pending, approved, rejected, expired, cancelled. A schema
     change's only: applied, failed, stale."""
 
@@ -33,17 +32,13 @@ class SchemaChangeStatus(enum.StrEnum):
     def decided(self) -> bool:
         """Whether this is an outcome the run that asked for a schema change can be resumed
         with (an approved one is still being applied). See `decided` for any kind."""
-        return self not in (SchemaChangeStatus.pending, SchemaChangeStatus.approved)
+        return self not in (ApprovalStatus.pending, ApprovalStatus.approved)
 
 
-# The one status set for both kinds.
-ApprovalStatus = SchemaChangeStatus
-
-
-def decided(kind: str, status: SchemaChangeStatus) -> bool:
+def decided(kind: str, status: ApprovalStatus) -> bool:
     """Whether an approval of `kind` has an outcome its run can be given: anything but pending
     for a workflow step; anything but pending or approved (being applied) for a schema
     change."""
     if kind == ApprovalKind.workflow_step:
-        return status != SchemaChangeStatus.pending
-    return SchemaChangeStatus(status).decided
+        return status != ApprovalStatus.pending
+    return ApprovalStatus(status).decided

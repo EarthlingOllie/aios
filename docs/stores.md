@@ -87,8 +87,12 @@ reads. That task, as `aios_provisioner`:
 - creates the database `ds_<id>` from the template, owned by `_owner` and taking no
   connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw`,
   `_ro` and `_insights`, and only then lets them connect;
-- drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
-  `_owner` creates and `_ro` only read them; neither may create anything;
+- drops its `public` schema, and sets default privileges: `_rw` and `_ro` may read the tables
+  `_owner` creates; neither may create anything. As the store is migrated, `_rw`, the
+  platform's own, is given writes on the platform's schemas (`aios`, `langgraph`: documents,
+  chunks, runs and so on), now and by default privilege (`provision.grant_rw`), and never on
+  `data` tables, which only agents' own logins write (store migrations take back what a store
+  made before had);
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
   `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
   (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
@@ -486,8 +490,11 @@ decide one, expiring it (`expires_at`, from the organisation's approval expiry s
 by default, `PUT /api/o/{org}/organisation/approval-expiry`; an approval node may set its own),
 cancelling it when nothing waits on it any more, clearing its notifications, and resuming the
 run waiting on it. An expired approval counts as not approved. Every decision is audited
-(`approval.decided`). Approvals are still kept in `aios.schema_change_requests`, with a `kind`,
-until the rename to approvals.
+(`approval.decided`). Approvals are kept in `aios.approvals`, with a `kind` (store revision
+`0040` (renumbered from `0037` at merge) renamed `aios.schema_change_requests`, leaving no view under the old name, dropped the
+old step reference `workflow_run_steps.waiting_on_request_id`, and gave approvals made before
+expiry times were recorded the week the old `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` setting did;
+development data is rebuilt with `make seed`).
 
 ### Uploaded files
 

@@ -34,12 +34,12 @@ from aios.api import agents as package
 from aios.api.agents.runs import build_version_tools
 from aios.api.approvals import of_run, waiting_on
 from aios.datastores import schema_changes, store_session
-from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest, Turn
+from aios.datastores.models import Agent, AgentRun, AgentVersion, Approval, Turn
 from aios.db import SessionLocal
 from aios.models import (
     AgentRunStatus,
+    ApprovalStatus,
     DataStore,
-    SchemaChangeStatus,
 )
 from aios.runner import build_agent, run_title
 from aios.sandbox.sessions import (
@@ -256,7 +256,7 @@ def _cancel_requests(data_store_id: uuid.UUID, run_id: int, tool_call_ids: list[
         return
     with store_session(data_store_id) as store:
         cancelled = schema_changes.cancel(
-            store, *of_run(run_id), SchemaChangeRequest.tool_call_id.in_(tool_call_ids)
+            store, *of_run(run_id), Approval.tool_call_id.in_(tool_call_ids)
         )
         store.commit()
     schema_changes.clear_notifications_of(cancelled)
@@ -375,9 +375,7 @@ def _decided_requests(data_store_id: uuid.UUID, run_id: int) -> dict[str, dict[s
     id."""
     with store_session(data_store_id, "ro") as store:
         requests = store.scalars(
-            select(SchemaChangeRequest).where(
-                *of_run(run_id), SchemaChangeRequest.resumed_at.is_(None)
-            )
+            select(Approval).where(*of_run(run_id), Approval.resumed_at.is_(None))
         ).all()
         return {str(r.id): schema_changes.outcome(r) for r in requests if r.status.decided}
 
@@ -646,14 +644,12 @@ def _mark_resumed(
     it takes new messages again, unless another still waits."""
     with store_session(data_store_id) as store:
         store.execute(
-            update(SchemaChangeRequest)
+            update(Approval)
             .where(
                 *of_run(run_id),
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status.not_in(
-                    [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
-                ),
-                true() if request_ids is None else SchemaChangeRequest.id.in_(request_ids),
+                Approval.resumed_at.is_(None),
+                Approval.status.not_in([ApprovalStatus.pending, ApprovalStatus.approved]),
+                true() if request_ids is None else Approval.id.in_(request_ids),
             )
             .values(resumed_at=func.now())
         )

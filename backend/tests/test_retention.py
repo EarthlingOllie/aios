@@ -21,9 +21,9 @@ from aios import checkpoints, retention, worker
 from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import (
+    Approval,
     Invocation,
     SandboxSession,
-    SchemaChangeRequest,
     Turn,
     WorkflowRun,
     WorkflowRunStep,
@@ -235,7 +235,7 @@ def test_runs_in_flight_or_waiting_on_an_approval_are_never_pruned(api, store_id
             .values(status=AgentRunStatus.running, finished_at=None)
         )
         store.add(
-            SchemaChangeRequest(
+            Approval(
                 ops=[],
                 sql="SELECT 1",
                 summary="Create table data.contacts",
@@ -243,6 +243,7 @@ def test_runs_in_flight_or_waiting_on_an_approval_are_never_pruned(api, store_id
                 requested_by_run=waiting["id"],
                 tool_call_id="call_1",
                 base_revision=0,
+                expires_at=datetime.now(UTC) + timedelta(days=7),
             )
         )
         store.commit()

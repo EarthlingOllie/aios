@@ -18,11 +18,11 @@ from aios.datastores.connections import (
 )
 from aios.datastores.models import (
     Agent,
+    Approval,
     Chat,
     ChatMessage,
     Document,
     Invocation,
-    SchemaChangeRequest,
     Source,
     SourceStatus,
     SourceSync,
@@ -255,9 +255,7 @@ def _in_store(
         summaries = {
             approval_id: (kind, summary)
             for approval_id, kind, summary in store.execute(
-                select(
-                    SchemaChangeRequest.id, SchemaChangeRequest.kind, SchemaChangeRequest.summary
-                ).where(SchemaChangeRequest.id.in_(ids))
+                select(Approval.id, Approval.kind, Approval.summary).where(Approval.id.in_(ids))
             ).all()
         }
         for n in approvals:

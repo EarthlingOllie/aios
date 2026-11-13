@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from aios import approval_rules, approvals, outbox
 from aios.config import get_settings
 from aios.datastores.connections import store_session
-from aios.datastores.models import AgentRun, SchemaChangeRequest
+from aios.datastores.models import AgentRun, Approval
 from aios.db import SessionLocal
-from aios.models import DataStore, EventType, SchemaChangeStatus
+from aios.models import ApprovalStatus, DataStore, EventType
 
 if TYPE_CHECKING:
     from aios.datastores.provision import StoreNames
@@ -106,13 +106,13 @@ def lock_run(store: Session, run_ids: list[int]) -> None:
         )
 
 
-def find(data_store_id: uuid.UUID, run_id: int, tool_call_id: str) -> SchemaChangeRequest | None:
+def find(data_store_id: uuid.UUID, run_id: int, tool_call_id: str) -> Approval | None:
     """The request a tool call of the store's run made, if it made one."""
     with store_session(data_store_id, "ro") as store:
         return store.scalar(
-            select(SchemaChangeRequest).where(
-                SchemaChangeRequest.requested_by_run == run_id,
-                SchemaChangeRequest.tool_call_id == tool_call_id,
+            select(Approval).where(
+                Approval.requested_by_run == run_id,
+                Approval.tool_call_id == tool_call_id,
             )
         )
 
@@ -124,7 +124,7 @@ def propose(
     *,
     run_id: int | None,
     tool_call_id: str | None,
-) -> SchemaChangeRequest:
+) -> Approval:
     """Check `change` against the store's schema and record it as a pending request in the
     store; then notify those who can decide it, on the platform. Raises `Invalid` if the schema
     doesn't take it, and as `store_session` does if the store can't be read."""
@@ -142,7 +142,7 @@ def propose(
     ]
     checked = check(SchemaChange(ops=fresh), schema)
     days = approvals.store_expiry_days(data_store_id)
-    request = SchemaChangeRequest(
+    request = Approval(
         ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
         sql=compile_sql(checked),
         summary=summarize(checked),
@@ -182,7 +182,7 @@ class _Stale(Exception):
     pass
 
 
-def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
+def _run(names: "StoreNames", request: Approval) -> None:
     """Run the request's SQL on the store, as its owner, all or nothing; raises `_Stale` if the
     schema has moved on and no longer takes it."""
     from aios.datastores import dropped, ownership
@@ -279,14 +279,14 @@ def table_exists(pg: psycopg.Connection, table: str) -> bool:
     return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]
 
 
-def apply(data_store_id: uuid.UUID, request_id: uuid.UUID) -> SchemaChangeStatus | None:
+def apply(data_store_id: uuid.UUID, request_id: uuid.UUID) -> ApprovalStatus | None:
     """Apply an approved request to its store and record how it went (`applied`, `failed` or
     `stale`); returns that, or None if the request isn't approved (there's nothing to do)."""
     from aios.datastores.provision import StoreNames, provisioner_locked
 
     with store_session(data_store_id, "ro") as store:
-        request = store.get(SchemaChangeRequest, request_id)
-        if request is None or request.status != SchemaChangeStatus.approved:
+        request = store.get(Approval, request_id)
+        if request is None or request.status != ApprovalStatus.approved:
             return None
     with SessionLocal() as db:
         names = StoreNames.of(db.get_one(DataStore, data_store_id))
@@ -295,37 +295,37 @@ def apply(data_store_id: uuid.UUID, request_id: uuid.UUID) -> SchemaChangeStatus
         # Not while the store is being migrated or provisioned.
         with provisioner_locked(data_store_id):
             _run(names, request)
-        status = SchemaChangeStatus.applied
+        status = ApprovalStatus.applied
         outbox.pending(data_store_id)
     except _Stale as exc:
-        status, error = SchemaChangeStatus.stale, str(exc)
+        status, error = ApprovalStatus.stale, str(exc)
     except psycopg.Error as exc:
-        status, error = SchemaChangeStatus.failed, _store_error(exc)
+        status, error = ApprovalStatus.failed, _store_error(exc)
     except Exception:
         log.exception("Applying schema change request %s failed", request_id)
-        status, error = SchemaChangeStatus.failed, "Applying it failed unexpectedly"
+        status, error = ApprovalStatus.failed, "Applying it failed unexpectedly"
     with store_session(data_store_id) as store:
         store.execute(
-            update(SchemaChangeRequest)
+            update(Approval)
             .where(
-                SchemaChangeRequest.id == request_id,
-                SchemaChangeRequest.status == SchemaChangeStatus.approved,
+                Approval.id == request_id,
+                Approval.status == ApprovalStatus.approved,
             )
             .values(
                 status=status,
                 error=error,
-                applied_at=func.now() if status == SchemaChangeStatus.applied else None,
+                applied_at=func.now() if status == ApprovalStatus.applied else None,
             )
         )
         store.commit()
     return status
 
 
-def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
+def outcome(request: Approval) -> dict[str, Any]:
     """What the run that asked is resumed with, and its tool call returns to the model."""
     status = request.status
     out: dict[str, Any] = {"status": status.value, "request_id": str(request.id)}
-    if status == SchemaChangeStatus.applied:
+    if status == ApprovalStatus.applied:
         out["message"] = (
             f"The user approved it, and it's applied: {request.summary}. `describe_data`"
             " shows the store's tables as they are now."
@@ -335,23 +335,23 @@ def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
                 " What it dropped is kept for a while: the user can restore it from the Data"
                 " page until it's purged."
             )
-    elif status == SchemaChangeStatus.rejected:
+    elif status == ApprovalStatus.rejected:
         out["note"] = request.note
         out["message"] = "The user rejected it, and nothing changed" + (
             f". Their note: {request.note}" if request.note else "."
         )
-    elif status == SchemaChangeStatus.stale:
+    elif status == ApprovalStatus.stale:
         out["error"] = request.error
         out["message"] = (
             "The store's schema changed after the request was made, and it no longer applies,"
             f" so nothing changed: {request.error}"
         )
-    elif status == SchemaChangeStatus.failed:
+    elif status == ApprovalStatus.failed:
         out["error"] = request.error
         out["message"] = (
             f"The user approved it, but applying it failed, and nothing changed: {request.error}"
         )
-    elif status == SchemaChangeStatus.expired:
+    elif status == ApprovalStatus.expired:
         out["message"] = (
             "Nobody decided on the request in time, so it expired, and nothing changed. Treat it"
             " as rejected; ask again if the change is still needed."

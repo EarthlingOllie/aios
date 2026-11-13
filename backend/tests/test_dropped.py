@@ -16,10 +16,10 @@ from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import dropped, schema_changes
-from aios.datastores.models import SchemaChangeRequest
+from aios.datastores.models import Approval
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
-from aios.models import DataStore, SchemaChangeStatus
+from aios.models import ApprovalStatus, DataStore
 from aios.testing.fake_model import ToolCall, model, use_model
 from aios.tools import build_tool
 
@@ -58,27 +58,25 @@ def agent(api) -> dict:
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=TOOLS)).json()
 
 
-def propose(store: DataStore, *ops: dict) -> SchemaChangeRequest:
+def propose(store: DataStore, *ops: dict) -> Approval:
     spec = SchemaChange.model_validate({"ops": list(ops)})
     return schema_changes.propose(store.id, spec, "Tidy up", run_id=None, tool_call_id=None)
 
 
-def approve(store: DataStore, request: SchemaChangeRequest) -> None:
+def approve(store: DataStore, request: Approval) -> None:
     """Approve the request behind the API's back."""
     StoreRows(store.id).execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(status=SchemaChangeStatus.approved)
+        update(Approval).where(Approval.id == request.id).values(status=ApprovalStatus.approved)
     )
 
 
-def apply(db, store: DataStore, *ops: dict) -> SchemaChangeRequest:
+def apply(db, store: DataStore, *ops: dict) -> Approval:
     """Propose, approve and apply a request, as the owner approving it would."""
     request = propose(store, *ops)
     approve(store, request)
     schema_changes.apply(store.id, request.id)
-    applied = StoreRows(store.id).get(SchemaChangeRequest, request.id)
-    assert applied.status == SchemaChangeStatus.applied, applied.error
+    applied = StoreRows(store.id).get(Approval, request.id)
+    assert applied.status == ApprovalStatus.applied, applied.error
     return applied
 
 
@@ -194,7 +192,7 @@ def test_a_drop_whose_table_has_changed_since_it_was_asked_for_is_stale(db, stor
     apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
     approve(store, request)
 
-    assert schema_changes.apply(store.id, request.id) == SchemaChangeStatus.stale
+    assert schema_changes.apply(store.id, request.id) == ApprovalStatus.stale
     with as_owner(store) as conn:
         assert conn.execute("SELECT to_regclass('data.fish') IS NOT NULL").fetchone()[0]
 

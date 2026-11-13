@@ -50,17 +50,17 @@ from aios.datastores import (
     schema_changes,
 )
 from aios.datastores.connections import store_id_of
-from aios.datastores.models import Agent, SchemaChangeRequest
+from aios.datastores.models import Agent, Approval
 from aios.datastores.ownership import share
 from aios.datastores.schema_changes import SchemaChange
 from aios.db import SessionLocal
 from aios.models import (
+    ApprovalStatus,
     ChatMemberKind,
     DataStore,
     DataStoreStatus,
     Organisation,
     Role,
-    SchemaChangeStatus,
     TriggerTargetKind,
     User,
     WorkflowNodeKind,
@@ -250,11 +250,9 @@ def table(
     store_id = store_id_of(store)
     request = schema_changes.propose(store_id, spec, about, run_id=run.id, tool_call_id=None)
     store.execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(
-            status=SchemaChangeStatus.approved, decided_by_user_id=user.id, decided_at=func.now()
-        )
+        update(Approval)
+        .where(Approval.id == request.id)
+        .values(status=ApprovalStatus.approved, decided_by_user_id=user.id, decided_at=func.now())
     )
     store.commit()
     schema_changes.apply(store_id, request.id)

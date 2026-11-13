@@ -42,11 +42,11 @@ from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
     AgentRun,
+    Approval,
     Chat,
     ChatMember,
     ChatMessage,
     Invocation,
-    SchemaChangeRequest,
     Workflow,
     WorkflowRun,
 )
@@ -287,8 +287,8 @@ def agent_runs_live(store: Session, runs: Sequence[tuple[int, int]]) -> dict[int
     }
     waiting = set(
         store.scalars(
-            select(SchemaChangeRequest.requested_by_run).where(
-                SchemaChangeRequest.requested_by_run.in_(run_ids), *not_given()
+            select(Approval.requested_by_run).where(
+                Approval.requested_by_run.in_(run_ids), *not_given()
             )
         )
     )

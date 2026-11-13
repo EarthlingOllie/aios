@@ -38,7 +38,7 @@ from aios.datastores import (
 )
 from aios.datastores.models import (
     AgentRun,
-    SchemaChangeRequest,
+    Approval,
     Workflow,
     WorkflowRun,
     WorkflowRunStep,
@@ -50,9 +50,9 @@ from aios.datastores.schema_changes import (
 from aios.db import DB
 from aios.models import (
     ApprovalKind,
+    ApprovalStatus,
     DataStore,
     Role,
-    SchemaChangeStatus,
 )
 from aios.permissions import Action, allow, can
 
@@ -86,7 +86,7 @@ class ApprovalOut(BaseModel):
     id: uuid.UUID
     kind: ApprovalKind
     data_store_id: uuid.UUID
-    status: SchemaChangeStatus
+    status: ApprovalStatus
     # One line: a schema change's operations, or an approval step's prompt's first line.
     summary: str
     # Why it's asked, in full: the agent's explanation, or the approval step's rendered prompt.
@@ -122,11 +122,7 @@ class ApprovalOut(BaseModel):
     step: StepOut | None = None
 
 
-# The old name, for the agents' run pages.
-SchemaChangeOut = ApprovalOut
-
-
-class Approval(BaseModel):
+class Decision(BaseModel):
     # For a schema change that drops anything, its `confirm_with`, typed.
     confirm: str | None = Field(None, max_length=1000)
     note: str | None = Field(None, max_length=2000)
@@ -156,13 +152,13 @@ class Rejection(BaseModel):
     note: str | None = Field(None, max_length=2000)
 
 
-def _is_schema_change(approval: SchemaChangeRequest) -> bool:
+def _is_schema_change(approval: Approval) -> bool:
     return approval.kind == ApprovalKind.schema_change
 
 
 def approval_out(
     data_store_id: uuid.UUID,
-    approval: SchemaChangeRequest,
+    approval: Approval,
     role: Role | None,
     rules: dict[str, Role],
     *,
@@ -185,7 +181,7 @@ def approval_out(
         reason=approval.reason,
         approver_role=needs,
         needs_role=needs,
-        can_decide=approval.status == SchemaChangeStatus.pending and decides(role, needs),
+        can_decide=approval.status == ApprovalStatus.pending and decides(role, needs),
         note=approval.note,
         created_at=approval.created_at,
         decided_at=approval.decided_at,
@@ -204,7 +200,7 @@ def approval_out(
     )
 
 
-def confirmation_for(request: SchemaChangeRequest) -> str | None:
+def confirmation_for(request: Approval) -> str | None:
     if not _is_schema_change(request):
         return None
     return confirmation(SchemaChange.model_validate({"ops": request.ops}))
@@ -214,7 +210,7 @@ def request_run(run: AgentRun) -> RequestRun:
     return RequestRun(agent_id=run.agent_id, run_id=run.id, title=run.title)
 
 
-def request_runs(store: Session, requests: list[SchemaChangeRequest]) -> dict[int, RequestRun]:
+def request_runs(store: Session, requests: list[Approval]) -> dict[int, RequestRun]:
     """The runs that asked for these schema changes (all the store's, `store`), by id: those
     that still exist."""
     ids = {r.requested_by_run for r in requests if r.requested_by_run is not None}
@@ -224,15 +220,15 @@ def request_runs(store: Session, requests: list[SchemaChangeRequest]) -> dict[in
     return {run.id: request_run(run) for run in runs}
 
 
-def approval_steps(store: Session, found: list[SchemaChangeRequest]) -> dict[uuid.UUID, StepOut]:
+def approval_steps(store: Session, found: list[Approval]) -> dict[uuid.UUID, StepOut]:
     """The workflow steps waiting on these approvals (all the store's), by approval id: those
     that still exist."""
     step_ids = {a.workflow_step_id for a in found if a.workflow_step_id is not None}
     if not step_ids:
         return {}
     rows = store.execute(
-        select(SchemaChangeRequest.id, WorkflowRunStep, WorkflowRun.workflow_id, Workflow.name)
-        .join(WorkflowRunStep, WorkflowRunStep.id == SchemaChangeRequest.workflow_step_id)
+        select(Approval.id, WorkflowRunStep, WorkflowRun.workflow_id, Workflow.name)
+        .join(WorkflowRunStep, WorkflowRunStep.id == Approval.workflow_step_id)
         .join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(WorkflowRunStep.id.in_(step_ids))
@@ -253,7 +249,7 @@ def approvals_out(
     db: Session,
     organisation_id: int,
     store: Session,
-    found: list[SchemaChangeRequest],
+    found: list[Approval],
     role: Role | None,
 ) -> list[ApprovalOut]:
     """`approval_out` for each of the store's (`store`'s) approvals, reading what they refer
@@ -295,18 +291,14 @@ def decides(role: Role | None, needs: Role) -> bool:
 
 def of_run(run_id: int) -> tuple[ColumnElement[bool], ...]:
     """Schema changes the run asked for (in its store)."""
-    return (SchemaChangeRequest.requested_by_run == run_id,)
+    return (Approval.requested_by_run == run_id,)
 
 
 def run_requests(db: Session, store: Session, run: AgentRun, user_id: int) -> list[ApprovalOut]:
     """The schema changes the run (of the store `store` is a session on) asked for, oldest first
     (for its chat)."""
     requests = list(
-        store.scalars(
-            select(SchemaChangeRequest)
-            .where(*of_run(run.id))
-            .order_by(SchemaChangeRequest.created_at)
-        ).all()
+        store.scalars(select(Approval).where(*of_run(run.id)).order_by(Approval.created_at)).all()
     )
     if not requests:
         return []
@@ -323,7 +315,7 @@ def waiting_on(store: Session, run_id: int) -> bool:
     return (
         store.scalar(
             select(func.count())
-            .select_from(SchemaChangeRequest)
+            .select_from(Approval)
             .where(*of_run(run_id), *approvals.not_given())
         )
         > 0
@@ -337,7 +329,7 @@ def list_approvals(
     db: DB,
     store: CurrentStore,
     kind: ApprovalKind | None = None,
-    status_: Annotated[SchemaChangeStatus | None, Query(alias="status")] = None,
+    status_: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
 ):
     """The organisation's store's approvals, of a `kind` and in a `status` if given: pending
     first (oldest first), then the decided ones, most recently decided first."""
@@ -345,26 +337,26 @@ def list_approvals(
     data_store = db.get_one(DataStore, store_id)
     if not can_approve(db, user.id, data_store):
         return []
-    pending = SchemaChangeRequest.status == SchemaChangeStatus.pending
-    query = select(SchemaChangeRequest).order_by(
+    pending = Approval.status == ApprovalStatus.pending
+    query = select(Approval).order_by(
         case((pending, 0), else_=1),
-        case((pending, SchemaChangeRequest.created_at)),
-        func.coalesce(SchemaChangeRequest.decided_at, SchemaChangeRequest.created_at).desc(),
+        case((pending, Approval.created_at)),
+        func.coalesce(Approval.decided_at, Approval.created_at).desc(),
     )
     if kind is not None:
-        query = query.where(SchemaChangeRequest.kind == kind.value)
+        query = query.where(Approval.kind == kind.value)
     if status_ is not None:
-        query = query.where(SchemaChangeRequest.status == status_)
+        query = query.where(Approval.status == status_)
     found = list(store.scalars(query).all())
     return approvals_out(db, org.id, store, found, decider_role(db, user.id, data_store))
 
 
 def _get(
     db: Session, store: Session, user_id: int, approval_id: uuid.UUID, *, lock: bool = False
-) -> SchemaChangeRequest:
+) -> Approval:
     """The approval, if it's in the organisation's store (`store`) and the user may see it: a
     404 otherwise, alike."""
-    query = select(SchemaChangeRequest).where(SchemaChangeRequest.id == approval_id)
+    query = select(Approval).where(Approval.id == approval_id)
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     found = store.scalar(query)
@@ -374,7 +366,7 @@ def _get(
 
 
 def _out(
-    db: Session, organisation_id: int, store: Session, found: SchemaChangeRequest, user_id: int
+    db: Session, organisation_id: int, store: Session, found: Approval, user_id: int
 ) -> ApprovalOut:
     """An approval `_get` found, for the user."""
     role = decider_role(db, user_id, db.get_one(DataStore, store_id_of(store)))
@@ -392,12 +384,12 @@ def get_approval(
     return _out(db, org.id, store, _get(db, store, user.id, approval_id), user.id)
 
 
-def _target(found: SchemaChangeRequest) -> str:
+def _target(found: Approval) -> str:
     """What an approval's audit entries are about."""
     return "schema_change_request" if _is_schema_change(found) else "approval"
 
 
-def _undo(store: Session, found: SchemaChangeRequest) -> None:
+def _undo(store: Session, found: Approval) -> None:
     """Put a decision nothing else has seen through back to pending, auditing that it was;
     commits the store."""
     audit.record(
@@ -409,13 +401,13 @@ def _undo(store: Session, found: SchemaChangeRequest) -> None:
         {"decision": found.status.value, "reason": "It couldn't be passed on"},
     )
     store.execute(
-        update(SchemaChangeRequest)
+        update(Approval)
         .where(
-            SchemaChangeRequest.id == found.id,
-            SchemaChangeRequest.status == found.status,
+            Approval.id == found.id,
+            Approval.status == found.status,
         )
         .values(
-            status=SchemaChangeStatus.pending,
+            status=ApprovalStatus.pending,
             decided_by_user_id=None,
             decided_at=None,
             note=None,
@@ -427,10 +419,10 @@ def _undo(store: Session, found: SchemaChangeRequest) -> None:
 
 def _decide(
     db: Session, store: Session, user_id: int, approval_id: uuid.UUID, **values
-) -> SchemaChangeRequest:
+) -> Approval:
     # Locked, so two decisions at once can't both pass the pending check.
     found = _get(db, store, user_id, approval_id, lock=True)
-    if found.status != SchemaChangeStatus.pending:
+    if found.status != ApprovalStatus.pending:
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"This approval has already been {found.status.value}"
         )
@@ -473,9 +465,7 @@ def _decide(
     return found
 
 
-def _refuse_unless_decides(
-    db: Session, store: Session, user_id: int, found: SchemaChangeRequest
-) -> Role:
+def _refuse_unless_decides(db: Session, store: Session, user_id: int, found: Approval) -> Role:
     """The role the approval needs, if the user's is at least that; a 403 naming it
     otherwise."""
     needs = approvals.needs_role_in(store, found)
@@ -494,9 +484,7 @@ def _refuse_unless_decides(
     return needs
 
 
-def _queue(
-    db: Session, store: Session, found: SchemaChangeRequest, queue: Callable[[], None]
-) -> None:
+def _queue(db: Session, store: Session, found: Approval, queue: Callable[[], None]) -> None:
     """Queue what follows a decision; if it can't be (the broker is down), undo the decision,
     which nothing else has seen through, so it's not left decided with nothing to act on it, and
     its notifications are unread again."""
@@ -552,7 +540,7 @@ def approve(
     org: CurrentOrganisation,
     db: DB,
     store: CurrentStore,
-    body: Approval | None = None,
+    body: Decision | None = None,
 ):
     from aios.worker import apply_schema_change_task, enqueue_resume
 
@@ -573,7 +561,7 @@ def approve(
         store,
         user.id,
         approval_id,
-        status=SchemaChangeStatus.approved,
+        status=ApprovalStatus.approved,
         note=_note(body.note if body else None),
     )
     store_id = store_id_of(store)
@@ -609,7 +597,7 @@ def reject(
         store,
         user.id,
         approval_id,
-        status=SchemaChangeStatus.rejected,
+        status=ApprovalStatus.rejected,
         note=_note(body.note),
     )
     store_id = store_id_of(store)

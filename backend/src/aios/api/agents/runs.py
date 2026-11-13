@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from aios import checkpoints, guards, invocations, turns, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
-from aios.api.approvals import SchemaChangeOut, run_requests, waiting_on
+from aios.api.approvals import ApprovalOut, run_requests, waiting_on
 from aios.api.provenance import UserOut, started_by
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import schema_changes, store_id_of
@@ -20,10 +20,10 @@ from aios.datastores.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    Approval,
     Chat,
     Event,
     Invocation,
-    SchemaChangeRequest,
     Turn,
     WorkflowRunStep,
 )
@@ -184,7 +184,7 @@ class RunOut(RunSummary):
     # The pinned version's instructions: the system prompt of every model call in the run.
     instructions: str
     # The schema change requests the run made (oldest first), each at its tool call.
-    schema_change_requests: list[SchemaChangeOut]
+    schema_change_requests: list[ApprovalOut]
     # Whether it waits on one of them, and takes no new messages until it's resumed.
     waiting: bool
     # Why it ran; and its turns, oldest first.
@@ -435,4 +435,4 @@ def cancel_chat_requests(store: Session, run_ids: list[int]) -> list[uuid.UUID]:
 
     Take the runs' locks first (`schema_changes.lock_run`): a request being recorded for one
     is waited for, and then seen, and none can be recorded once it's gone."""
-    return schema_changes.cancel(store, SchemaChangeRequest.requested_by_run.in_(run_ids))
+    return schema_changes.cancel(store, Approval.requested_by_run.in_(run_ids))

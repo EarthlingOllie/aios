@@ -39,7 +39,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from aios.jev import Verdict
 from aios.models.agents import AgentRunStatus
-from aios.models.approvals import SchemaChangeStatus
+from aios.models.approvals import ApprovalStatus
 from aios.models.audit import AuditActorKind
 from aios.models.chats import (
     ChatAuthorKind,
@@ -68,8 +68,8 @@ class SchemaHistory(StoreBase):
     __tablename__ = "schema_history"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    # The schema change request it applied (`schema_change_requests`), if any. Not a foreign
-    # key: the log outlives what it records.
+    # The schema change it applied (`approvals`), if any. Not a foreign key: the log outlives
+    # what it records.
     request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     summary: Mapped[str] = mapped_column(Text)
     # The statements that ran.
@@ -771,17 +771,9 @@ class WorkflowRunStep(StoreBase):
     # change, or an approval node's own; an approval node's stays once it's decided.
     approval_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
-            "schema_change_requests.id",
+            "approvals.id",
             ondelete="SET NULL",
             name="fk_workflow_run_steps_approval_id",
-        )
-    )
-    # Replaced by `approval_id`, and no longer written; dropped with the rename to approvals.
-    waiting_on_request_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey(
-            "schema_change_requests.id",
-            ondelete="SET NULL",
-            name="fk_workflow_run_steps_waiting_on_request_id",
         )
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -790,13 +782,12 @@ class WorkflowRunStep(StoreBase):
     __table_args__ = (
         Index("ix_workflow_run_steps_run_id", "run_id"),
         Index("ix_workflow_run_steps_agent_run_id", "agent_run_id"),
-        Index("ix_workflow_run_steps_waiting_on_request_id", "waiting_on_request_id"),
         Index("ix_workflow_run_steps_approval_id", "approval_id"),
         {"comment": "Each workflow run's steps: a node of its graph, at any depth"},
     )
 
 
-# Schedules, chats, invocations and schema change requests: what starts runs, and what the
+# Schedules, chats, invocations and approvals: what starts runs, and what the
 # organisation's people say to each other and to its agents and workflows. Who made, posted or
 # asked for each is a platform user id, resolved through the people mirror (no foreign key).
 
@@ -1244,9 +1235,9 @@ class WebhookDelivery(StoreBase):
     )
 
 
-class SchemaChangeRequest(StoreBase):
+class Approval(StoreBase):
     """An approval (`aios.approvals`): something a member with the right role must decide before
-    a run can carry on. Still named for its first kind until the rename to approvals.
+    a run can carry on.
 
     Of kind `schema_change`: an agent's request to change the store's `data` schema
     (`aios.datastores.schema_changes`): the spec it asked for, the SQL it compiles to, and what
@@ -1256,7 +1247,7 @@ class SchemaChangeRequest(StoreBase):
     Of kind `workflow_step`: a workflow's approval node waiting for a person in its role to
     approve or reject it, with the prompt it rendered (`reason`) and its input."""
 
-    __tablename__ = "schema_change_requests"
+    __tablename__ = "approvals"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()")
@@ -1275,15 +1266,14 @@ class SchemaChangeRequest(StoreBase):
     # An approval step's: the least role that may decide it (editor or admin). A schema
     # change's is the organisation's approval rules' (`aios.approval_rules`), at decision time.
     approver_role: Mapped[str | None] = mapped_column(Text)
-    # When it expires undecided (counting as not approved); null for one made before expiry
-    # times were recorded, which expires by its age.
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When it expires undecided (counting as not approved).
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # An approval step's: the workflow run step waiting on it.
     workflow_step_id: Mapped[int | None] = mapped_column(
         ForeignKey(
             "workflow_run_steps.id",
             ondelete="SET NULL",
-            name="fk_schema_change_requests_workflow_step_id",
+            name="fk_approvals_workflow_step_id",
             use_alter=True,
         )
     )
@@ -1295,10 +1285,10 @@ class SchemaChangeRequest(StoreBase):
     tool_call_id: Mapped[str | None] = mapped_column(String(255))
     # The store's data schema revision it was checked against (`schema_changes.read_revision`).
     base_revision: Mapped[int | None] = mapped_column(BigInteger)
-    status: Mapped[SchemaChangeStatus] = mapped_column(
-        Enum(SchemaChangeStatus, name="schema_change_status"),
-        default=SchemaChangeStatus.pending,
-        server_default=SchemaChangeStatus.pending.value,
+    status: Mapped[ApprovalStatus] = mapped_column(
+        Enum(ApprovalStatus, name="approval_status"),
+        default=ApprovalStatus.pending,
+        server_default=ApprovalStatus.pending.value,
     )
     # The member who decided it.
     decided_by_user_id: Mapped[int | None] = mapped_column(Integer)
@@ -1314,28 +1304,27 @@ class SchemaChangeRequest(StoreBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint(
-            "requested_by_run", "tool_call_id", name="uq_schema_change_requests_run_tool_call"
-        ),
-        Index("ix_schema_change_requests_requested_by_run", "requested_by_run"),
-        Index("ix_schema_change_requests_workflow_step_id", "workflow_step_id"),
-        CheckConstraint(
-            "kind IN ('schema_change', 'workflow_step')", name="ck_schema_change_requests_kind"
-        ),
+        UniqueConstraint("requested_by_run", "tool_call_id", name="uq_approvals_run_tool_call"),
+        Index("ix_approvals_requested_by_run", "requested_by_run"),
+        Index("ix_approvals_workflow_step_id", "workflow_step_id"),
+        CheckConstraint("kind IN ('schema_change', 'workflow_step')", name="ck_approvals_kind"),
         CheckConstraint(
             "approver_role IN ('editor', 'admin')",
-            name="ck_schema_change_requests_approver_role",
+            name="ck_approvals_approver_role",
         ),
         CheckConstraint(
             "kind <> 'schema_change' OR (ops IS NOT NULL AND sql IS NOT NULL"
             " AND summary IS NOT NULL AND base_revision IS NOT NULL)",
-            name="ck_schema_change_requests_schema_change",
+            name="ck_approvals_schema_change",
         ),
         CheckConstraint(
             "kind <> 'workflow_step' OR approver_role IS NOT NULL",
-            name="ck_schema_change_requests_workflow_step",
+            name="ck_approvals_workflow_step",
         ),
-        {"comment": "Agents' requests to change the data schema, and what was decided"},
+        {
+            "comment": "What members must decide before a run carries on: agents' schema changes"
+            " and workflow approval steps"
+        },
     )
 
 

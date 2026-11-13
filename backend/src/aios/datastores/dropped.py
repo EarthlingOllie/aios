@@ -181,8 +181,8 @@ def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> N
 
     - Reads: `rw`, `ro`, the agents' group (so every agent) and the insights role (prompted
       charts, `aios.charts`) read it.
-    - Writes: `writers_of` it, and `rw` (until it loses its writes to data tables, which only
-      agents' logins will make).
+    - Writes: `writers_of` it, and nobody else: `rw`, the platform's own, never writes `data`
+      tables.
     - None of it if it's dropped; only its other columns if it has dropped columns.
 
     Run as the owner, in the transaction that changed it."""
@@ -199,16 +199,19 @@ def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> N
     readers = sql.SQL(", ").join(
         sql.Identifier(r) for r in (names.rw, names.ro, names.group, *insights)
     )
-    writers = [names.rw, *writers_of(conn, names, table)]
+    writers = writers_of(conn, names, table)
     can_write = sql.SQL(", ").join(sql.Identifier(r) for r in writers)
     qualified = sql.Identifier(SCHEMA, table).as_string(conn)
     columns = [name for (name,) in conn.execute(_COLUMNS_SQL, (qualified,))]
     kept = [c for c in columns if not is_dropped(c)]
     if kept == columns:
         conn.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(relation, readers))
-        conn.execute(
-            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(relation, can_write)
-        )
+        if writers:
+            conn.execute(
+                sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(
+                    relation, can_write
+                )
+            )
         return
     listed = sql.SQL(", ").join(map(sql.Identifier, kept))
     # And where each row is (`tableoid`, `ctid`), which the Data page's Tables key rows by: a
@@ -218,6 +221,8 @@ def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> N
             listed, relation, readers
         )
     )
+    if not writers:
+        return
     conn.execute(
         sql.SQL("GRANT INSERT ({0}), UPDATE ({0}) ON TABLE {1} TO {2}").format(
             listed, relation, can_write

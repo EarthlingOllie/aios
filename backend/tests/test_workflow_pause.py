@@ -29,9 +29,9 @@ from test_workflows import (
 from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.datastores.models import Agent, AgentRun, SchemaChangeRequest, WorkflowRun
+from aios.datastores.models import Agent, AgentRun, Approval, WorkflowRun
 from aios.db import SessionLocal
-from aios.models import DataStore, SchemaChangeStatus, WorkflowRunStatus, WorkItem
+from aios.models import ApprovalStatus, DataStore, WorkflowRunStatus, WorkItem
 from aios.run_service import executor
 from aios.testing.fake_model import (
     ToolCall,
@@ -455,8 +455,8 @@ def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
     [request] = api.get("/api/approvals").json()
     with store_session(store.id) as db:
         db.execute(
-            update(SchemaChangeRequest)
-            .where(SchemaChangeRequest.id == request["id"])
+            update(Approval)
+            .where(Approval.id == request["id"])
             .values(expires_at=func.now() - timedelta(minutes=1))
         )
         db.commit()
@@ -639,7 +639,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     build = steps(waiting)["build"]
     [pending] = api.get("/api/approvals").json()
     with store_session(store.id) as db:
-        orphan = SchemaChangeRequest(
+        orphan = Approval(
             ops=[{**CONTACTS, "name": "gone"}],
             sql="",
             summary="Create table data.gone",
@@ -647,7 +647,8 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
             requested_by_run=build["agent_run_id"],
             tool_call_id="call_gone",
             base_revision=0,
-            status=SchemaChangeStatus.rejected,
+            status=ApprovalStatus.rejected,
+            expires_at=func.now() + timedelta(days=7),
         )
         db.add(orphan)
         db.commit()

@@ -32,13 +32,13 @@ from aios import organisations
 from aios.api import documents
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
-from aios.datastores.models import SchemaChangeRequest
+from aios.datastores.models import Approval
 from aios.main import app
 from aios.models import (
+    ApprovalStatus,
     DataStore,
     OrganisationMember,
     Role,
-    SchemaChangeStatus,
     User,
 )
 from aios.testing.fake_model import replies, use_model
@@ -213,7 +213,7 @@ def test_another_organisation_sees_none_of_the_stores_documents_or_tables(
 # --- Schema change requests and dropped objects -------------------------------------------------
 
 
-def notified(api, request: SchemaChangeRequest) -> bool:
+def notified(api, request: Approval) -> bool:
     """Whether the signed-in user has an unread notification of the request."""
     listed = api.get("/api/me/notifications").json()["notifications"]
     return any(n["ref"]["approval_id"] == str(request.id) and not n["read_at"] for n in listed)
@@ -247,7 +247,7 @@ def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_the
         # Decided, it's read for everyone it notified.
         assert not notified(api, drop)
     assert not notified(api, drop)
-    assert rows_of(user).get(SchemaChangeRequest, drop.id).decided_by_user_id == member.id
+    assert rows_of(user).get(Approval, drop.id).decided_by_user_id == member.id
 
     add = propose(
         store, {"op": "add_column", "table": "fish", "column": {"name": "colour", "type": "text"}}
@@ -255,7 +255,7 @@ def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_the
     with signed_in_as(member):
         rejected = api.post(f"/api/approvals/{add.id}/reject", json={"note": "Not now"})
         assert rejected.status_code == 200, rejected.text
-    assert rows_of(user).get(SchemaChangeRequest, add.id).status == SchemaChangeStatus.rejected
+    assert rows_of(user).get(Approval, add.id).status == ApprovalStatus.rejected
 
 
 def test_any_admin_restores_a_dropped_table_and_an_editor_cant(
