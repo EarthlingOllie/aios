@@ -1,5 +1,5 @@
 """**Chat with this agent**: chat creation with one agent and no name makes a new open chat that
-includes only that agent (not the documents assistant), with the caller as its first person,
+includes only that agent (not the default chat agents), with the caller as its first person,
 named "<Agent> – <person> – <date>"; a clash adds " (2)", " (3)" and so on. It requires
 permission to invoke the agent.
 
@@ -41,7 +41,7 @@ def test_chat_with_an_agent_names_it_and_includes_only_that_agent(api, user):
     chat = resp.json()
     assert chat["name"] == f"Researcher – {user.full_name} – {today()}"
     assert [m["target_id"] for m in chat["members"]["users"]] == [user.id]
-    # That agent, and not the documents assistant every other new chat gets.
+    # That agent, and not the default chat agents every other new chat gets.
     assert [m["target_id"] for m in chat["members"]["agents"]] == [agent["id"]]
     assert chat["members"]["workflows"] == []
     assert chat["is_member"] is True
@@ -132,6 +132,6 @@ def test_an_archived_or_unknown_agent_makes_no_chat(api):
     assert api.post("/api/chats", json={"agent_id": agent["id"] + 1000}).status_code == 404
 
 
-def test_a_plain_chat_still_gets_the_documents_assistant(api):
+def test_a_plain_chat_still_gets_the_default_chat_agents(api):
     chat = make_chat(api, "Design")
     assert len(chat["members"]["agents"]) == 1

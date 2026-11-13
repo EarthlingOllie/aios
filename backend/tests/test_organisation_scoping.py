@@ -12,6 +12,7 @@ from test_triggers import schedule
 from test_workflow_runs import queued  # noqa: F401
 from test_workflows import agent_node, make_workflow, workflow_body
 
+from aios.assistant import NAME as ASSISTANT
 from aios.datastores.models import Agent, Skill, Workflow
 from aios.models import User
 
@@ -46,7 +47,9 @@ def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
     agent = make_agent(api, "Reviewer", base_prompt="Review it.")
     url = f"/api/agents/{agent['id']}"
     with signed_in_as(member):
-        assert [a["id"] for a in ok(api.get("/api/agents"))] == [agent["id"]]
+        assert [a["id"] for a in ok(api.get("/api/agents")) if a["name"] != ASSISTANT] == [
+            agent["id"]
+        ]
         assert ok(api.get(url))["name"] == "Reviewer"
         changed = ok(api.put(url, json=agent_body(agent, base_prompt="Review it twice.")))
         assert changed["current_version"]["version"] == 2
@@ -139,7 +142,9 @@ def test_another_organisation_cant_reach_any_of_it(api, outsider, queued):  # no
         f"/api/triggers/{trigger['id']}",
     )
     with signed_in_as(outsider):
-        for path in ("/api/agents", "/api/skills", "/api/workflows", "/api/triggers"):
+        # Theirs alone: their organisation has only its own assistant.
+        assert [x["name"] for x in ok(api.get("/api/agents"))] == [ASSISTANT]
+        for path in ("/api/skills", "/api/workflows", "/api/triggers"):
             assert ok(api.get(path)) == []
         reads = [
             *(a, f"{a}/versions", f"{a}/versions/1", f"{a}/runs", f"{a}/used-by"),
@@ -209,7 +214,7 @@ def test_ids_repeat_across_organisations_and_each_reaches_only_its_own(
         )
         return [
             [x["name"] for x in ok(api.get("/api/skills"))],
-            [x["name"] for x in ok(api.get("/api/agents"))],
+            [x["name"] for x in ok(api.get("/api/agents")) if x["name"] != ASSISTANT],
             [x["name"] for x in ok(api.get("/api/workflows"))],
             ok(api.get(s))["name"],
             ok(api.get(f"{s}/versions/1"))["content"],
@@ -291,7 +296,7 @@ def test_each_says_who_made_and_last_changed_it(api, user, member):
         ok(api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Pipeline")))
     them = person(member)
     for path in ("agents", "skills", "workflows"):
-        [listed] = ok(api.get(f"/api/{path}"))
+        [listed] = [x for x in ok(api.get(f"/api/{path}")) if x["name"] != ASSISTANT]
         assert (listed["created_by"], listed["updated_by"]) == (me, them), path
     [first, second] = reversed(ok(api.get(f"/api/agents/{agent['id']}/versions")))
     assert (first["created_by"], second["created_by"]) == (me, them)

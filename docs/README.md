@@ -8,7 +8,7 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | --- | --- |
 | [Accounts and organisations](accounts-and-organisations.md) | Registering and signing in, sessions and rate limits; organisations, what they own, invitation links and leaving. |
 | [Stores](stores.md) | Each organisation's own database: the database roles, provisioning, uploaded files, the Data page's tables, quotas, dropped tables and columns, and the search index. |
-| [Agents and skills](agents-and-skills.md) | Defining agents and skills, their versions, agent runs and their history, the documents assistant, and deleting an agent. |
+| [Agents and skills](agents-and-skills.md) | Defining agents and skills, their versions, agent runs and their history, the organisation assistant and default chat agents, and deleting an agent. |
 | [Tools](tools.md) | The tool library: how tools are registered, web search, Run Python, the data tools, schema change requests, and the Search page. |
 | [Workflows](workflows.md) | Graphs of agents and workflows: the editor, versions, nesting, and how a workflow run is run. |
 | [Chats](chats.md) | Open chats: chat members, joining, unread counts, messages and the Jev check, mentions, invocations and the handoff brief. |

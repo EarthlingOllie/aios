@@ -14,8 +14,9 @@ and workflows: a 403 for anyone who hasn't joined. Admins archive and unarchive 
 chat is read-only (a 409 for posts, joins, edits and adds), listed apart (`?archived=true`), and
 still read and searched. Renames, archiving and unarchiving are in the audit log. Nobody deletes
 a chat. Someone leaving the organisation leaves its chats, with nothing handed over. Leaving
-deletes nothing, and whoever joins later reads the history from the start. A new chat's first
-agent is the organisation's documents assistant (`aios.assistant`).
+deletes nothing, and whoever joins later reads the history from the start. A new chat's agents
+are the organisation's default chat agents (`aios.assistant.default_chat_agents`, the
+organisation assistant unless admins chose others), but for **Chat with this agent**.
 
 The agents and workflows among a chat's members are the ones it includes: only those can be
 mentioned there. A message mentioning one it doesn't include is a 422 naming what's missing

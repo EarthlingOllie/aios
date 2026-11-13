@@ -69,7 +69,7 @@ def test_a_member_leaves_and_rejoins_to_find_the_history_still_there(api, user, 
         assert api.post(f"/api/chats/{chat['id']}/leave").status_code == 204
         # Out of it, so the chat is back to one they could join.
         left = api.get(f"/api/chats/{chat['id']}").json()
-        # Its maker and their documents assistant.
+        # Its maker and the organisation assistant.
         assert (left["is_member"], left["member_count"]) == (False, 2)
         assert listed(api)["Open"]["is_member"] is False
         # Leaving twice isn't leaving.

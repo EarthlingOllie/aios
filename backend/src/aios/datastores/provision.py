@@ -28,9 +28,11 @@ template (`aios.db_roles`), which brings pgvector and pgstattuple (for measuring
 `aios.datastores.quota`) in an `extensions` schema: the provisioner isn't a superuser, so it
 couldn't install them.
 
-Then it runs the store tree to its head, as the owner (`upgrade_store`), and marks the store
-`ready`. A store with the tree's `history` line (the run history export's, now gone) is brought
-to that line's head too, which drops the export's copy; no store gets the line any more.
+Then it runs the store tree to its head, as the owner (`upgrade_store`), fills its people
+mirror, makes the organisation's assistant (`aios.assistant`, by the organisation's creator: so an
+organisation has it from the start) and marks the store `ready`. A store with the tree's
+`history` line (the run history export's, now gone) is brought to that line's head too, which
+drops the export's copy; no store gets the line any more.
 
 Every step checks what's already there, so after a crash running it again finishes the job;
 runs of the same store wait for each other.
@@ -78,6 +80,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import connections, credentials, files, migrations
@@ -541,6 +544,41 @@ def _sync_people(store_id: uuid.UUID, names: StoreNames) -> None:
         people.sync(conn, organisation_id)
 
 
+def _make_assistant(run: _Run) -> None:
+    """The organisation assistant (`aios.assistant`), made by the organisation's creator: a new
+    store's, before it's ready, so the organisation has it from the start."""
+    # Ahead of the assistant's tools: in a process that's imported nothing else (provisioning
+    # run on its own), importing the tools first trips the usage ledger's import cycle.
+    import aios.invocations  # noqa: F401
+    from aios import assistant
+    from aios.models import Organisation
+
+    with SessionLocal() as db:
+        org = db.execute(
+            select(Organisation.id, Organisation.created_by)
+            .join(DataStore, DataStore.owner_organisation_id == Organisation.id)
+            .where(DataStore.id == run.store_id)
+        ).one_or_none()
+    if org is None:  # being deleted
+        return
+    creator = org.created_by
+    url = make_url(get_settings().data_store_provisioner_url).set(database=run.names.dbname)
+    engine = create_engine(
+        url, poolclass=pool.NullPool, connect_args={"connect_timeout": CONNECT_TIMEOUT}
+    )
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                f"SET ROLE {conn.dialect.identifier_preparer.quote(run.names.owner)}"
+            )
+            conn.commit()
+            with Session(bind=conn) as store:
+                assistant.make(store, creator)
+                store.commit()
+    finally:
+        engine.dispose()
+
+
 def _apply_access(run: _Run) -> None:
     """The agents' logins and grants (`aios.datastores.agent_roles`), once it's ready."""
     from aios.datastores import agent_roles
@@ -578,6 +616,7 @@ STEPS: list[Callable[[_Run], None]] = [
     _set_up_database,
     _migrate,
     _fill_people,
+    _make_assistant,
     _mark_ready,
     _apply_access,
 ]

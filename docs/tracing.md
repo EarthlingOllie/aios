@@ -1,6 +1,6 @@
 # Tracing
 
-Agent runs (the documents assistant's too) are traced to [Langfuse](https://langfuse.com) (open
+Agent runs (the organisation assistant's too) are traced to [Langfuse](https://langfuse.com) (open
 source, self-hostable) through its LangChain callback handler (`aios.tracing`), when both keys
 are set:
 

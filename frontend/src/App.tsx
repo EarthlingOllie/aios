@@ -401,7 +401,7 @@ function Shell({ user, current, onSignOut }: { user: Me; current: Membership; on
         </div>
         {organisation("")}
         <nav className="flex flex-col gap-0.5">{nav("")}</nav>
-        {/* Documents ground the chats' documents assistant, so they live alongside it. */}
+        {/* Documents ground the organisation assistant, so they live alongside it. */}
         {onChats && (
           <div className="min-h-0 flex-1 border-t pt-4">
             <Documents />

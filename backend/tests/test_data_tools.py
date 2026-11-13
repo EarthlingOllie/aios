@@ -110,6 +110,7 @@ STORE_TABLES = {
         "chats",
         "chunks",
         "connectors",
+        "default_chat_agents",
         "documents",
         "embedding_columns",
         "event_batches",

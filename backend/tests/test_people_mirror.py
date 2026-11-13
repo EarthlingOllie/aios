@@ -100,7 +100,8 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
         conn.execute("DROP TABLE aios.sources")
         conn.execute("DROP TYPE aios.source_kind, aios.source_status")
         conn.execute(
-            "DROP TABLE aios.workflow_run_steps, aios.workflow_runs, aios.sandbox_sessions,"
+            "DROP TABLE aios.default_chat_agents, aios.workflow_run_steps, aios.workflow_runs,"
+            " aios.sandbox_sessions,"
             " aios.agent_runs, aios.workflow_edges, aios.workflow_nodes, aios.workflow_versions,"
             " aios.workflows, aios.agent_version_tools, aios.agent_version_skills,"
             " aios.agent_versions, aios.agents, aios.skill_versions, aios.skills CASCADE"

@@ -250,7 +250,7 @@ def test_a_chats_messages_members_and_unread_counts_are_in_the_store(api, db, us
     with user_store(user) as store:
         assert store.scalar(text("SELECT count(*) FROM aios.chats")) == 1
         assert store.scalar(text("SELECT count(*) FROM aios.chat_messages")) == 1
-        # The member and the documents assistant.
+        # The member and the organisation assistant.
         assert store.scalar(text("SELECT count(*) FROM aios.chat_members")) == 2
     [listed] = api.get("/api/chats").json()
     assert (listed["name"], listed["unread_count"]) == ("Design", 0)

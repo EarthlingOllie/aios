@@ -268,14 +268,42 @@ class Agent(StoreBase):
         # Names are unique among the agents, archived ones included: an archived agent's name
         # stays reserved, so unarchiving it never clashes.
         Index("uq_agents_name", "name", unique=True),
-        # One agent of each built-in kind.
+        # One live agent of each built-in kind.
         Index(
             "uq_agents_builtin",
             "builtin",
             unique=True,
-            postgresql_where=sql_text("builtin IS NOT NULL"),
+            # Archived ones aside: an exported assistant imports as an ordinary agent, and an
+            # archived one doesn't count.
+            postgresql_where=sql_text("builtin IS NOT NULL AND archived_at IS NULL"),
         ),
         {"comment": "Agents: each a name, and its current version"},
+    )
+
+
+class DefaultChatAgent(StoreBase):
+    """One of the default chat agents: the organisation's ordered list of agents that join
+    every new chat (`aios.api.chats.crud.create_chat`) but those made by **Chat with this
+    agent**. An archived one stays on the list, and is skipped. Admins change the list
+    (`aios.api.organisation`); it starts as the organisation assistant (`aios.assistant`)."""
+
+    __tablename__ = "default_chat_agents"
+
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("agents.id"), primary_key=True, comment="The agent (aios.agents.id)."
+    )
+    position: Mapped[int] = mapped_column(Integer, comment="Its place in the list, from 0.")
+    added_by: Mapped[int | None] = mapped_column(
+        Integer,
+        comment="The person who put it on the list (aios.people.id); null: the app did.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was put on the list."
+    )
+
+    __table_args__ = (
+        UniqueConstraint("position", name="uq_default_chat_agents_position"),
+        {"comment": "Default chat agents: the agents that join every new chat, in order"},
     )
 
 

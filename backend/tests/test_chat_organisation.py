@@ -101,7 +101,7 @@ def test_a_member_adds_another_members_agent_and_workflow(
     add(api, chat, "workflow", workflow)
     chat = join_as(api, chat, member)
     assert [m["name"] for m in chat["members"]["agents"]] == [
-        "Documents assistant",
+        "Organisation assistant",
         "Their reviewer",
     ]
     assert [m["name"] for m in chat["members"]["workflows"]] == ["Their digest"]
@@ -130,7 +130,7 @@ def test_a_member_adds_another_members_agent_and_workflow(
     assert api.get(f"/api/chats/{chat['id']}").json()["member_count"] == 5
 
 
-def test_a_new_chats_first_agent_is_the_organisations_documents_assistant(
+def test_a_new_chats_first_agent_is_the_organisations_assistant(
     api,
     member,  # noqa: F811
     outsider,  # noqa: F811
@@ -141,7 +141,7 @@ def test_a_new_chats_first_agent_is_the_organisations_documents_assistant(
     with signed_in_as(outsider):
         elsewhere = make_chat(api, "Elsewhere")
     [assistant] = mine["members"]["agents"]
-    assert assistant["name"] == "Documents assistant"
+    assert assistant["name"] == "Organisation assistant"
     # The same agent for every member's chat, whoever made it.
     assert [a["target_id"] for a in theirs["members"]["agents"]] == [assistant["target_id"]]
     # Another organisation's is its own, in its store (whatever its id there).
