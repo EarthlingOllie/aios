@@ -20,9 +20,17 @@ The stack shares the dev stack's database, Redis and storage services (and their
 the dev stack first, or give one a different project name (`docker compose -p ...`).
 
 - The API refuses to start with scripted models enabled while secure cookies are on.
-- The stories: the core loop and what grew from it (`core-loop.spec.ts`), and phase 2's chats
+- The stories: the core loop and what grew from it (`core-loop.spec.ts`), phase 2's chats
   (`chats.spec.ts`: **Chat with this agent** streaming its reply, a mentioned workflow's
-  handback, and a member reading a chat they haven't joined and posting to join it).
+  handback, and a member reading a chat they haven't joined and posting to join it), and the
+  inflow loop (`inflow.spec.ts`: the test connector and a URL source syncing, the organisation
+  assistant answering from a synced item, its removal upstream reaching search, a connector
+  tool's action and its audit entry, Insights, and every document having its source).
+- Upstream, for the inflow story, is the test provider's (`aios.source_providers.test`): its
+  feeds (channels) and its pages (`https://test.invalid/pages/...`, which URL sources read) are
+  kept in Redis in this stack (`SOURCES_TEST_FEEDS_SHARED`), and a story changes them through
+  the stack's testing routes (`/api/testing/...`, `aios.testing.feeds_api`), as the provider
+  and the web would.
 - A scenario is a script of the model's turns: add one to `SCENARIOS` (or a case to the
   `core-loop` one) for each new story, and a test here that tells it, rather than a new harness;
   what the stories share (registering, an organisation, mentioning) is in `stack.ts`. The backend

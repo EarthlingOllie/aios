@@ -362,3 +362,109 @@ def test_the_api_refuses_to_start_with_scripted_models_and_secure_cookies(monkey
 
     monkeypatch.setattr(settings, "cookie_secure", False)
     create_app()
+
+
+# --- The inflow story (frontend/fullstack/inflow.spec.ts) ----------------------------------------
+
+
+@pytest.fixture
+def inflow(api, store, scripted, monkeypatch, run_service):
+    """A test connector syncing a channel with one item about zebrafish into the organisation's
+    store; the organisation's assistant; a chat it's in (a default chat agent)."""
+    from test_connectors import connect, scoped
+    from test_sync import run
+
+    from aios.source_providers import test as provider
+
+    monkeypatch.setattr(get_settings(), "sources_test_provider_enabled", True)
+    channel = provider.feed(f"inflow-{store.id.hex[:8]}")
+    channel.message("zebrafish", "Zebrafish embryos are transparent.", title="Zebrafish")
+    connector_id = connect(api)
+    source_id = scoped(api, connector_id, [channel.name])
+    run(store.id, source_id)
+    [assistant] = [
+        a for a in api.get("/api/agents").json() if a["name"] == "Organisation assistant"
+    ]
+    chat = make_chat(api, "Inflow")
+    yield {
+        "channel": channel,
+        "connector_id": connector_id,
+        "source_id": source_id,
+        "assistant": assistant,
+        "chat": chat,
+        "sync": lambda: run(store.id, source_id),
+    }
+    provider.forget(channel.name)
+
+
+def ask_assistant(api, inflow, question: str) -> str:
+    assistant = inflow["assistant"]
+    say(
+        api,
+        inflow["chat"],
+        f"@[{assistant['name']}](agent:{assistant['id']}) {question}",
+        ("agent", assistant),
+    )
+    return replies_from(api, inflow["chat"])[-1]
+
+
+def test_the_assistant_answers_from_a_synced_item_and_says_so_once_its_removed_upstream(
+    api, inflow
+):
+    """The full-stack test's inflow story, its assistant's part: it searches, and answers from
+    the synced item, citing it; deleted upstream, the next sync removes it, and the assistant
+    finds nothing to answer from."""
+    assert ask_assistant(api, inflow, "what about zebrafish?") == (
+        "Organisation assistant",
+        "Zebrafish embryos are transparent. [Zebrafish]",
+    )
+
+    inflow["channel"].delete("zebrafish")
+    assert inflow["sync"]().removed == 1
+
+    assert ask_assistant(api, inflow, "what about zebrafish?") == (
+        "Organisation assistant",
+        scenarios.NOTHING_FOUND,
+    )
+
+
+def test_an_agent_told_to_post_to_a_channel_posts_with_the_connectors_tool(api, inflow):
+    """The full-stack test's inflow story, its connector tool's part: an agent given the test
+    connector's `post_message` posts what it was asked to the channel its instructions name."""
+    channel = inflow["channel"]
+    tools = [
+        {
+            "key": "connector",
+            "config": {
+                "connectors": [
+                    {
+                        "connector_id": inflow["connector_id"],
+                        "provider": "test",
+                        "tools": ["post_message"],
+                    }
+                ]
+            },
+        }
+    ]
+    poster = api.post(
+        "/api/agents",
+        json={
+            "name": "Poster",
+            "base_prompt": f"{scenarios.POST_TO}{channel.name}",
+            "tools": tools,
+        },
+    )
+    assert poster.status_code == 201, poster.text
+    poster = poster.json()
+    add(api, inflow["chat"], "agent", poster)
+
+    say(
+        api, inflow["chat"], f"@[Poster](agent:{poster['id']}) the tank is clean", ("agent", poster)
+    )
+
+    assert replies_from(api, inflow["chat"])[-1] == ("Poster", scenarios.POSTED)
+    assert [e.content.text for e in channel.items.values()][-1] == "@Poster the tank is clean"
+    [entry] = api.get("/api/audit-log", params={"action": "connector.tool_called"}).json()[
+        "entries"
+    ]
+    assert (entry["details"]["tool"], entry["details"]["target"]) == ("post_message", channel.name)

@@ -328,6 +328,11 @@ class Settings(BaseSettings):
     # The test provider (`aios.source_providers.test`): a source fed from in-process feeds, for
     # development and tests only. Compose turns it on; production never does.
     sources_test_provider_enabled: bool = False
+    # For the full-stack test only: the test provider's feeds and pages are kept in Redis, so
+    # the stack's processes (the API, the run service, the workers) share them, and changed
+    # upstream through its testing routes (`aios.testing.feeds_api`). Needs the test provider;
+    # the API refuses to start with it on while `COOKIE_SECURE` is.
+    sources_test_feeds_shared: bool = False
     # URL sources (`aios.url_fetch`): a page is fetched with at most `url_fetch_max_redirects`
     # redirects, `url_fetch_max_bytes` of body and `url_fetch_timeout_seconds` in all.
     url_fetch_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)

@@ -14,6 +14,10 @@ A fetch is conditional when given the page's last ETag or Last-Modified; "not mo
 "not found" or "gone" are answers (`NOT_MODIFIED`, `GONE`), not failures.
 
 `resolve` and `transport` are the seams tests replace: names, and the connection.
+
+While the test provider is on (development and the full-stack test), its pages, at
+`https://test.invalid/pages/...`, are answered in the process (`aios.source_providers.test`):
+`.invalid` never resolves, so nothing else is reached that way, and production never has it on.
 """
 
 import ipaddress
@@ -32,6 +36,8 @@ NOT_MODIFIED = "not_modified"
 GONE = "gone"
 
 PORTS = (80, 443)
+# The test provider's host (`aios.source_providers.test.HOST`).
+TEST_HOST = "test.invalid"
 REDIRECTS = (301, 302, 303, 307, 308)
 CHUNK = 64 * 1024
 
@@ -81,6 +87,27 @@ def transport() -> httpx.BaseTransport:
     return httpx.HTTPTransport(retries=0)
 
 
+def _test_pages() -> bool:
+    return get_settings().sources_test_provider_enabled
+
+
+class _ServingTestPages(httpx.BaseTransport):
+    """The connection, but for the test provider's host, whose pages are served here."""
+
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self.inner = inner
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        from aios.source_providers import test
+
+        if request.url.host == test.HOST:
+            return test.serve(request)
+        return self.inner.handle_request(request)
+
+    def close(self) -> None:
+        self.inner.close()
+
+
 def _public(address: str) -> bool:
     try:
         ip = ipaddress.ip_address(address.split("%")[0])
@@ -105,6 +132,9 @@ def check(url: str | httpx.URL) -> Target:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     if port not in PORTS:
         raise Unreachable()
+    if host == TEST_HOST and _test_pages():
+        # Served in the process: named, not resolved.
+        return Target(parsed, host, port, host)
     try:
         addresses = [str(ipaddress.ip_address(host))]
     except ValueError:
@@ -136,7 +166,10 @@ def fetch(url: str, *, etag: str | None = None, last_modified: str | None = None
     if last_modified:
         headers["If-Modified-Since"] = last_modified
     timeout = httpx.Timeout(settings.url_fetch_timeout_seconds)
-    with httpx.Client(transport=transport(), timeout=timeout, trust_env=False) as client:
+    connection = transport()
+    if _test_pages():
+        connection = _ServingTestPages(connection)
+    with httpx.Client(transport=connection, timeout=timeout, trust_env=False) as client:
         current = httpx.URL(url)
         for _ in range(settings.url_fetch_max_redirects + 1):
             target = check(current)

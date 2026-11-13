@@ -20,18 +20,32 @@ message items are kept as one Markdown document per feed (channel) per month.
 `https://test.invalid/mcp`: `post_message` posts a message to a feed (a side effect), and
 `read_channel` reads one (read-only). Tests change them (add, remove, make one fail);
 `reset_tools` puts them back as they start.
+
+**Its pages** stand in for web pages a URL source reads (`aios.url_sources`): `page` puts one at
+`https://test.invalid/pages/<path>`, which `aios.url_fetch` answers in the process (`serve`)
+while the test provider is on; `remove_page` makes it "not found".
+
+**Shared** (`sources_test_feeds_shared`, the full-stack test's stack only), feeds and pages are
+kept in Redis too, so the stack's processes see one another's changes: each read loads them
+(`load`, `_pull`), and each change is saved (`save`), whoever makes it (the testing routes,
+`aios.testing.feeds_api`, or the `post_message` tool). Otherwise they live in the process, as
+the backend tests use them.
 """
 
+import base64
 import hashlib
 import json
 import secrets
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
+import redis
 
 from aios import outbound
+from aios.config import get_settings
 from aios.datastores.models import SyncedItem, SyncedItemKind
 from aios.source_providers import (
     TEST,
@@ -127,15 +141,149 @@ def _hash(data: bytes) -> str:
 
 
 FEEDS: dict[str, Feed] = {}
+# The pages, by path under `PAGES_URL`: (body, content type).
+PAGES: dict[str, tuple[bytes, str]] = {}
+PAGES_URL = "https://test.invalid/pages/"
+HOST = "test.invalid"
+
+# Where shared feeds and pages are kept, in Redis: hashes by name and by path.
+_FEEDS_KEY = "aios:test-provider:feeds"
+_PAGES_KEY = "aios:test-provider:pages"
 
 
 def feed(name: str) -> Feed:
     """The feed called `name`, made empty if there's none."""
+    _pull()
     return FEEDS.setdefault(name, Feed(name))
 
 
 def forget(name: str) -> None:
     FEEDS.pop(name, None)
+    if _shared():
+        with _redis() as client:
+            client.hdel(_FEEDS_KEY, name)
+
+
+# --- Shared through Redis -----------------------------------------------------------------------
+
+
+def _shared() -> bool:
+    return get_settings().sources_test_feeds_shared
+
+
+def _redis() -> redis.Redis:
+    return redis.Redis.from_url(get_settings().redis_url, socket_connect_timeout=2)
+
+
+def _dumped(f: Feed) -> str:
+    def entry(e: _Entry) -> dict:
+        item = asdict(e.item)
+        item["kind"] = e.item.kind.value
+        item["updated_at"] = e.item.updated_at.isoformat() if e.item.updated_at else None
+        data = e.content.data
+        return {
+            "item": item,
+            "text": e.content.text,
+            "data": None if data is None else base64.b64encode(data).decode(),
+        }
+
+    return json.dumps(
+        {
+            "name": f.name,
+            "items": [entry(e) for e in f.items.values()],
+            "log": f.log,
+            "restricted": f.restricted,
+            "broken": f.broken,
+            "revoked": f.revoked,
+        }
+    )
+
+
+def _loaded(raw: str | bytes) -> Feed:
+    found = json.loads(raw)
+    f = Feed(
+        found["name"],
+        restricted=found["restricted"],
+        broken=found["broken"],
+        revoked=found["revoked"],
+        log=[(external_id, gone) for external_id, gone in found["log"]],
+    )
+    for e in found["items"]:
+        item = dict(e["item"])
+        item["kind"] = SyncedItemKind(item["kind"])
+        if item["updated_at"]:
+            item["updated_at"] = datetime.fromisoformat(item["updated_at"])
+        data = None if e["data"] is None else base64.b64decode(e["data"])
+        f.items[item["external_id"]] = _Entry(Item(**item), Content(text=e["text"], data=data))
+    return f
+
+
+def save(name: str) -> None:
+    """Keep the feed's changes where the stack's other processes see them (shared only)."""
+    if not _shared() or name not in FEEDS:
+        return
+    with _redis() as client:
+        client.hset(_FEEDS_KEY, name, _dumped(FEEDS[name]))
+
+
+def _pull() -> None:
+    """Take in the shared feeds and pages, as last saved (shared only)."""
+    if not _shared():
+        return
+    with _redis() as client:
+        feeds = client.hgetall(_FEEDS_KEY)
+        pages = client.hgetall(_PAGES_KEY)
+    for raw in feeds.values():
+        f = _loaded(raw)
+        FEEDS[f.name] = f
+    # Pages as saved, and only those: one taken away elsewhere is gone here too.
+    PAGES.clear()
+    for path, raw in pages.items():
+        found = json.loads(raw)
+        PAGES[path.decode()] = (base64.b64decode(found["body"]), found["content_type"])
+
+
+def load(name: str) -> Feed | None:
+    """The feed called `name` as it is now (shared: as last saved), if there is one."""
+    _pull()
+    return FEEDS.get(name)
+
+
+# --- Pages --------------------------------------------------------------------------------------
+
+
+def page(path: str, text: str, content_type: str = "text/markdown") -> None:
+    """Put a page at `PAGES_URL` + `path` (new or changed)."""
+    PAGES[path] = (text.encode(), content_type)
+    if _shared():
+        body = base64.b64encode(text.encode()).decode()
+        with _redis() as client:
+            client.hset(_PAGES_KEY, path, json.dumps({"body": body, "content_type": content_type}))
+
+
+def remove_page(path: str) -> None:
+    """Take the page away: it's "not found" from now."""
+    PAGES.pop(path, None)
+    if _shared():
+        with _redis() as client:
+            client.hdel(_PAGES_KEY, path)
+
+
+def serve(request: httpx.Request) -> httpx.Response:
+    """Answer a request for a page, as its web server would: "not found" for one there isn't,
+    "not modified" for one the request's ETag matches."""
+    path, prefix = request.url.path, httpx.URL(PAGES_URL).path
+    _pull()
+    found = PAGES.get(path.removeprefix(prefix)) if path.startswith(prefix) else None
+    if found is None:
+        return httpx.Response(404, request=request)
+    body, content_type = found
+    etag = f'"{_hash(body)[:16]}"'
+    if request.headers.get("if-none-match") == etag:
+        return httpx.Response(304, request=request)
+    return httpx.Response(
+        200, content=body, headers={"content-type": content_type, "etag": etag}, request=request
+    )
 
 
 def _sample() -> Feed:
@@ -154,6 +302,7 @@ def _sample() -> Feed:
 
 
 def _feed_of(source: SourceView) -> Feed:
+    _pull()
     name = source.settings.get("feed") or "sample"
     if name not in FEEDS and name == "sample":
         FEEDS[name] = _sample()
@@ -172,6 +321,7 @@ def _scoped(source: SourceView) -> list[Feed] | None:
     scope = source.settings.get("scope")
     if scope is None:
         return None
+    _pull()
     return [FEEDS[name] for name in scope if name in FEEDS]
 
 
@@ -275,6 +425,7 @@ class TestProvider:
         return f.items[external_id].content
 
     def scope_options(self, source: SourceView) -> list[ScopeOption]:
+        _pull()
         return [ScopeOption(name, name, FEEDS[name].restricted) for name in sorted(FEEDS)]
 
 
@@ -312,15 +463,16 @@ CHANNEL = {"type": "string", "description": "The channel (feed): its name."}
 
 
 def _post(args: dict) -> str:
-    channel = FEEDS.get(args.get("channel", ""))
+    channel = load(args.get("channel", ""))
     if channel is None:
         raise ValueError(f"There's no channel {args.get('channel')!r}.")
     item = channel.message(f"posted-{len(channel.log)}", str(args.get("text", "")))
+    save(channel.name)
     return f"Posted {item.external_id} to {channel.name}."
 
 
 def _read(args: dict) -> str:
-    channel = FEEDS.get(args.get("channel", ""))
+    channel = load(args.get("channel", ""))
     if channel is None:
         raise ValueError(f"There's no channel {args.get('channel')!r}.")
     return "\n".join(e.content.text or "" for e in channel.items.values())

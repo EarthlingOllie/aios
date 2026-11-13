@@ -111,7 +111,7 @@ timestamp, a random token).
 | `frontend` | The frontend's build and unit tests, once. |
 | `browser (N)` | One shard of the browser tests (`frontend/e2e/`). |
 | `frontend-gate` | Passes only if the build, the unit tests and every browser shard passed; merges the shards' reports. |
-| `fullstack-shard (N)` | One shard of the full-stack stories (the core loop, phase 2's chats) against the real stack: `frontend/fullstack/README.md`. |
+| `fullstack-shard (N)` | One shard of the full-stack stories (the core loop, phase 2's chats, the inflow loop) against the real stack: `frontend/fullstack/README.md`. |
 | `fullstack` | Passes only if every full-stack shard passed; merges the shards' reports. |
 | `terraform` | Formatting, validation and `terraform test`. |
 

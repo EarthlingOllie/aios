@@ -65,6 +65,13 @@ def create_app() -> FastAPI:
             "SCRIPTED_MODELS_ENABLED is for the full-stack test only, and can't be on with "
             "COOKIE_SECURE (a production-like configuration)"
         )
+    if settings.sources_test_feeds_shared and (
+        settings.cookie_secure or not settings.sources_test_provider_enabled
+    ):
+        raise RuntimeError(
+            "SOURCES_TEST_FEEDS_SHARED is for the full-stack test only: it needs "
+            "SOURCES_TEST_PROVIDER_ENABLED, and can't be on with COOKIE_SECURE"
+        )
     if (
         settings.cookie_secure
         and settings.connector_credentials_key.get_secret_value() == DEV_CONNECTOR_CREDENTIALS_KEY
@@ -113,6 +120,11 @@ def create_app() -> FastAPI:
     if settings.dev_login_enabled:
         log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
         app.include_router(dev_auth.router)
+    if settings.sources_test_feeds_shared:
+        from aios.testing import feeds_api
+
+        log.warning("SOURCES_TEST_FEEDS_SHARED is on: the test provider's feeds can be changed")
+        app.include_router(feeds_api.router)
     # After every router: each organisation-scoped route is mounted under the prefix too.
     mount_organisation_prefix(app)
 

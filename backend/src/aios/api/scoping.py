@@ -64,6 +64,13 @@ UNSCOPED: set[tuple[str, str]] = {
     # The receiving mail service's: each recipient's address leads to the organisation
     # (`aios.api.inbound_mail`).
     ("POST", "/api/inbound-mail"),
+    # The test provider's testing routes, when the full-stack test's stack has them
+    # (`aios.testing.feeds_api`): its feeds and pages are no organisation's.
+    ("GET", "/api/testing/feeds/{name}"),
+    ("PUT", "/api/testing/feeds/{name}/messages/{external_id}"),
+    ("DELETE", "/api/testing/feeds/{name}/items/{external_id}"),
+    ("PUT", "/api/testing/pages/{path:path}"),
+    ("DELETE", "/api/testing/pages/{path:path}"),
 }
 
 

@@ -19,6 +19,8 @@ from collections.abc import AsyncIterator, Callable
 from langchain_core.messages import BaseMessage
 
 from aios import jev
+from aios.assistant import INSTRUCTIONS as ASSISTANT
+from aios.assistant import NAME as ASSISTANT_NAME
 from aios.testing.fake_model import (
     FakeChatModel,
     Info,
@@ -71,6 +73,16 @@ APPENDED = "Appended."
 AS_IT_GOES = "Write as you go."
 PIECES = ["Here are ", "three papers ", "on streaming: ", "A, B and C."]
 PIECE_SECONDS = 1.0
+# The inflow story's agents. The organisation assistant (by its instructions,
+# `aios.assistant.INSTRUCTIONS`) searches the items synced from the organisation's sources for
+# the question (as keywords, until they're embedded: ask "what about zebrafish?"), and answers
+# with the first one's text, citing its title; or says nothing answers.
+# An agent told to post to a channel posts the message it was sent there with the test
+# connector's `post_message` (`aios.source_providers.test`), and says so.
+NOTHING_FOUND = "Nothing I found answers that."
+POST_TO = "Post to channel: "
+POST_TOOL = "test__post_message"
+POSTED = "Posted."
 
 
 def human_text(messages: list[BaseMessage]) -> str:
@@ -92,10 +104,21 @@ async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[st
 
         In a workflow, an agent told to classify a spend gives `SPEND` as its structured output, and
         one told "Reply with: <text>" replies <text>. One told to append to notes (run by a table
-        written trigger) writes `APPENDED_NOTE` to the notes table, and replies "Appended."."""
+        written trigger) writes `APPENDED_NOTE` to the notes table, and replies "Appended.".
+
+        The organisation assistant answers from what it finds synced; an agent told to post to a
+        channel posts there (the inflow story's)."""
     from aios.workflows.structured import OUTPUT_TOOL
 
     told = instructions(messages)
+    if ASSISTANT in told:
+        async for item in _assistant(messages):
+            yield item
+        return
+    if told.startswith(POST_TO):
+        async for item in _post(messages, told.removeprefix(POST_TO)):
+            yield item
+        return
     if told == AS_IT_GOES:
         for i, piece in enumerate(PIECES):
             if i:
@@ -147,6 +170,32 @@ async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[st
         yield f"Couldn't save it: {outcome['error']}"
     else:
         yield SAVED
+
+
+async def _assistant(messages: list[BaseMessage]) -> AsyncIterator[str | ToolCall]:
+    results = last_tool_results(messages)
+    if not results:
+        # The question, without the mention it came with.
+        question = human_text(messages).replace(f"@{ASSISTANT_NAME}", "").strip()
+        yield ToolCall("search", {"query": question, "kinds": ["source_item"]})
+        return
+    found = tool_output(results[-1])
+    synced = [r for r in found if r.get("kind") == "source_item"] if isinstance(found, list) else []
+    if not synced:
+        yield NOTHING_FOUND
+        return
+    yield f"{synced[0]['text']} [{synced[0]['title']}]"
+
+
+async def _post(messages: list[BaseMessage], channel: str) -> AsyncIterator[str | ToolCall]:
+    results = last_tool_results(messages)
+    if not results:
+        yield ToolCall(POST_TOOL, {"channel": channel, "text": human_text(messages)})
+        return
+    if results[-1].status == "error":
+        yield f"Couldn't post: {tool_output(results[-1])}"
+        return
+    yield POSTED
 
 
 SCENARIOS: dict[str, Script] = {
