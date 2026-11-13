@@ -7,12 +7,13 @@ too (`aios.embeddings`). The full-stack browser test runs the stack this way, so
 calls to model, embedding or tracing providers (Compose's `fullstack` profile).
 
 Every scenario answers the handoff (`aios.handoff`) with "On it." and an empty brief, and the
-handback (`aios.handback`) with the output it was sent, so the deployment's model can be theirs
-too. Later steps add scenarios here, one per story the
-full-stack test tells.
+handback (`aios.handback`) with the output it was sent, shortened if it's a JSON object or array
+(`handed_back`), so the deployment's model can be theirs too. Later steps add scenarios here,
+one per story the full-stack test tells.
 """
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable
 
 from langchain_core.messages import BaseMessage
@@ -65,6 +66,11 @@ APPEND = "Append to notes."
 AGAIN = "note again"
 APPENDED_NOTE = "Appended by the trigger."
 APPENDED = "Appended."
+# The streaming story's agent, by its instructions (**Chat with this agent**): it writes its
+# reply a piece at a time, `PIECE_SECONDS` apart, so the chat shows it being written.
+AS_IT_GOES = "Write as you go."
+PIECES = ["Here are ", "three papers ", "on streaming: ", "A, B and C."]
+PIECE_SECONDS = 1.0
 
 
 def human_text(messages: list[BaseMessage]) -> str:
@@ -82,12 +88,20 @@ async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[st
         time, it does, and replies "Written, slowly." (asking for nothing). Asked to note it again,
     it writes it to the `notes` table it asked for before, and replies "Saved.".
 
+        Told to write as it goes, it replies `PIECES`, a piece at a time.
+
         In a workflow, an agent told to classify a spend gives `SPEND` as its structured output, and
         one told "Reply with: <text>" replies <text>. One told to append to notes (run by a table
         written trigger) writes `APPENDED_NOTE` to the notes table, and replies "Appended."."""
     from aios.workflows.structured import OUTPUT_TOOL
 
     told = instructions(messages)
+    if told == AS_IT_GOES:
+        for i, piece in enumerate(PIECES):
+            if i:
+                await asyncio.sleep(PIECE_SECONDS)
+            yield piece
+        return
     if told == APPEND:
         if not last_tool_results(messages):
             yield ToolCall(
@@ -140,6 +154,22 @@ SCENARIOS: dict[str, Script] = {
 }
 
 
+def handed_back(output: str) -> str:
+    """The scripted handback's summary of `output`: a JSON object as how many fields it has and
+    their names, a JSON array as how many items; anything else as it came."""
+    try:
+        parsed = json.loads(output)
+    except ValueError:
+        return output
+    if isinstance(parsed, dict) and parsed:
+        keys = list(parsed)
+        names = keys[0] if len(keys) == 1 else f"{', '.join(keys[:-1])} and {keys[-1]}"
+        return f"In short: {len(keys)} field{'s' if len(keys) != 1 else ''}, {names}."
+    if isinstance(parsed, list):
+        return f"In short: {len(parsed)} item{'s' if len(parsed) != 1 else ''}."
+    return output
+
+
 def handing_off(script: Script) -> Script:
     """`script`, answering the handoff's request for a brief, and the handback's for a summary,
     itself."""
@@ -149,7 +179,7 @@ def handing_off(script: Script) -> Script:
             yield ToolCall(HANDOFF, {"ack": ACK, "brief": ""})
             return
         if HANDBACK in info.schemas:
-            yield ToolCall(HANDBACK, {"summary": handback_output(messages)})
+            yield ToolCall(HANDBACK, {"summary": handed_back(handback_output(messages))})
             return
         async for item in script(messages, info):
             yield item

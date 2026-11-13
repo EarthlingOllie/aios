@@ -150,8 +150,10 @@ the invocation records who asked, the run, and goes `running`.
 
 A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
 with the reason. When the run ends (in the worker, found stopped, or deleted before it
-finished), its output or error is posted back as a message from the workflow, belonging to the
-invocation, and the invocation goes `succeeded` or `failed`, in one transaction. One whose enqueue was lost is put
+finished), a successful run's output is handed back: summarised, then posted as a message from
+the workflow, with the full output behind the card's disclosure (see [Handback](#handback)); a
+failed run's error ("The run failed: …") is posted at once. Either belongs to the invocation,
+which goes `succeeded` or `failed`. One whose enqueue was lost is put
 back by the run service's requeue sweep after a minute; one whose start keeps losing its process
 fails after three attempts with "The service stopped mid-run." A read's `invocations` are the state of each invocation its messages belong to
 and of every one in the chat still going, each with its run as the run's page shows it (graph,
@@ -159,8 +161,7 @@ steps), and the chat's stream sends each as it changes. The card draws the run's
 at a fixed height, with each node's state, "n of m nodes done" and a status badge, and opens the
 run's page when clicked; a run that couldn't start shows why, and one since deleted says so.
 Mentions in what a workflow posts start nothing, so a chat can't loop. Runs started from a chat
-are listed with the workflow's others, marked with the chat (while it exists); deleting a chat
-deletes its messages and invocations, not the runs.
+are listed with the workflow's others, marked with the chat.
 
 ### Mentioning an agent
 
@@ -180,8 +181,11 @@ process dies (killed, say, by a deploy) is retried on another, carrying on from 
 checkpoint; after three attempts its card fails with "The service stopped mid-run." A read's `invocations` carry each agent
 run's status, start and finish times, tool calls and tokens so far; the card shows a status
 badge, the time elapsed (ticking in the browser from the start time), the tool calls and tokens,
-and opens the run's page when clicked; each card counts its own mention's turn. When the turn ends, the agent's final reply is posted
-back as a message from the agent (or the turn's error, failing the card). Several agents and
+and opens the run's page when clicked; each card counts its own mention's turn. While the turn
+runs, its reply streams into the chat as a draft, marked "writing…" (see
+[Live updates](#live-updates)). When the turn ends, the agent's final reply is posted back as a
+message from the agent, replacing the draft (handed back first if it's long or JSON: see
+[Handback](#handback)), or the turn's error, failing the card. Several agents and
 workflows mentioned in one message each start; mentions in an agent's reply start nothing. Runs
 started from a chat are listed with the agent's others, marked with the chat.
 
@@ -197,6 +201,29 @@ on the chat's stream like any message. It's derived text: stored `derived`, neve
 Jev, and wrapped as untrusted wherever it enters model context. The people it mentions are
 notified (`mention`); the agents and workflows it mentions start nothing. Each post is a tool
 call in the [usage ledger](usage-and-limits.md#the-usage-ledger).
+
+## Notifications
+
+The bell (`aios.notifications`) tells people what a chat did for them, from every organisation
+they're in, each labelled with its organisation (`GET /api/me/notifications`; opening one from
+another organisation switches to it). A notification holds a reference, never content: what it
+says is read from the store when it's listed, and one whose reference is gone (pruned, or in an
+organisation the person left) disappears.
+
+- **Mention** (`mention`): the people a person's message, or an agent's post, mentions; never
+  the poster.
+- **Reply** (`reply`): whoever mentioned an agent or workflow, when its result is posted, unless
+  they're watching the chat in a visible tab.
+- **Run failed** (`run_failed`): whoever caused a run that failed (mentioned it, or started it
+  by hand); for a trigger's run, its creator and the organisation's admins.
+- **Approval needed** (`approval_needed`): whoever may decide an approval; read for everyone
+  once it's decided, cancelled or expired (see [Tools](tools.md#request-schema-changes)).
+
+Reading a chat past a message marks the mention, reply and failure notifications about it read.
+At most one is unread per person, kind and reference; **Mark all read** clears the bell
+(`POST /api/me/notifications/read`); leaving an organisation removes its notifications; read
+ones are pruned after `NOTIFICATION_RETENTION_DAYS`. The bell follows the person's stream
+(below). Nothing is sent off-app.
 
 ## Live updates
 

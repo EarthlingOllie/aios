@@ -8,8 +8,11 @@ const baseURL = process.env.FULLSTACK_URL || "http://localhost:8090";
 
 export default defineConfig({
   testDir: "fullstack",
-  // One stack, shared: its tests run one at a time.
+  // One stack, shared: its tests run one at a time. Each tells its own story, in an organisation
+  // of its own, so any test can run in any shard (`--shard=i/n`): CI splits them by test, not
+  // by file.
   workers: 1,
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
   // A whole story through the workers. A step that never comes (a stopped worker) fails here.

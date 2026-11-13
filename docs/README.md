@@ -11,8 +11,8 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Agents and skills](agents-and-skills.md) | Defining agents and skills, their versions, agent runs and their history, the organisation assistant and default chat agents, and deleting an agent. |
 | [Tools](tools.md) | The tool library: how tools are registered, web search, Run Python, the data tools, schema change requests, and the Search page. |
 | [Workflows](workflows.md) | Graphs of agents and workflows: the editor, versions, nesting, and how a workflow run is run. |
-| [Chats](chats.md) | Open chats: chat members, joining, unread counts, messages and the Jev check, mentions, invocations and the handoff brief. |
-| [Triggers](triggers.md) | Schedules and the scheduler. |
+| [Chats](chats.md) | Open chats: chat members, joining, archiving, **Chat with this agent**, unread counts, messages and the Jev check, mentions, invocations, agents' posts, notifications, live updates (streams and drafts), the handoff brief and the handback. |
+| [Triggers](triggers.md) | Schedules, event triggers, delivering results to a chat, and the scheduler. |
 | [Usage, limits and mention guards](usage-and-limits.md) | The usage ledger in GBP and its reporting view, caps on turns and workflow runs, and the checks a mention passes before it runs. |
 | [Run service](run-service.md) | The service that runs every turn, handoff, workflow node, schedule and embedding sweep: its fair work queue, leases, retries, the in-flight cap, the model rate limit and graceful shutdown. |
 | [Development](development.md) | Prerequisites, the code layout, running the stack in Docker or locally, debugging with Claude Code, checks and tests, the dependency policy, changing models, and image size notes. |

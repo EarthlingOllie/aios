@@ -1,6 +1,8 @@
 import { execSync } from "node:child_process";
 
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+
+import { cardStatus, created, mention, messageList, NOTES_TOOLS, setUp } from "./stack";
 
 /**
  * The core loop against the real stack (Compose's `fullstack` profile), every turn on the run
@@ -26,78 +28,10 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * mention is another turn of the same run, on the new version, and the run's page shows each
  * turn's version.
  *
- * Later steps add their stories here, each a scenario of the scripted model.
+ * Phase 2's stories, of chats, are in chats.spec.ts; later steps add theirs here or in files of
+ * their own (so CI's shards share them out), each a scenario of the scripted model, with what
+ * they share in stack.ts.
  */
-
-const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
-const composer = (page: Page) => page.getByRole("textbox", { name: "Message", exact: true });
-const cardStatus = (page: Page) => messageList(page).getByTestId("run-card-status");
-
-const NOTES_TOOLS = [
-  { key: "request_schema_change", config: {} },
-  { key: "write_data", config: {} },
-];
-
-async function created<T>(request: APIRequestContext, url: string, data: object): Promise<T> {
-  const response = await request.post(url, { data });
-  expect(response.status(), await response.text()).toBe(201);
-  return (await response.json()) as T;
-}
-
-/** Registers a new person, who creates an organisation (its store provisioned by the routine
- * worker), an agent that may ask for tables and write to them, and a chat it's in. */
-async function setUp(page: Page) {
-  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-
-  // Register, which makes nothing, then create an organisation on the welcome page: its store is
-  // provisioned by the routine worker.
-  await page.goto("/register");
-  await page.getByLabel("First name").fill("Core");
-  await page.getByLabel("Last name").fill("Loop");
-  await page.getByLabel("Email").fill(`core-loop-${suffix}@example.com`);
-  await page.getByLabel("Password", { exact: true }).fill("a long passphrase");
-  await page.getByLabel("Confirm password").fill("a long passphrase");
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/\/welcome$/);
-  await expect(page.getByRole("heading", { name: "Welcome to aios" })).toBeVisible();
-  await page.getByLabel("Organisation name").fill(`Core Loop ${suffix}`);
-  await page.getByRole("button", { name: "Create organisation" }).click();
-  await expect(page).toHaveURL(/\/o\/[^/]+\//);
-  // Their organisation: the API names it by its id (`/api/o/<id>/...`), links by its slug.
-  const me = await page.request.get("/api/me");
-  expect(me.status(), await me.text()).toBe(200);
-  const {
-    organisations: [organisation],
-  } = (await me.json()) as { organisations: { id: number; slug: string }[] };
-  const api = (path: string) => `/api/o/${organisation.id}${path}`;
-  const link = (path: string) => `/o/${organisation.slug}${path}`;
-  await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("")}(/|$)`));
-  await expect
-    .poll(
-      async () => {
-        const response = await page.request.get(api("/data-store"));
-        return response.ok() ? (await response.json()).status : `HTTP ${response.status()}`;
-      },
-      { message: "the organisation's data store is provisioned", timeout: 60_000 },
-    )
-    .toBe("ready");
-
-  // An agent that may ask for tables and write to them, in a chat (their screens have tests of
-  // their own).
-  const agent = await created<{ id: number }>(page.request, api("/agents"), { name: "Notes", tools: NOTES_TOOLS });
-  const chat = await created<{ id: number }>(page.request, api("/chats"), { name: `Notes ${suffix}` });
-  await created(page.request, api(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id });
-  return { api, link, agent, chat };
-}
-
-/** Mentions the agent (the Notes agent unless `name` says) in the chat, with `text` after the
- * mention. */
-async function mention(page: Page, text: string, name = "Notes") {
-  await composer(page).pressSequentially(`@${name.slice(0, 3)}`);
-  await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: `${name} agent` }).click();
-  await composer(page).pressSequentially(` ${text}`);
-  await composer(page).press("Enter");
-}
 
 test("a mention asks for a table, waits for approval on the Data page, then saves and replies", async ({
   page,
